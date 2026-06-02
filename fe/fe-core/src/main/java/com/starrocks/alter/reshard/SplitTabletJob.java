@@ -590,7 +590,7 @@ public class SplitTabletJob extends TabletReshardJob {
         }
         long grpId = groupId.grpId;
         int colocateColumnCount = colocateTableIndex.getGroupSchema(groupId).getColocateColumnCount();
-        List<ColocateRange> currentRanges = colocateTableIndex.getColocateRangeMgr().getColocateRanges(grpId);
+        List<ColocateRange> currentRanges = colocateTableIndex.getColocateRanges(grpId);
 
         Set<Tuple> canonicalLowers = new LinkedHashSet<>();
         boolean oldStradlesBoundary = false;

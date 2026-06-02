@@ -430,7 +430,7 @@ public class SplitTabletJobFactory implements TabletReshardJobFactory {
         // grpId, and the ranges list is stable for the duration of this DDL (the unstable
         // guard above blocks concurrent splits).
         List<ColocateRange> colocateRanges = groupId == null ? null
-                : colocateTableIndex.getColocateRangeMgr().getColocateRanges(groupId.grpId);
+                : colocateTableIndex.getColocateRanges(groupId.grpId);
         int colocateColumnCount = groupId == null ? 0
                 : colocateTableIndex.getGroupSchema(groupId).getColocateColumnCount();
 
@@ -621,8 +621,7 @@ public class SplitTabletJobFactory implements TabletReshardJobFactory {
         ColocateTableIndex.GroupId groupId = colocateTableIndex.getRangeColocateGroupId(table.getId());
         Preconditions.checkState(groupId != null,
                 "alignment split called for non-range-colocate table %s", table.getName());
-        List<ColocateRange> colocateRanges =
-                colocateTableIndex.getColocateRangeMgr().getColocateRanges(groupId.grpId);
+        List<ColocateRange> colocateRanges = colocateTableIndex.getColocateRanges(groupId.grpId);
         int colocateColumnCount = colocateTableIndex.getGroupSchema(groupId).getColocateColumnCount();
 
         for (ReshardingPhysicalPartition reshardingPhysicalPartition : reshardingPhysicalPartitions.values()) {

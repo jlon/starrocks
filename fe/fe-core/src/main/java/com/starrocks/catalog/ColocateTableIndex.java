@@ -165,6 +165,18 @@ public class ColocateTableIndex implements Writable {
     }
 
     /**
+     * Returns the colocate ranges of the given range-colocate group.
+     */
+    public List<ColocateRange> getColocateRanges(long colocateGroupId) {
+        readLock();
+        try {
+            return List.copyOf(colocateRangeMgr.getColocateRanges(colocateGroupId));
+        } finally {
+            readUnlock();
+        }
+    }
+
+    /**
      * Returns all PACK shard group ids tracked by range-colocate metadata.
      *
      * <p>PACK shard groups are created by FE but are not attached to any
