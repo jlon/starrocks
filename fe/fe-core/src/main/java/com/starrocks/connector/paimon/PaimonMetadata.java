@@ -251,7 +251,7 @@ public class PaimonMetadata implements ConnectorMetadata {
         try {
             // get database from paimon catalog to see if the database exists
             paimonNativeCatalog.getDatabase(dbName);
-            Database db = new Database(CONNECTOR_ID_GENERATOR.getNextId().asInt(), dbName);
+            Database db = new Database(CONNECTOR_ID_GENERATOR.getNextId().asLong(), dbName);
             databases.put(dbName, db);
             return db;
         } catch (Catalog.DatabaseNotExistException e) {
