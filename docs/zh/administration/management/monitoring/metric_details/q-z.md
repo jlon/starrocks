@@ -70,18 +70,18 @@ description: "Alphabetical q - z"
 
 ## `recycle_bin_database_num`
 
-- 单位：计数
-- 描述：Catalog 回收站中的数据库数量。
+- 单位：个
+- 描述：FE Catalog 回收站中当前保留的数据库数量。
 
 ## `recycle_bin_partition_num`
 
-- 单位：计数
-- 描述：Catalog 回收站中的分区数量。
+- 单位：个
+- 描述：FE Catalog 回收站中当前保留的分区数量。
 
 ## `recycle_bin_table_num`
 
-- 单位：计数
-- 描述：Catalog 回收站中的表数量。
+- 单位：个
+- 描述：FE Catalog 回收站中当前保留的表数量。
 
 ## `resource_group_bigquery_count`
 
