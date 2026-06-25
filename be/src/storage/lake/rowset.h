@@ -146,12 +146,21 @@ public:
 
     [[nodiscard]] StatusOr<std::vector<SegmentPtr>> segments(const LakeIOOptions& lake_io_opts);
 
+    // load_segments() may compact a segment range into a dense result. Keep the original metadata
+    // position so callers can look up per-segment metadata without mistaking the dense index for it.
+    struct LoadedSegment {
+        SegmentPtr segment;
+        int32_t metadata_position = 0;
+    };
+
     // `fill_cache` controls `fill_data_cache` and `fill_meta_cache`
     Status load_segments(std::vector<SegmentPtr>* segments, bool fill_cache, int64_t buffer_size = -1);
+    Status load_segments(std::vector<LoadedSegment>* segments, bool fill_cache, int64_t buffer_size = -1);
 
-    [[nodiscard]] Status load_segments(std::vector<SegmentPtr>* segments, SegmentReadOptions& seg_options,
-                                       std::pair<std::vector<SegmentPtr>, std::vector<SegmentPtr>>* not_used_segments,
-                                       const std::unordered_set<int>* skip_segment_idxs = nullptr);
+    [[nodiscard]] Status load_segments(
+            std::vector<LoadedSegment>* segments, SegmentReadOptions& seg_options,
+            std::pair<std::vector<LoadedSegment>, std::vector<LoadedSegment>>* not_used_segments,
+            const std::unordered_set<int>* skip_segment_idxs = nullptr);
 
     int64_t tablet_id() const { return _tablet_id; }
 

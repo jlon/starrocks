@@ -1108,7 +1108,7 @@ TEST_F(LakeRowsetSegmentMetadataFilterTest, test_load_segments_with_skip_segment
     auto rowset =
             std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 0 /* compaction_segment_limit */);
 
-    std::vector<SegmentPtr> segments;
+    std::vector<lake::Rowset::LoadedSegment> segments;
     SegmentReadOptions seg_options;
     seg_options.lake_io_opts.fill_data_cache = false;
     seg_options.lake_io_opts.fill_metadata_cache = false;
@@ -1122,11 +1122,14 @@ TEST_F(LakeRowsetSegmentMetadataFilterTest, test_load_segments_with_skip_segment
     ASSERT_EQ(segments.size(), 3);
 
     // Segment 0 should be loaded
-    ASSERT_NE(segments[0], nullptr);
+    ASSERT_NE(segments[0].segment, nullptr);
     // Segment 1 should be skipped (nullptr)
-    ASSERT_EQ(segments[1], nullptr);
+    ASSERT_EQ(segments[1].segment, nullptr);
     // Segment 2 should be loaded
-    ASSERT_NE(segments[2], nullptr);
+    ASSERT_NE(segments[2].segment, nullptr);
+    EXPECT_EQ(segments[0].metadata_position, 0);
+    EXPECT_EQ(segments[1].metadata_position, 1);
+    EXPECT_EQ(segments[2].metadata_position, 2);
 }
 
 // Test: load_segments with skip_segment_idxs in parallel mode with index mapping
@@ -1139,7 +1142,7 @@ TEST_F(LakeRowsetSegmentMetadataFilterTest, test_load_segments_parallel_with_ski
     auto rowset =
             std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 0 /* compaction_segment_limit */);
 
-    std::vector<SegmentPtr> segments;
+    std::vector<lake::Rowset::LoadedSegment> segments;
     SegmentReadOptions seg_options;
     seg_options.lake_io_opts.fill_data_cache = false;
     seg_options.lake_io_opts.fill_metadata_cache = false;
@@ -1153,11 +1156,13 @@ TEST_F(LakeRowsetSegmentMetadataFilterTest, test_load_segments_parallel_with_ski
     ASSERT_EQ(segments.size(), 3);
 
     // Segment 0 should be loaded at index 0
-    ASSERT_NE(segments[0], nullptr);
+    ASSERT_NE(segments[0].segment, nullptr);
     // Segment 1 should be skipped (nullptr) at index 1
-    ASSERT_EQ(segments[1], nullptr);
+    ASSERT_EQ(segments[1].segment, nullptr);
     // Segment 2 should be loaded at index 2
-    ASSERT_NE(segments[2], nullptr);
+    ASSERT_NE(segments[2].segment, nullptr);
+    EXPECT_EQ(segments[0].metadata_position, 0);
+    EXPECT_EQ(segments[2].metadata_position, 2);
 }
 
 TEST_F(LakeRowsetSegmentMetadataFilterTest, test_cold_metadata_cache_load_segments_uses_adaptive_parallel) {
@@ -1179,7 +1184,7 @@ TEST_F(LakeRowsetSegmentMetadataFilterTest, test_cold_metadata_cache_load_segmen
     auto rowset =
             std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 0 /* compaction_segment_limit */);
 
-    std::vector<SegmentPtr> segments;
+    std::vector<lake::Rowset::LoadedSegment> segments;
     SegmentReadOptions seg_options;
     seg_options.lake_io_opts.fill_data_cache = true;
     seg_options.lake_io_opts.fill_metadata_cache = true;
@@ -1213,7 +1218,7 @@ TEST_F(LakeRowsetSegmentMetadataFilterTest, test_adaptive_parallel_load_can_be_d
     auto rowset =
             std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 0 /* compaction_segment_limit */);
 
-    std::vector<SegmentPtr> segments;
+    std::vector<lake::Rowset::LoadedSegment> segments;
     SegmentReadOptions seg_options;
     seg_options.lake_io_opts.fill_data_cache = true;
     seg_options.lake_io_opts.fill_metadata_cache = true;
@@ -1252,7 +1257,7 @@ TEST_F(LakeRowsetSegmentMetadataFilterTest, test_unopened_cached_segment_uses_ad
     auto rowset =
             std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 0 /* compaction_segment_limit */);
 
-    std::vector<SegmentPtr> segments;
+    std::vector<lake::Rowset::LoadedSegment> segments;
     SegmentReadOptions seg_options;
     seg_options.lake_io_opts.fill_data_cache = true;
     seg_options.lake_io_opts.fill_metadata_cache = true;
@@ -1336,7 +1341,7 @@ TEST_F(LakeRowsetTest, test_segment_range_mode_does_not_use_adaptive_parallel_lo
     auto rowset = std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 0 /* segment_start */,
                                                  2 /* segment_end */);
 
-    std::vector<SegmentPtr> segments;
+    std::vector<lake::Rowset::LoadedSegment> segments;
     SegmentReadOptions seg_options;
     seg_options.lake_io_opts.fill_data_cache = true;
     seg_options.lake_io_opts.fill_metadata_cache = true;
@@ -1382,6 +1387,28 @@ TEST_F(LakeRowsetTest, test_segment_range_mode_segment_ids) {
     // The segment ID is stored in the segment's metadata
     EXPECT_EQ(1, segments[0]->id());
     EXPECT_EQ(2, segments[1]->id());
+}
+
+TEST_F(LakeRowsetTest, test_segment_range_uses_original_shared_segment_position) {
+    create_rowsets_for_testing();
+
+    auto* rowset_metadata = _tablet_metadata->mutable_rowsets(0);
+    rowset_metadata->clear_shared_segments();
+    rowset_metadata->add_shared_segments(false);
+    rowset_metadata->add_shared_segments(true);
+    rowset_metadata->add_shared_segments(false);
+    set_tablet_range_int(_tablet_metadata.get(), 10, true, 12, false);
+
+    auto rowset = std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 1 /* segment_start */,
+                                                 2 /* segment_end */);
+    RowsetReadOptions options;
+    OlapReaderStatistics stats;
+    options.stats = &stats;
+    options.tablet_schema = std::make_shared<const TabletSchema>(_tablet_metadata->schema());
+    auto schema = ChunkHelper::convert_schema(_tablet_schema, std::vector<ColumnId>{0});
+    ASSIGN_OR_ABORT(auto iterators, rowset->read(schema, options));
+
+    EXPECT_EQ(2, count_rows_from_iters(iterators));
 }
 
 // Verify that DeferOp in load_segments waits for all parallel tasks
