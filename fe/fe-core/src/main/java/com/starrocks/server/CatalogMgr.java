@@ -20,11 +20,16 @@ import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.starrocks.authorization.AccessControllerLoader;
+import com.starrocks.authorization.NativeAccessController;
+import com.starrocks.authorization.ranger.hive.RangerHiveAccessController;
+import com.starrocks.authorization.ranger.starrocks.RangerStarRocksAccessController;
 import com.starrocks.catalog.Catalog;
 import com.starrocks.catalog.ExternalCatalog;
 import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.catalog.Resource;
 import com.starrocks.common.AnalysisException;
+import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.proc.BaseProcResult;
@@ -109,6 +114,7 @@ public class CatalogMgr {
             Preconditions.checkState(!catalogs.containsKey(catalogName), "Catalog '%s' already exists", catalogName);
 
             try {
+                bindAccessController(catalogName, properties);
                 CatalogConnector connector = connectorMgr.createHiddenConnector(
                         new ConnectorContext(catalogName, type, properties), false);
                 if (null == connector) {
@@ -216,6 +222,13 @@ public class CatalogMgr {
         // replace old connector with new connector
         connectorMgr.addConnector(catalogName, newConnector);
         catalog.getConfig().putAll(properties);
+        if (shouldRebindAccessController(properties)) {
+            try {
+                bindAccessController(catalogName, catalog.getConfig());
+            } catch (DdlException e) {
+                throw new StarRocksConnectorException(e.getMessage(), e);
+            }
+        }
     }
 
     private CatalogConnector createNewConnector(Catalog catalog, Map<String, String> properties, boolean isReplay)
@@ -306,6 +319,8 @@ public class CatalogMgr {
             } finally {
                 readUnlock();
             }
+
+            bindAccessController(catalogName, config);
 
             try {
                 catalogConnector = connectorMgr.createConnector(
@@ -532,5 +547,32 @@ public class CatalogMgr {
         });
 
         loadResourceMappingCatalog();
+    }
+
+    private boolean shouldRebindAccessController(Map<String, String> alterProperties) {
+        if (alterProperties.containsKey("ranger.plugin.hive.service.name")
+                || alterProperties.containsKey(AccessControllerLoader.ACCESS_CONTROLLER_CLASS_KEY)) {
+            return true;
+        }
+        return alterProperties.keySet().stream().anyMatch(key -> key.startsWith("shield."));
+    }
+
+    private void bindAccessController(String catalogName, Map<String, String> properties) throws DdlException {
+        String customClass = properties.get(AccessControllerLoader.ACCESS_CONTROLLER_CLASS_KEY);
+        if (!Strings.isNullOrEmpty(customClass)) {
+            Authorizer.getInstance().setAccessControl(catalogName, AccessControllerLoader.load(customClass, properties));
+            return;
+        }
+
+        String serviceName = properties.get("ranger.plugin.hive.service.name");
+        if (serviceName == null || serviceName.isEmpty()) {
+            if (Config.access_control.equals("ranger")) {
+                Authorizer.getInstance().setAccessControl(catalogName, new RangerStarRocksAccessController());
+            } else {
+                Authorizer.getInstance().setAccessControl(catalogName, new NativeAccessController());
+            }
+        } else {
+            Authorizer.getInstance().setAccessControl(catalogName, new RangerHiveAccessController(serviceName));
+        }
     }
 }

@@ -17,11 +17,17 @@ package com.starrocks.authorization;
 import com.starrocks.authorization.ranger.RangerAccessController;
 import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.sql.analyzer.AuthorizerStmtVisitor;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class AccessControlProvider {
+    private static final Logger LOG = LogManager.getLogger(AccessControlProvider.class);
+
     protected final AuthorizerStmtVisitor privilegeCheckerVisitor;
     public final Map<String, AccessController> catalogToAccessControl;
 
@@ -51,10 +57,7 @@ public class AccessControlProvider {
 
     public void setAccessControl(String catalog, AccessController accessControl) {
         AccessController obsoleteAccessController = catalogToAccessControl.put(catalog, accessControl);
-        if (obsoleteAccessController instanceof RangerAccessController) {
-            // Clean up Ranger related threads and context
-            ((RangerAccessController) obsoleteAccessController).getRangerPlugin().cleanup();
-        }
+        cleanupAccessController(obsoleteAccessController);
     }
 
     public void removeAccessControl(String catalog) {
@@ -64,10 +67,22 @@ public class AccessControlProvider {
         }
 
         catalogToAccessControl.remove(catalog);
+        cleanupAccessController(accessController);
+    }
 
+    private void cleanupAccessController(AccessController accessController) {
+        if (accessController == null) {
+            return;
+        }
         if (accessController instanceof RangerAccessController) {
-            // Clean up Ranger related threads and context
             ((RangerAccessController) accessController).getRangerPlugin().cleanup();
+        }
+        if (accessController instanceof Closeable) {
+            try {
+                ((Closeable) accessController).close();
+            } catch (IOException e) {
+                LOG.warn("Failed to close access controller {}", accessController.getClass().getName(), e);
+            }
         }
     }
 }
