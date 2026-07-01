@@ -1143,8 +1143,8 @@ void LakeServiceImpl::get_tablet_stats(::google::protobuf::RpcController* contro
 
                     auto task_start_us = butil::gettimeofday_us();
 
-                    // Don't fill meta cache to avoid polluting the cache
-                    lake::CacheOptions cache_opts{.fill_meta_cache = false, .fill_data_cache = true};
+                    // Don't fill caches to avoid polluting hot query caches from background stat collection.
+                    lake::CacheOptions cache_opts{.fill_meta_cache = false, .fill_data_cache = false};
                     auto tablet_metadata = _tablet_mgr->get_tablet_metadata(tablet_id, version, cache_opts);
                     if (!tablet_metadata.ok()) {
                         LOG(WARNING) << "Fail to get tablet metadata. tablet_id: " << tablet_id
@@ -1807,8 +1807,8 @@ void LakeServiceImpl::get_tablet_metadatas(::google::protobuf::RpcController* co
 
                     // get tablet metadatas within the specified version range
                     for (int64_t version = max_version; version >= min_version; --version) {
-                        // don't fill meta cache to avoid polluting the cache
-                        lake::CacheOptions cache_opts{.fill_meta_cache = false, .fill_data_cache = true};
+                        // Don't fill caches for metadata inspection RPCs.
+                        lake::CacheOptions cache_opts{.fill_meta_cache = false, .fill_data_cache = false};
                         auto tablet_metadata_or = _tablet_mgr->get_tablet_metadata(tablet_id, version, cache_opts);
                         const auto& st = tablet_metadata_or.status();
                         if (st.ok()) {
