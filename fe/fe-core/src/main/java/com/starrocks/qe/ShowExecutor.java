@@ -2396,7 +2396,7 @@ public class ShowExecutor {
             List<List<String>> infos = new ArrayList<>();
             SecurityIntegration securityIntegration = authenticationManager.getSecurityIntegration(name);
             if (securityIntegration != null) {
-                Map<String, String> propertyMap = securityIntegration.getPropertyMap();
+                Map<String, String> propertyMap = securityIntegration.getPropertyMapWithMasking();
                 PrintableMap<String, String> printableMap = new PrintableMap<>(propertyMap, "=", true, false, true);
                 infos.add(Lists.newArrayList(name,
                         "CREATE SECURITY INTEGRATION `" + name +

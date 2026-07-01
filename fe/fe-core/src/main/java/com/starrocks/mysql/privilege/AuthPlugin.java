@@ -34,7 +34,8 @@ public class AuthPlugin {
         MYSQL_NATIVE_PASSWORD,
         AUTHENTICATION_LDAP_SIMPLE,
         AUTHENTICATION_JWT,
-        AUTHENTICATION_OAUTH2;
+        AUTHENTICATION_OAUTH2,
+        AUTHENTICATION_SHIELD_SHARED;
 
         public AuthenticationProvider getProvider(String authString) {
             AuthPlugin.Server authPlugin = this;
@@ -140,6 +141,8 @@ public class AuthPlugin {
             return Client.AUTHENTICATION_OPENID_CONNECT_CLIENT.toString();
         } else if (serverPluginName.equalsIgnoreCase(Server.AUTHENTICATION_OAUTH2.toString())) {
             return Client.AUTHENTICATION_OAUTH2_CLIENT.toString();
+        } else if (serverPluginName.equalsIgnoreCase(Server.AUTHENTICATION_SHIELD_SHARED.toString())) {
+            return Client.MYSQL_NATIVE_PASSWORD.toString();
         }
         return null;
     }

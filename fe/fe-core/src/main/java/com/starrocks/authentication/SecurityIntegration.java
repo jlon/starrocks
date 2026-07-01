@@ -38,7 +38,7 @@ public abstract class SecurityIntegration {
     @SerializedName(value = "m")
     protected Map<String, String> propertyMap;
 
-    SecurityIntegration(String name, Map<String, String> propertyMap) {
+    protected SecurityIntegration(String name, Map<String, String> propertyMap) {
         this.name = name;
         this.propertyMap = propertyMap;
     }

@@ -529,9 +529,12 @@ public class AuthenticationMgr {
         if (nameToSecurityIntegrationMap.containsKey(name)) {
             throw new DdlException("security integration '" + name + "' already exists");
         }
-        SecurityIntegration securityIntegration = SecurityIntegrationFactory.createSecurityIntegration(name, propertyMap);
+        Map<String, String> persistedProps = Maps.newHashMap(propertyMap);
+        PluginSecurityIntegrationSupport.preparePropertiesForPersist(persistedProps);
+        SecurityIntegration securityIntegration =
+                SecurityIntegrationFactory.createSecurityIntegration(name, persistedProps);
         EditLog editLog = GlobalStateMgr.getCurrentState().getEditLog();
-        editLog.logCreateSecurityIntegration(new SecurityIntegrationPersistInfo(name, propertyMap), wal -> {
+        editLog.logCreateSecurityIntegration(new SecurityIntegrationPersistInfo(name, persistedProps), wal -> {
             nameToSecurityIntegrationMap.put(name, securityIntegration);
         });
         LOG.info("finished to create security integration '{}'", securityIntegration.toString());
@@ -548,16 +551,18 @@ public class AuthenticationMgr {
             throw new DdlException("security integration '" + name + "' not found");
         } else {
             // COW
+            Map<String, String> persistedAlterProps = Maps.newHashMap(alterProps);
+            PluginSecurityIntegrationSupport.preparePropertiesForPersist(persistedAlterProps);
             Map<String, String> newProps = Maps.newHashMap(securityIntegration.getPropertyMap());
-            // update props
-            newProps.putAll(alterProps);
-            SecurityIntegration newSecurityIntegration = SecurityIntegrationFactory.createSecurityIntegration(name, newProps);
+            newProps.putAll(persistedAlterProps);
+            SecurityIntegration newSecurityIntegration =
+                    SecurityIntegrationFactory.createSecurityIntegration(name, newProps);
             EditLog editLog = GlobalStateMgr.getCurrentState().getEditLog();
-            editLog.logAlterSecurityIntegration(new SecurityIntegrationPersistInfo(name, alterProps), wal -> {
-                // update map
+            editLog.logAlterSecurityIntegration(new SecurityIntegrationPersistInfo(name, persistedAlterProps), wal -> {
                 nameToSecurityIntegrationMap.put(name, newSecurityIntegration);
             });
-            LOG.info("finished to alter security integration '{}' with updated properties {}", name, alterProps);
+            LOG.info("finished to alter security integration '{}' with updated properties {}",
+                    name, persistedAlterProps);
         }
     }
 

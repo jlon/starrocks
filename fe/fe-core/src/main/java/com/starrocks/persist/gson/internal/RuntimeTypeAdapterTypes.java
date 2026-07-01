@@ -40,6 +40,7 @@ import com.starrocks.authentication.GroupProvider;
 import com.starrocks.authentication.JWTSecurityIntegration;
 import com.starrocks.authentication.LDAPGroupProvider;
 import com.starrocks.authentication.OAuth2SecurityIntegration;
+import com.starrocks.authentication.PluginSecurityIntegrationSupport;
 import com.starrocks.authentication.SecurityIntegration;
 import com.starrocks.authentication.SimpleLDAPSecurityIntegration;
 import com.starrocks.authentication.UnixGroupProvider;
@@ -338,6 +339,7 @@ public class RuntimeTypeAdapterTypes {
                         .registerSubtype(JWTSecurityIntegration.class, "JWTSecurityIntegration")
                         .registerSubtype(SimpleLDAPSecurityIntegration.class, "SimpleLDAPSecurityIntegration")
                         .registerSubtype(OAuth2SecurityIntegration.class, "OAuth2SecurityIntegration");
+        PluginSecurityIntegrationSupport.registerShieldSharedSubtype(sec_integration_runtime_type_adapter_factory);
         CLAZZ_TO_RUNTIME_TYPE_ADAPTOR_FACTORIES.put(SecurityIntegration.class,
                 sec_integration_runtime_type_adapter_factory);
 
