@@ -15,7 +15,9 @@
 package com.starrocks.sql.analyzer;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Maps;
 import com.starrocks.authentication.AuthenticationMgr;
+import com.starrocks.authentication.PluginSecurityIntegrationSupport;
 import com.starrocks.authentication.SecurityIntegration;
 import com.starrocks.authentication.SecurityIntegrationFactory;
 import com.starrocks.qe.ConnectContext;
@@ -44,16 +46,18 @@ public class SecurityIntegrationStatementAnalyzer {
         @Override
         public Void visitCreateSecurityIntegrationStatement(CreateSecurityIntegrationStatement statement,
                                                             ConnectContext context) {
-            Map<String, String> properties = statement.getPropertyMap();
+            Map<String, String> properties = Maps.newHashMap(statement.getPropertyMap());
             String securityIntegrationType = properties.get("type");
             if (securityIntegrationType == null) {
                 throw new SemanticException("missing required property: type");
             }
 
             SecurityIntegrationFactory.checkSecurityIntegrationIsSupported(securityIntegrationType);
+            // Same as AuthenticationMgr.createSecurityIntegration(): convert write-only password before validation.
+            PluginSecurityIntegrationSupport.preparePropertiesForPersist(properties);
 
             SecurityIntegration securityIntegration =
-                    SecurityIntegrationFactory.createSecurityIntegration(statement.getName(), statement.getPropertyMap());
+                    SecurityIntegrationFactory.createSecurityIntegration(statement.getName(), properties);
             Preconditions.checkNotNull(securityIntegration);
             securityIntegration.checkProperty();
 
