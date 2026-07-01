@@ -382,6 +382,16 @@ StarRocksクラスターの監視サービスを構築する方法の詳細に�
 - 単位: バイト
 - 説明: レプリカクローンに使用されるメモリ。
 
+## `cluster_snapshot_consecutive_failures`
+
+- 単位: カウント
+- 説明: 最後に成功してから連続して失敗した自動クラスター スナップショットジョブの数。
+
+## `cluster_snapshot_last_finished_time`
+
+- 単位: ミリ秒
+- 説明: 最後に完了した自動クラスター スナップショットの時刻。完了したものがない場合は 0。
+
 ## `column_metadata_mem_bytes`
 
 - 単位: バイト

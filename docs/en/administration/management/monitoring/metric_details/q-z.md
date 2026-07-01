@@ -68,6 +68,21 @@ For more information on how to build a monitoring service for your StarRocks clu
 
 ## `readable_blocks_total (Deprecated)`
 
+## `recycle_bin_database_num`
+
+- Unit: Count
+- Description: Number of databases in the catalog recycle bin.
+
+## `recycle_bin_partition_num`
+
+- Unit: Count
+- Description: Number of partitions in the catalog recycle bin.
+
+## `recycle_bin_table_num`
+
+- Unit: Count
+- Description: Number of tables in the catalog recycle bin.
+
 ## `resource_group_bigquery_count`
 
 - Unit: Count
@@ -827,4 +842,3 @@ All transaction metrics share the following labels:
 - Description: Number of cumulative compaction tasks waiting for execution.
 
 ## `writable_blocks_total (Deprecated)`
-

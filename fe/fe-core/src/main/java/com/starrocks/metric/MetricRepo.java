@@ -593,6 +593,56 @@ public final class MetricRepo {
         };
         STARROCKS_METRIC_REGISTER.addMetric(GAUGE_MAX_TABLET_COMPACTION_SCORE);
 
+        GaugeMetric<Long> clusterSnapshotLastFinishedTime = new GaugeMetric<Long>(
+                "cluster_snapshot_last_finished_time", MetricUnit.NOUNIT,
+                "epoch millis of the last finished automated cluster snapshot, 0 if none") {
+            @Override
+            public Long getValue() {
+                return GlobalStateMgr.getCurrentState().getClusterSnapshotMgr().getLastSuccessTimeMs();
+            }
+        };
+        STARROCKS_METRIC_REGISTER.addMetric(clusterSnapshotLastFinishedTime);
+
+        GaugeMetric<Long> clusterSnapshotConsecutiveFailures = new GaugeMetric<Long>(
+                "cluster_snapshot_consecutive_failures", MetricUnit.NOUNIT,
+                "consecutive failed automated cluster snapshot jobs since the last success") {
+            @Override
+            public Long getValue() {
+                return (long) GlobalStateMgr.getCurrentState().getClusterSnapshotMgr().getConsecutiveFailureCount();
+            }
+        };
+        STARROCKS_METRIC_REGISTER.addMetric(clusterSnapshotConsecutiveFailures);
+
+        GaugeMetric<Long> recycleBinPartitionNum = new GaugeMetric<Long>(
+                "recycle_bin_partition_num", MetricUnit.NOUNIT,
+                "number of partitions in the catalog recycle bin") {
+            @Override
+            public Long getValue() {
+                return (long) GlobalStateMgr.getCurrentState().getRecycleBin().getRecyclePartitionNum();
+            }
+        };
+        STARROCKS_METRIC_REGISTER.addMetric(recycleBinPartitionNum);
+
+        GaugeMetric<Long> recycleBinTableNum = new GaugeMetric<Long>(
+                "recycle_bin_table_num", MetricUnit.NOUNIT,
+                "number of tables in the catalog recycle bin") {
+            @Override
+            public Long getValue() {
+                return (long) GlobalStateMgr.getCurrentState().getRecycleBin().getRecycleTableNum();
+            }
+        };
+        STARROCKS_METRIC_REGISTER.addMetric(recycleBinTableNum);
+
+        GaugeMetric<Long> recycleBinDatabaseNum = new GaugeMetric<Long>(
+                "recycle_bin_database_num", MetricUnit.NOUNIT,
+                "number of databases in the catalog recycle bin") {
+            @Override
+            public Long getValue() {
+                return (long) GlobalStateMgr.getCurrentState().getRecycleBin().getRecycleDatabaseNum();
+            }
+        };
+        STARROCKS_METRIC_REGISTER.addMetric(recycleBinDatabaseNum);
+
         GAUGE_STACKED_JOURNAL_NUM = new GaugeMetricImpl<>(
                 "editlog_stacked_num", MetricUnit.OPERATIONS, "counter of edit log that are stacked");
         GAUGE_STACKED_JOURNAL_NUM.setValue(0L);

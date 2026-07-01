@@ -1425,6 +1425,22 @@ public class Config extends ConfigBase {
     public static int catalog_recycle_bin_erase_max_operations_per_cycle = 500;
 
     /**
+     * Maximum number of pending async partition delete tasks in catalog recycle bin.
+     * 0 or negative means unlimited.
+     */
+    @ConfField(mutable = true, comment = "Maximum number of pending async partition delete tasks in catalog recycle" +
+            " bin. 0 or negative means unlimited.")
+    public static int catalog_recycle_bin_erase_max_pending_partition_delete_tasks = 0;
+
+    /**
+     * Maximum number of new async partition delete tasks submitted in one catalog recycle bin erase cycle.
+     * 0 or negative means unlimited.
+     */
+    @ConfField(mutable = true, comment = "Maximum number of new async partition delete tasks submitted in one catalog" +
+            " recycle bin erase cycle. 0 or negative means unlimited.")
+    public static int catalog_recycle_bin_erase_max_new_partition_delete_tasks_per_cycle = 0;
+
+    /**
      * Retry interval in milliseconds when an erase operation fails.
      */
     @ConfField(mutable = true)
@@ -3083,6 +3099,36 @@ public class Config extends ConfigBase {
     @ConfField(mutable = true, comment = "The interval in seconds at which StarMgrMetaSyncer runs periodical" +
             " metadata synchronization between FE and StarMgr in a shared-data cluster.")
     public static long star_mgr_meta_sync_interval_sec = 600L;
+
+    /**
+     * Maximum number of shards that StarMgrMetaSyncer can delete in one cleanup round.
+     * 0 or negative means unlimited.
+     */
+    @ConfField(mutable = true, comment = "Maximum number of shards that StarMgrMetaSyncer can delete in one cleanup" +
+            " round. 0 or negative means unlimited.")
+    public static long star_mgr_meta_sync_max_delete_shards_per_round = 0L;
+
+    /**
+     * Maximum number of shard groups that StarMgrMetaSyncer can process in one cleanup round.
+     * 0 or negative means unlimited.
+     */
+    @ConfField(mutable = true, comment = "Maximum number of shard groups that StarMgrMetaSyncer can process in one" +
+            " cleanup round. 0 or negative means unlimited.")
+    public static long star_mgr_meta_sync_max_clean_groups_per_round = 0L;
+
+    /**
+     * Maximum runtime in milliseconds for StarMgrMetaSyncer shard cleanup in one round.
+     * 0 or negative means unlimited.
+     */
+    @ConfField(mutable = true, comment = "Maximum runtime in milliseconds for StarMgrMetaSyncer shard cleanup in one" +
+            " round. 0 or negative means unlimited.")
+    public static long star_mgr_meta_sync_max_runtime_ms_per_round = 0L;
+
+    /**
+     * If true, StarMgrMetaSyncer skips or stops the current shard cleanup round as soon as it observes this flag.
+     */
+    @ConfField(mutable = true, comment = "If true, StarMgrMetaSyncer skips or stops the current shard cleanup round.")
+    public static boolean star_mgr_meta_sync_abort_current_round = false;
 
     /**
      * Whether allows delete shard meta if failes to delete actual data.

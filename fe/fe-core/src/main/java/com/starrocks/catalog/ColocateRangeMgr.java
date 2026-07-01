@@ -20,8 +20,10 @@ import com.starrocks.common.Range;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Manages colocate ranges for range distribution colocate groups.
@@ -131,6 +133,19 @@ public class ColocateRangeMgr {
      */
     public boolean containsColocateGroup(long colocateGroupId) {
         return colocateGroupToRanges.containsKey(colocateGroupId);
+    }
+
+    /**
+     * Returns all PACK shard group ids tracked by range-colocate metadata.
+     */
+    public Set<Long> getAllPackShardGroupIds() {
+        Set<Long> shardGroupIds = new HashSet<>();
+        for (List<ColocateRange> ranges : colocateGroupToRanges.values()) {
+            for (ColocateRange range : ranges) {
+                shardGroupIds.add(range.getShardGroupId());
+            }
+        }
+        return shardGroupIds;
     }
 
     // ---- Initialize ----

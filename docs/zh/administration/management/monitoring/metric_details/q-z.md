@@ -68,6 +68,21 @@ description: "Alphabetical q - z"
 
 ## `readable_blocks_total (Deprecated)`
 
+## `recycle_bin_database_num`
+
+- 单位：计数
+- 描述：Catalog 回收站中的数据库数量。
+
+## `recycle_bin_partition_num`
+
+- 单位：计数
+- 描述：Catalog 回收站中的分区数量。
+
+## `recycle_bin_table_num`
+
+- 单位：计数
+- 描述：Catalog 回收站中的表数量。
+
 ## `resource_group_bigquery_count`
 
 - 单位：计数

@@ -382,6 +382,16 @@ For more information on how to build a monitoring service for your StarRocks clu
 - Unit: Bytes
 - Description: Memory used for replica clone.
 
+## `cluster_snapshot_consecutive_failures`
+
+- Unit: Count
+- Description: Number of consecutive failed automated cluster snapshot jobs since the last successful one.
+
+## `cluster_snapshot_last_finished_time`
+
+- Unit: Milliseconds
+- Description: Epoch time in milliseconds of the last finished automated cluster snapshot, or 0 if none has finished.
+
 ## `column_metadata_mem_bytes`
 
 - Unit: Bytes
@@ -501,4 +511,3 @@ For more information on how to build a monitoring service for your StarRocks clu
 
 - Unit: ms
 - Description: Total time spent on cumulative compactions.
-

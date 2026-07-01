@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 public class ColocateRangeMgrTest {
 
@@ -65,6 +66,19 @@ public class ColocateRangeMgrTest {
         Assertions.assertFalse(colocateRangeMgr.containsColocateGroup(COLOCATE_GROUP_ID));
         colocateRangeMgr.initColocateGroup(COLOCATE_GROUP_ID, 1001L);
         Assertions.assertTrue(colocateRangeMgr.containsColocateGroup(COLOCATE_GROUP_ID));
+    }
+
+    @Test
+    public void testGetAllPackShardGroupIds() {
+        Assertions.assertTrue(colocateRangeMgr.getAllPackShardGroupIds().isEmpty());
+        colocateRangeMgr.initColocateGroup(100L, 1001L);
+        colocateRangeMgr.setColocateRanges(200L, Arrays.asList(
+                new ColocateRange(Range.lt(makeTuple(50)), 2001L),
+                new ColocateRange(Range.ge(makeTuple(50)), 2002L)));
+
+        Assertions.assertEquals(Set.of(1001L, 2001L, 2002L), colocateRangeMgr.getAllPackShardGroupIds());
+        colocateRangeMgr.removeColocateGroup(100L);
+        Assertions.assertEquals(Set.of(2001L, 2002L), colocateRangeMgr.getAllPackShardGroupIds());
     }
 
     // ---- getColocateRanges ----

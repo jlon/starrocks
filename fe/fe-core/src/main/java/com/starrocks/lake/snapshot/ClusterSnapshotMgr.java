@@ -292,22 +292,58 @@ public class ClusterSnapshotMgr implements GsonPostProcessable {
         if (!isAutomatedSnapshotOn()) {
             return Long.MAX_VALUE;
         }
+        long boundaryMs = computeProtectionBoundaryMs();
+        // Nothing needs protection when all historical jobs ended in ERROR. In that case
+        // recycle-bin erasing must not be frozen forever.
+        return boundaryMs == Long.MAX_VALUE ? System.currentTimeMillis() : boundaryMs;
+    }
 
-        boolean meetFirstFinished = false;
-        long previousAutomatedSnapshotCreatedTimsMs = 0;
-        for (Map.Entry<Long, ClusterSnapshotJob> entry : automatedSnapshotJobs.descendingMap().entrySet()) {
-            ClusterSnapshotJob job = entry.getValue();
-            if (meetFirstFinished && (job.isFinished() || job.isExpired() || job.isDeleted())) {
-                previousAutomatedSnapshotCreatedTimsMs = job.getCreatedTimeMs();
-                break;
+    private long computeProtectionBoundaryMs() {
+        long boundaryMs = Long.MAX_VALUE;
+        long newestFinishedCreatedTimeMs = Long.MAX_VALUE;
+        for (ClusterSnapshotJob job : automatedSnapshotJobs.descendingMap().values()) {
+            if (job.isUnFinishedState()) {
+                boundaryMs = Math.min(boundaryMs, job.getCreatedTimeMs());
+                continue;
             }
-
+            if (!isCompletedSnapshot(job)) {
+                continue;
+            }
+            // Keep the historical retention boundary: protect the single newest FINISHED
+            // snapshot, or the second terminal non-ERROR snapshot after a newer FINISHED.
             if (job.isFinished()) {
-                meetFirstFinished = true;
+                if (newestFinishedCreatedTimeMs != Long.MAX_VALUE) {
+                    return Math.min(boundaryMs, job.getCreatedTimeMs());
+                }
+                newestFinishedCreatedTimeMs = job.getCreatedTimeMs();
+                continue;
+            }
+            if (newestFinishedCreatedTimeMs != Long.MAX_VALUE) {
+                return Math.min(boundaryMs, job.getCreatedTimeMs());
             }
         }
+        return Math.min(boundaryMs, newestFinishedCreatedTimeMs);
+    }
 
-        return previousAutomatedSnapshotCreatedTimsMs;
+    private static boolean isCompletedSnapshot(ClusterSnapshotJob job) {
+        return job.isFinished() || job.isExpired() || job.isDeleted();
+    }
+
+    public int getConsecutiveFailureCount() {
+        int count = 0;
+        for (ClusterSnapshotJob job : automatedSnapshotJobs.descendingMap().values()) {
+            if (job.isError()) {
+                count++;
+            } else if (isCompletedSnapshot(job)) {
+                break;
+            }
+        }
+        return count;
+    }
+
+    public long getLastSuccessTimeMs() {
+        ClusterSnapshotJob job = getLastFinishedAutomatedClusterSnapshotJob();
+        return job == null ? 0L : job.getSnapshot().getFinishedTimeMs();
     }
 
     public boolean isTableSafeToDeleteTablet(long tableId) {

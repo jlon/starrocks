@@ -68,6 +68,21 @@ StarRocksクラスターの監視サービスを構築する方法の詳細に�
 
 ## `readable_blocks_total (Deprecated)`
 
+## `recycle_bin_database_num`
+
+- 単位: カウント
+- 説明: カタログリサイクルビン内のデータベース数。
+
+## `recycle_bin_partition_num`
+
+- 単位: カウント
+- 説明: カタログリサイクルビン内のパーティション数。
+
+## `recycle_bin_table_num`
+
+- 単位: カウント
+- 説明: カタログリサイクルビン内のテーブル数。
+
 ## `resource_group_bigquery_count`
 
 - 単位: カウント

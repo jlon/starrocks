@@ -111,6 +111,13 @@ public class ClusterSnapshotJobScheduler extends FrontendDaemon implements Snaps
             lastAutomatedJobStartTimeMs = runningJob.getCreatedTimeMs();
             runningJob.run(this);
         } finally {
+            if (runningJob != null && runningJob.isError()) {
+                int failures = GlobalStateMgr.getCurrentState().getClusterSnapshotMgr().getConsecutiveFailureCount();
+                LOG.warn("Automated cluster snapshot has failed {} times in a row (last error: {}). " +
+                                "The recycle bin is not blocked, but no new restore point is being produced. " +
+                                "Check snapshot storage volume permissions and connectivity.",
+                        failures, runningJob.getErrMsg());
+            }
             runningJob = null;
             CheckpointController.exclusiveUnlock();
         }
