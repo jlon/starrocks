@@ -24,3 +24,8 @@ GRANT USAGE ON CATALOG hive TO ROLE public;
 
 -- Login example:
 -- mysql -h<fe> -P9030 -u80372263_37422 -pYourSharedPassword
+
+-- 重启后校验（password_hash 应存在且 SHOW CREATE 显示为 ******）：
+-- SHOW CREATE SECURITY INTEGRATION shield_shared;
+-- 若共享认证报 "Lost connection ... authorization packet"，DROP + CREATE 可临时恢复；
+-- 需使用含 Gson 反序列化修复的 fe-plugin-shield 镜像后重启才彻底修复。

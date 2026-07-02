@@ -14,16 +14,16 @@ import com.starrocks.sql.analyzer.SemanticException;
  * <p>Loaded from fe-plugin-shield.jar via {@code PluginSecurityIntegrationSupport} in fe-core.
  */
 public final class ShieldSharedSecurityIntegration extends SecurityIntegration {
-    private final ShieldSharedAuthConfig config;
 
     public ShieldSharedSecurityIntegration(String name, Map<String, String> propertyMap) {
         super(name, propertyMap);
-        this.config = new ShieldSharedAuthConfig(propertyMap);
     }
 
     @Override
     public AuthenticationProvider getAuthenticationProvider() throws AuthenticationException {
-        return new ShieldSharedAuthenticationProvider(config);
+        // Build from propertyMap on each call: Gson image/load does not run constructors,
+        // so do not cache ShieldSharedAuthConfig in a final field.
+        return new ShieldSharedAuthenticationProvider(new ShieldSharedAuthConfig(propertyMap));
     }
 
     @Override
@@ -42,7 +42,6 @@ public final class ShieldSharedSecurityIntegration extends SecurityIntegration {
         if (!ShieldSharedAuthConfig.TYPE.equalsIgnoreCase(getType())) {
             throw new SemanticException("invalid security integration type: " + getType());
         }
-        // validate required properties early
         new ShieldSharedAuthConfig(propertyMap);
     }
 }
