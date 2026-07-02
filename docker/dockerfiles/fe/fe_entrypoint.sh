@@ -22,7 +22,6 @@ MYSELF=
 STARROCKS_ROOT=${STARROCKS_ROOT:-"/opt/starrocks"}
 STARROCKS_HOME=${STARROCKS_ROOT}/fe
 FE_CONFFILE=$STARROCKS_HOME/conf/fe.conf
-META_DIR=$STARROCKS_HOME/meta
 EXIT_IN_PROGRESS=false
 IS_FE_OBSERVER=${IS_FE_OBSERVER:-"false"}
 
@@ -43,6 +42,31 @@ parse_confval_from_fe_conf()
     local confkey=$1
     local confvalue=`grep "\<$confkey\>" $FE_CONFFILE | grep -v '^\s*#' | sed 's|^\s*'$confkey'\s*=\s*\(.*\)\s*$|\1|g'`
     echo "$confvalue"
+}
+
+resolve_meta_dir()
+{
+    # K8s platforms usually inject POD_NAME; hostname is a safe fallback inside the pod.
+    export POD_NAME=${POD_NAME:-`hostname`}
+    local configured_meta_dir=`parse_confval_from_fe_conf "meta_dir"`
+    if [[ "x$configured_meta_dir" == "x" ]] ; then
+        if [[ -d "/home/service/var/starrocks/starrocks" ]] ; then
+            configured_meta_dir="/home/service/var/starrocks/starrocks/${POD_NAME}/meta"
+        else
+            configured_meta_dir="$STARROCKS_HOME/meta"
+        fi
+    fi
+    # fe.conf may use env placeholders such as ${POD_NAME}; expand like start_fe.sh does.
+    local resolved_meta_dir="$configured_meta_dir"
+    eval "resolved_meta_dir=\"$configured_meta_dir\""
+    if [[ "$configured_meta_dir" == *'POD_NAME'* ]] \
+            && [[ "$resolved_meta_dir" == "/home/service/var/starrocks/starrocks/meta" ]] ; then
+        log_stderr "ERROR: meta_dir still points to shared path without POD_NAME."
+        log_stderr "       configured=$configured_meta_dir resolved=$resolved_meta_dir POD_NAME=$POD_NAME"
+        log_stderr "       ensure POD_NAME env is set by the platform before FE starts."
+        exit 1
+    fi
+    echo "$resolved_meta_dir"
 }
 
 collect_env_info()
@@ -100,7 +124,8 @@ probe_leader_for_pod0()
             log_stderr "FE service is alive, check if has leader ..."
 
             memlist=`show_frontends $svc`
-            local leader=`echo "$memlist" | grep '\<LEADER\>' | awk '{print $3}'`
+            # Column 3 (IP) is connectable host/FQDN; column 2 (Name) is internal id with suffix.
+            local leader=`echo "$memlist" | grep '\<LEADER\>' | awk -F'\t' '{print $3}'`
             if [[ "x$leader" != "x" ]] ; then
                 # has leader, done
                 log_stderr "Find leader: $leader!"
@@ -151,7 +176,8 @@ probe_leader_for_podX()
         NC="nc -z -w 2"
         if $NC $svc $QUERY_PORT ; then
             log_stderr "FE service is alive, check if has leader ..."
-            local leader=`show_frontends $svc | grep '\<LEADER\>' | awk '{print $3}'`
+            # Column 3 (IP) is connectable host/FQDN; column 2 (Name) is internal id with suffix.
+            local leader=`show_frontends $svc | grep '\<LEADER\>' | awk -F'\t' '{print $3}'`
             if [[ "x$leader" != "x" ]] ; then
                 # has leader, done
                 log_stderr "Find leader: $leader!"
@@ -277,12 +303,14 @@ if [[ "x$svc_name" == "x" ]] ; then
 fi
 
 update_conf_from_configmap
-# meta_dir from conf file
-meta_dir=`parse_confval_from_fe_conf "meta_dir"`
-if [[ "x$meta_dir" != "x" ]] ; then
-    META_DIR=$meta_dir
-fi
+META_DIR=`resolve_meta_dir`
+log_stderr "Using FE meta_dir: $META_DIR (POD_NAME=$POD_NAME)"
+mkdir -p "$META_DIR" || {
+    log_stderr "Failed to create meta_dir: $META_DIR"
+    exit 1
+}
 
+# NOTE: META_DIR is fe.conf meta_dir itself, not its parent. ROLE lives at $META_DIR/image/ROLE.
 if [[ -f "$META_DIR/image/ROLE" ]];then
     log_stderr "start fe with exist meta."
     start_fe_with_meta
