@@ -1809,6 +1809,12 @@ public class Config extends ConfigBase {
     @ConfField(mutable = true)
     public static long lake_tablet_stat_collect_slow_log_ms = 5000;
 
+    /**
+     * Max time to wait for canceled lake tablet statistic collection jobs before recreating the executor.
+     */
+    @ConfField(mutable = true)
+    public static long lake_tablet_stat_cancel_wait_ms = 5000;
+
     @ConfField(mutable = true, comment = "time interval to collect tablet info from backend")
     public static long tablet_collect_interval_seconds = 60;
 
