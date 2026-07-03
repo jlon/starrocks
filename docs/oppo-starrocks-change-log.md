@@ -10,16 +10,16 @@ Keep it updated when adding, backporting, or porting a fork-only change.
 - Audit date: 2026-07-03
 - Upstream comparison ref: `upstream/branch-4.1.1`
 - Upstream ref commit: `14b7e3fa6626a9959179d1b4442d021ce1dd895f`
-- Local range audited: `upstream/branch-4.1.1..6fcba194b3ef1ace8ed024dc6d94359decca4da3`
-- Local range size at audit time: 117 commits
+- Local range audited: `upstream/branch-4.1.1..b00d41c9e32dd4525d80bf45a543cf9e2822c1e9`
+- Local range size at audit time: 119 commits
 
 Evidence commands:
 
 ```bash
 git rev-parse --verify upstream/branch-4.1.1
-git rev-list --count upstream/branch-4.1.1..6fcba194b3ef1ace8ed024dc6d94359decca4da3
+git rev-list --count upstream/branch-4.1.1..b00d41c9e32dd4525d80bf45a543cf9e2822c1e9
 git log --format='%H%x09%h%x09%an <%ae>%x09%s' \
-  upstream/branch-4.1.1..6fcba194b3ef1ace8ed024dc6d94359decca4da3 \
+  upstream/branch-4.1.1..b00d41c9e32dd4525d80bf45a543cf9e2822c1e9 \
   --author='oppo.com\|adc.com'
 ```
 
@@ -40,6 +40,8 @@ Treat them as fork-owned changes when moving to another StarRocks branch.
 | `bf21f562e914918721285418bd4ccb526c5fda4f` | `jianglong@oppo.com` | FE lake tablet stats | Add parameter-gated parallel lake tablet stat collection. |
 | `ab4e78dbcbbefd9a99e5e2cb003fdf05e9ccbe59` | `jianglong@oppo.com` | Docs | Track OPPO fork changes. |
 | `6fcba194b3ef1ace8ed024dc6d94359decca4da3` | `jianglong@oppo.com` | FE lake tablet stats | Preserve parallel collector failure semantics and add serial/parallel correctness verification. |
+| `57ef05bf9e65092a9a7336fe1655d3c73f146182` | `jianglong@oppo.com` | Docs | Update OPPO change log for tablet stat fixes. |
+| `b00d41c9e32dd4525d80bf45a543cf9e2822c1e9` | `jianglong@oppo.com` | FE lake tablet stats | Reuse the lake tablet stat executor across rounds and harden stop/cancel lifecycle. |
 
 ## OPPO Ports On branch-4.1.2
 
@@ -59,7 +61,7 @@ The following commits were observed there on `branch-4.1.2`.
 
 ## Document Maintenance Note
 
-The audited range ends at `6fcba194b3ef1ace8ed024dc6d94359decca4da3`.
+The audited range ends at `b00d41c9e32dd4525d80bf45a543cf9e2822c1e9`.
 The commit that updates this document after that code commit is not self-listed,
 because a Git commit cannot contain its own final hash. Record that document
 maintenance commit in the next audit if it needs to be tracked explicitly.
