@@ -214,6 +214,232 @@ public class TabletStatMgrTest {
         return table;
     }
 
+    private Map<Long, Long> collectLakeTabletRowCounts(LakeTable table) {
+        Map<Long, Long> rowCounts = Maps.newHashMap();
+        for (Partition partition : table.getAllPartitions()) {
+            LakeTablet tablet = (LakeTablet) partition.getDefaultPhysicalPartition()
+                    .getLatestBaseIndex().getTablets().get(0);
+            rowCounts.put(tablet.getId(), tablet.getRowCount(-1));
+        }
+        return rowCounts;
+    }
+
+    private Map<Long, Long> collectLakeTabletDataSizes(LakeTable table) {
+        Map<Long, Long> dataSizes = Maps.newHashMap();
+        for (Partition partition : table.getAllPartitions()) {
+            LakeTablet tablet = (LakeTablet) partition.getDefaultPhysicalPartition()
+                    .getLatestBaseIndex().getTablets().get(0);
+            dataSizes.put(tablet.getId(), tablet.getDataSize(true));
+        }
+        return dataSizes;
+    }
+
+    private void assertLakeTabletDataSizeUpdateTimeSet(LakeTable table) {
+        for (Partition partition : table.getAllPartitions()) {
+            LakeTablet tablet = (LakeTablet) partition.getDefaultPhysicalPartition()
+                    .getLatestBaseIndex().getTablets().get(0);
+            Assertions.assertTrue(tablet.getDataSizeUpdateTime() > 0);
+        }
+    }
+
+    @Test
+    public void testParallelLakeTabletStatMatchesSerialResult(@Mocked LakeService lakeService) {
+        boolean oldEnabled = Config.enable_parallel_lake_tablet_stat_collection;
+        int oldParallelism = Config.lake_tablet_stat_collect_parallelism;
+        int oldMaxInflight = Config.lake_tablet_stat_max_inflight_tasks;
+        try {
+            LakeTable serialTable = createLakeTableWithPartitionsForTest(4);
+            LakeTable parallelTable = createLakeTableWithPartitionsForTest(4);
+            Database serialDb = new Database(DB_ID, "db");
+            serialDb.registerTableUnlocked(serialTable);
+            Database parallelDb = new Database(DB_ID, "db");
+            parallelDb.registerTableUnlocked(parallelTable);
+
+            new MockUp<BrpcProxy>() {
+                @Mock
+                public LakeService getLakeService(String host, int port) {
+                    return lakeService;
+                }
+            };
+
+            new Expectations() {
+                {
+                    lakeService.getTabletStats((TabletStatRequest) any);
+                    minTimes = 8;
+                    result = new Delegate() {
+                        Future<TabletStatResponse> getTabletStats(TabletStatRequest request) {
+                            TabletStatResponse response = new TabletStatResponse();
+                            List<TabletStat> stats = Lists.newArrayList();
+                            for (TabletStatRequest.TabletInfo tabletInfo : request.tabletInfos) {
+                                TabletStat stat = new TabletStat();
+                                stat.tabletId = tabletInfo.tabletId;
+                                stat.numRows = tabletInfo.tabletId * 10;
+                                stat.dataSize = tabletInfo.tabletId * 100;
+                                stats.add(stat);
+                            }
+                            response.tabletStats = stats;
+                            return CompletableFuture.completedFuture(response);
+                        }
+                    };
+                }
+            };
+
+            Config.enable_parallel_lake_tablet_stat_collection = false;
+            TabletStatMgr serialTabletStatMgr = new TabletStatMgr();
+            Deencapsulation.invoke(serialTabletStatMgr, "updateLakeTableTabletStat", serialDb, serialTable);
+
+            Config.enable_parallel_lake_tablet_stat_collection = true;
+            Config.lake_tablet_stat_collect_parallelism = 2;
+            Config.lake_tablet_stat_max_inflight_tasks = 2;
+            TabletStatMgr parallelTabletStatMgr = new TabletStatMgr();
+            Deencapsulation.invoke(parallelTabletStatMgr, "updateLakeTableTabletStat", parallelDb, parallelTable);
+
+            Assertions.assertEquals(collectLakeTabletRowCounts(serialTable), collectLakeTabletRowCounts(parallelTable));
+            Assertions.assertEquals(collectLakeTabletDataSizes(serialTable), collectLakeTabletDataSizes(parallelTable));
+            assertLakeTabletDataSizeUpdateTimeSet(serialTable);
+            assertLakeTabletDataSizeUpdateTimeSet(parallelTable);
+        } finally {
+            Config.enable_parallel_lake_tablet_stat_collection = oldEnabled;
+            Config.lake_tablet_stat_collect_parallelism = oldParallelism;
+            Config.lake_tablet_stat_max_inflight_tasks = oldMaxInflight;
+        }
+    }
+
+    @Test
+    public void testParallelLakeTabletStatPropagatesUncheckedJobFailure(@Mocked LakeService lakeService) {
+        boolean oldEnabled = Config.enable_parallel_lake_tablet_stat_collection;
+        int oldParallelism = Config.lake_tablet_stat_collect_parallelism;
+        int oldMaxInflight = Config.lake_tablet_stat_max_inflight_tasks;
+        try {
+            Config.enable_parallel_lake_tablet_stat_collection = true;
+            Config.lake_tablet_stat_collect_parallelism = 2;
+            Config.lake_tablet_stat_max_inflight_tasks = 2;
+
+            LakeTable table = createLakeTableWithPartitionsForTest(2);
+            Database db = new Database(DB_ID, "db");
+            db.registerTableUnlocked(table);
+
+            new MockUp<BrpcProxy>() {
+                @Mock
+                public LakeService getLakeService(String host, int port) {
+                    return lakeService;
+                }
+            };
+
+            new Expectations() {
+                {
+                    lakeService.getTabletStats((TabletStatRequest) any);
+                    minTimes = 1;
+                    result = new Delegate() {
+                        Future<TabletStatResponse> getTabletStats(TabletStatRequest request) {
+                            TabletStatResponse response = new TabletStatResponse();
+                            TabletStat stat = new TabletStat();
+                            stat.tabletId = -1L;
+                            stat.numRows = 1L;
+                            stat.dataSize = 1L;
+                            response.tabletStats = Lists.newArrayList(stat);
+                            return CompletableFuture.completedFuture(response);
+                        }
+                    };
+                }
+            };
+
+            TabletStatMgr tabletStatMgr = new TabletStatMgr();
+            Assertions.assertThrows(NullPointerException.class,
+                    () -> Deencapsulation.invoke(tabletStatMgr, "updateLakeTableTabletStat", db, table));
+        } finally {
+            Config.enable_parallel_lake_tablet_stat_collection = oldEnabled;
+            Config.lake_tablet_stat_collect_parallelism = oldParallelism;
+            Config.lake_tablet_stat_max_inflight_tasks = oldMaxInflight;
+        }
+    }
+
+    @Test
+    public void testParallelLakeTabletStatKeepsStatsWhenSendFails(@Mocked LakeService lakeService) {
+        boolean oldEnabled = Config.enable_parallel_lake_tablet_stat_collection;
+        try {
+            Config.enable_parallel_lake_tablet_stat_collection = true;
+
+            LakeTable table = createLakeTableForTest();
+            Database db = new Database(DB_ID, "db");
+            db.registerTableUnlocked(table);
+
+            new MockUp<BrpcProxy>() {
+                @Mock
+                public LakeService getLakeService(String host, int port) {
+                    throw new RuntimeException("injected exception");
+                }
+            };
+
+            TabletStatMgr tabletStatMgr = new TabletStatMgr();
+            Deencapsulation.invoke(tabletStatMgr, "updateLakeTableTabletStat", db, table);
+
+            LakeTablet tablet1 = (LakeTablet) table.getPartition(PARTITION_ID).getDefaultPhysicalPartition()
+                    .getLatestBaseIndex().getTablets().get(0);
+            LakeTablet tablet2 = (LakeTablet) table.getPartition(PARTITION_ID).getDefaultPhysicalPartition()
+                    .getLatestBaseIndex().getTablets().get(1);
+
+            Assertions.assertEquals(0, tablet1.getRowCount(-1));
+            Assertions.assertEquals(0, tablet1.getDataSize(true));
+            Assertions.assertEquals(0, tablet2.getRowCount(-1));
+            Assertions.assertEquals(0, tablet2.getDataSize(true));
+            Assertions.assertEquals(0L, tablet1.getDataSizeUpdateTime());
+            Assertions.assertEquals(0L, tablet2.getDataSizeUpdateTime());
+        } finally {
+            Config.enable_parallel_lake_tablet_stat_collection = oldEnabled;
+        }
+    }
+
+    @Test
+    public void testParallelLakeTabletStatKeepsStatsWhenResponseFutureFails(@Mocked LakeService lakeService) {
+        boolean oldEnabled = Config.enable_parallel_lake_tablet_stat_collection;
+        try {
+            Config.enable_parallel_lake_tablet_stat_collection = true;
+
+            LakeTable table = createLakeTableForTest();
+            Database db = new Database(DB_ID, "db");
+            db.registerTableUnlocked(table);
+
+            new MockUp<BrpcProxy>() {
+                @Mock
+                public LakeService getLakeService(String host, int port) {
+                    return lakeService;
+                }
+            };
+
+            new Expectations() {
+                {
+                    lakeService.getTabletStats((TabletStatRequest) any);
+                    minTimes = 1;
+                    result = new Delegate() {
+                        Future<TabletStatResponse> getTabletStats(TabletStatRequest request) {
+                            CompletableFuture<TabletStatResponse> future = new CompletableFuture<>();
+                            future.completeExceptionally(new RuntimeException("injected"));
+                            return future;
+                        }
+                    };
+                }
+            };
+
+            TabletStatMgr tabletStatMgr = new TabletStatMgr();
+            Deencapsulation.invoke(tabletStatMgr, "updateLakeTableTabletStat", db, table);
+
+            LakeTablet tablet1 = (LakeTablet) table.getPartition(PARTITION_ID).getDefaultPhysicalPartition()
+                    .getLatestBaseIndex().getTablets().get(0);
+            LakeTablet tablet2 = (LakeTablet) table.getPartition(PARTITION_ID).getDefaultPhysicalPartition()
+                    .getLatestBaseIndex().getTablets().get(1);
+
+            Assertions.assertEquals(0, tablet1.getRowCount(-1));
+            Assertions.assertEquals(0, tablet1.getDataSize(true));
+            Assertions.assertEquals(0, tablet2.getRowCount(-1));
+            Assertions.assertEquals(0, tablet2.getDataSize(true));
+            Assertions.assertEquals(0L, tablet1.getDataSizeUpdateTime());
+            Assertions.assertEquals(0L, tablet2.getDataSizeUpdateTime());
+        } finally {
+            Config.enable_parallel_lake_tablet_stat_collection = oldEnabled;
+        }
+    }
+
     @Test
     public void testParallelLakeTabletStatCollectsMultiplePartitionsConcurrently(@Mocked LakeService lakeService)
             throws Exception {
@@ -321,6 +547,7 @@ public class TabletStatMgrTest {
             };
 
             CountDownLatch firstRequestSent = new CountDownLatch(1);
+            CountDownLatch secondRequestSent = new CountDownLatch(1);
             CountDownLatch releaseFirstResponse = new CountDownLatch(1);
             AtomicInteger requestCount = new AtomicInteger();
             new Expectations() {
@@ -331,6 +558,9 @@ public class TabletStatMgrTest {
                         Future<TabletStatResponse> getTabletStats(TabletStatRequest request) {
                             int requestIndex = requestCount.incrementAndGet();
                             firstRequestSent.countDown();
+                            if (requestIndex == 2) {
+                                secondRequestSent.countDown();
+                            }
                             CompletableFuture<TabletStatResponse> future = new CompletableFuture<>();
                             Thread responder = new Thread(() -> {
                                 try {
@@ -367,7 +597,8 @@ public class TabletStatMgrTest {
             updateThread.start();
 
             Assertions.assertTrue(firstRequestSent.await(1, TimeUnit.SECONDS));
-            Thread.sleep(100);
+            Assertions.assertFalse(secondRequestSent.await(100, TimeUnit.MILLISECONDS),
+                    "serial collection should not send the second partition RPC before the first response returns");
             Assertions.assertEquals(1, requestCount.get(),
                     "serial collection should not send the second partition RPC before the first response returns");
             releaseFirstResponse.countDown();

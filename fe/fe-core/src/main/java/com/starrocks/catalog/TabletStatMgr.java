@@ -83,6 +83,7 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import javax.annotation.Nullable;
 import javax.validation.constraints.NotNull;
 
@@ -425,8 +426,14 @@ public class TabletStatMgr extends FrontendDaemon {
     private void submitLakeTableTabletStatJobs(@NotNull LakeTabletStatCollector collector,
                                                @NotNull Database db,
                                                @NotNull OlapTable table) {
+        if (collector.isInterrupted()) {
+            return;
+        }
         Collection<PhysicalPartition> partitions = getPartitions(db, table);
         for (PhysicalPartition partition : partitions) {
+            if (collector.isInterrupted()) {
+                return;
+            }
             CollectTabletStatJob job = createCollectTabletStatJob(db, table, partition);
             collector.submit(job);
         }
@@ -493,6 +500,10 @@ public class TabletStatMgr extends FrontendDaemon {
             this.completionService = new ExecutorCompletionService<>(executor);
         }
 
+        boolean isInterrupted() {
+            return interrupted;
+        }
+
         void submit(@Nullable CollectTabletStatJob job) {
             if (job == null) {
                 skippedJobs++;
@@ -534,12 +545,23 @@ public class TabletStatMgr extends FrontendDaemon {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 interrupted = true;
-                LOG.warn("Interrupted while collecting lake tablet stat for {}", name);
+                throw new RuntimeException("Interrupted while collecting lake tablet stat for " + name, e);
             } catch (ExecutionException e) {
                 failedJobs++;
                 inFlightJobs--;
-                LOG.warn("Failed to collect lake tablet stat for {}: {}", name, e.getMessage());
+                throw toRuntimeException(e);
             }
+        }
+
+        private RuntimeException toRuntimeException(ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            if (cause instanceof RuntimeException) {
+                return (RuntimeException) cause;
+            }
+            return new RuntimeException(cause == null ? exception : cause);
         }
 
         void logSummary(long costMs) {
@@ -553,10 +575,27 @@ public class TabletStatMgr extends FrontendDaemon {
 
         @Override
         public void close() {
-            if (interrupted) {
-                executor.shutdownNow();
+            if (interrupted || inFlightJobs > 0) {
+                shutdownNowAndWait();
             } else {
                 executor.shutdown();
+            }
+        }
+
+        private void shutdownNowAndWait() {
+            executor.shutdownNow();
+            boolean wasInterrupted = Thread.interrupted();
+            try {
+                if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    LOG.warn("Lake tablet stat collector for {} still has running jobs after shutdownNow", name);
+                }
+            } catch (InterruptedException e) {
+                wasInterrupted = true;
+                LOG.warn("Interrupted while shutting down lake tablet stat collector for {}", name);
+            } finally {
+                if (wasInterrupted) {
+                    Thread.currentThread().interrupt();
+                }
             }
         }
     }
