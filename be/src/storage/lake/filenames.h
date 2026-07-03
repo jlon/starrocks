@@ -28,6 +28,10 @@ namespace starrocks::lake {
 
 constexpr static const int kTabletMetadataFilenameLength = 38;
 constexpr static const int kTxnLogFilenameLength = 37;
+constexpr static const int kTxnLogFilenameWithLoadIdLength = 71;
+constexpr static const int kTxnSLogFilenameLength = 38;
+constexpr static const int kTxnVLogFilenameLength = 38;
+constexpr static const int kCombinedTxnLogFilenameLength = 21;
 constexpr static const int kTabletMetadataLockFilenameLength = 55;
 
 constexpr static const int64 kInitialVersion = 1;
@@ -134,13 +138,56 @@ inline bool is_combined_txn_log(std::string_view file_name) {
     return HasSuffixString(file_name, ".logs");
 }
 
-inline int64_t parse_combined_txn_log_filename(std::string_view file_name) {
+inline std::string_view basename(std::string_view path) {
+    return path.substr(path.find_last_of('/') + 1);
+}
+
+inline bool is_hex_digit(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+inline bool is_fixed_hex(std::string_view value) {
+    if (value.size() != 16) {
+        return false;
+    }
+    for (char c : value) {
+        if (!is_hex_digit(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool parse_fixed_hex_i64(std::string_view value, int64_t* result) {
+    if (!is_fixed_hex(value)) {
+        return false;
+    }
     constexpr static int kBase = 16;
-    CHECK_EQ(21, file_name.size());
     StringParser::ParseResult res;
-    auto txn_id = StringParser::string_to_int<int64_t>(file_name.data(), 16, kBase, &res);
-    CHECK_EQ(StringParser::PARSE_SUCCESS, res) << file_name;
+    auto parsed = StringParser::string_to_int<int64_t>(value.data(), static_cast<int>(value.size()), kBase, &res);
+    if (res != StringParser::PARSE_SUCCESS) {
+        return false;
+    }
+    *result = parsed;
+    return true;
+}
+
+inline std::optional<int64_t> try_parse_combined_txn_log_filename(std::string_view file_name) {
+    if (file_name.size() != kCombinedTxnLogFilenameLength || !is_combined_txn_log(file_name)) {
+        return {};
+    }
+
+    int64_t txn_id = 0;
+    if (!parse_fixed_hex_i64(file_name.substr(0, 16), &txn_id)) {
+        return {};
+    }
     return txn_id;
+}
+
+inline int64_t parse_combined_txn_log_filename(std::string_view file_name) {
+    auto txn_id = try_parse_combined_txn_log_filename(file_name);
+    CHECK(txn_id.has_value()) << file_name;
+    return *txn_id;
 }
 
 inline std::string tablet_metadata_lock_filename(int64_t tablet_id, int64_t version, int64_t expire_time) {
@@ -261,35 +308,79 @@ inline std::pair<int64_t, int64_t> parse_tablet_metadata_filename(std::string_vi
 }
 
 // Return value: <tablet id, txn id>
+inline std::optional<std::pair<int64_t, int64_t>> try_parse_txn_log_filename(std::string_view file_name) {
+    if (!is_txn_log(file_name)) {
+        return {};
+    }
+    if (file_name.size() != kTxnLogFilenameLength && file_name.size() != kTxnLogFilenameWithLoadIdLength) {
+        return {};
+    }
+    if (file_name[16] != '_' || !HasSuffixString(file_name, ".log")) {
+        return {};
+    }
+    if (file_name.size() == kTxnLogFilenameWithLoadIdLength && (file_name[33] != '_' || file_name[50] != '_')) {
+        return {};
+    }
+
+    int64_t tablet_id = 0;
+    int64_t txn_id = 0;
+    if (!parse_fixed_hex_i64(file_name.substr(0, 16), &tablet_id) ||
+        !parse_fixed_hex_i64(file_name.substr(17, 16), &txn_id)) {
+        return {};
+    }
+    if (file_name.size() == kTxnLogFilenameWithLoadIdLength) {
+        if (!is_fixed_hex(file_name.substr(34, 16)) || !is_fixed_hex(file_name.substr(51, 16))) {
+            return {};
+        }
+    }
+    return std::make_pair(tablet_id, txn_id);
+}
+
 inline std::pair<int64_t, int64_t> parse_txn_log_filename(std::string_view file_name) {
-    constexpr static int kBase = 16;
-    StringParser::ParseResult res;
-    auto tablet_id = StringParser::string_to_int<int64_t>(file_name.data(), 16, kBase, &res);
-    CHECK_EQ(StringParser::PARSE_SUCCESS, res) << file_name;
-    auto txn_id = StringParser::string_to_int<int64_t>(file_name.data() + 17, 16, kBase, &res);
-    CHECK_EQ(StringParser::PARSE_SUCCESS, res) << file_name;
-    return {tablet_id, txn_id};
+    auto parsed = try_parse_txn_log_filename(file_name);
+    CHECK(parsed.has_value()) << file_name;
+    return *parsed;
+}
+
+inline std::optional<std::pair<int64_t, int64_t>> try_parse_txn_slog_filename(std::string_view file_name) {
+    if (file_name.size() != kTxnSLogFilenameLength || !is_txn_slog(file_name) || file_name[16] != '_') {
+        return {};
+    }
+
+    int64_t tablet_id = 0;
+    int64_t txn_id = 0;
+    if (!parse_fixed_hex_i64(file_name.substr(0, 16), &tablet_id) ||
+        !parse_fixed_hex_i64(file_name.substr(17, 16), &txn_id)) {
+        return {};
+    }
+    return std::make_pair(tablet_id, txn_id);
 }
 
 inline std::pair<int64_t, int64_t> parse_txn_slog_filename(std::string_view file_name) {
-    constexpr static int kBase = 16;
-    StringParser::ParseResult res;
-    auto tablet_id = StringParser::string_to_int<int64_t>(file_name.data(), 16, kBase, &res);
-    CHECK_EQ(StringParser::PARSE_SUCCESS, res) << file_name;
-    auto txn_id = StringParser::string_to_int<int64_t>(file_name.data() + 17, 16, kBase, &res);
-    CHECK_EQ(StringParser::PARSE_SUCCESS, res) << file_name;
-    return {tablet_id, txn_id};
+    auto parsed = try_parse_txn_slog_filename(file_name);
+    CHECK(parsed.has_value()) << file_name;
+    return *parsed;
 }
 
 // Return value: <tablet id, version number>
+inline std::optional<std::pair<int64_t, int64_t>> try_parse_txn_vlog_filename(std::string_view file_name) {
+    if (file_name.size() != kTxnVLogFilenameLength || !is_txn_vlog(file_name) || file_name[16] != '_') {
+        return {};
+    }
+
+    int64_t tablet_id = 0;
+    int64_t version = 0;
+    if (!parse_fixed_hex_i64(file_name.substr(0, 16), &tablet_id) ||
+        !parse_fixed_hex_i64(file_name.substr(17, 16), &version)) {
+        return {};
+    }
+    return std::make_pair(tablet_id, version);
+}
+
 inline std::pair<int64_t, int64_t> parse_txn_vlog_filename(std::string_view file_name) {
-    constexpr static int kBase = 16;
-    StringParser::ParseResult res;
-    auto tablet_id = StringParser::string_to_int<int64_t>(file_name.data(), 16, kBase, &res);
-    CHECK_EQ(StringParser::PARSE_SUCCESS, res) << file_name;
-    auto version = StringParser::string_to_int<int64_t>(file_name.data() + 17, 16, kBase, &res);
-    CHECK_EQ(StringParser::PARSE_SUCCESS, res) << file_name;
-    return {tablet_id, version};
+    auto parsed = try_parse_txn_vlog_filename(file_name);
+    CHECK(parsed.has_value()) << file_name;
+    return *parsed;
 }
 
 // Return value: <tablet id, version, expire time>
@@ -304,10 +395,6 @@ inline std::tuple<int64_t, int64_t, int64_t> parse_tablet_metadata_lock_filename
     auto expire_time = StringParser::string_to_int<int64_t>(file_name.data() + 34, 16, kBase, &res);
     CHECK_EQ(StringParser::PARSE_SUCCESS, res) << file_name;
     return std::make_tuple(tablet_id, version, expire_time);
-}
-
-inline std::string_view basename(std::string_view path) {
-    return path.substr(path.find_last_of('/') + 1);
 }
 
 // get prefix name
