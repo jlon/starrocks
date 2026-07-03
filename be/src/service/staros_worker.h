@@ -18,7 +18,9 @@
 
 #include <starlet.h>
 
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
 
@@ -99,6 +101,14 @@ private:
                 : key(key), fs(fs), created_time_sec(MonotonicSeconds()) {}
     };
 
+    struct FsCacheBuildState {
+        bool loading = true;
+        absl::Status status = absl::OkStatus();
+        std::shared_ptr<std::string> key;
+        std::shared_ptr<FileSystem> fs;
+        std::condition_variable cv;
+    };
+
     // This function can be made static perfectly. The only reason to make it `virtual`
     // is, for unit test MOCK as it is the only interface to interact with g_starlet.
     virtual absl::StatusOr<ShardInfo> _fetch_shard_info_from_remote(ShardId id);
@@ -138,9 +148,10 @@ private:
 
 private:
     mutable std::shared_mutex _mtx;
-    std::shared_mutex _cache_mtx;
+    std::mutex _fs_cache_build_mtx;
     std::mutex _fs_cache_key_reset_mtx; // Protects fs_cache_key reset operations
     std::unordered_map<ShardId, ShardInfoDetails> _shards;
+    std::unordered_map<std::string, std::shared_ptr<FsCacheBuildState>> _fs_cache_builds;
     std::unique_ptr<Cache> _fs_cache;
     add_shard_listener _add_shard_listener;
 };

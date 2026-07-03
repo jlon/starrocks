@@ -790,6 +790,33 @@ private:
     absl::StatusOr<staros::starlet::fslib::Stat> _stat_result;
 };
 
+class DropCacheMockFileSystem : public MockStarletFileSystem {
+public:
+    explicit DropCacheMockFileSystem(uint64_t file_size) : _file_size(file_size) {}
+
+    absl::StatusOr<staros::starlet::fslib::Stat> stat(std::string_view /*path*/) override {
+        stat_count++;
+        staros::starlet::fslib::Stat stat{};
+        stat.size = _file_size;
+        return stat;
+    }
+
+    absl::Status drop_cache(std::string_view path, int64_t offset, int64_t size) override {
+        drop_count++;
+        last_path = std::string(path);
+        last_offset = offset;
+        last_size = size;
+        return absl::OkStatus();
+    }
+
+    uint64_t _file_size;
+    int stat_count = 0;
+    int drop_count = 0;
+    std::string last_path;
+    int64_t last_offset = -1;
+    int64_t last_size = -1;
+};
+
 // Happy path: stat() returns a Stat with a known size, get_file_size returns it.
 TEST_F(NewFsStarletTest, test_get_file_size_returns_stat_size) {
     staros::starlet::fslib::Stat fake_stat{};
@@ -876,6 +903,57 @@ TEST_F(NewFsStarletTest, test_get_file_size_propagates_stat_permission_denied) {
     ASSERT_NE(nullptr, fs);
     auto sz_or = fs->get_file_size(fmt::format("staros://{}/locked", test_shard_id));
     EXPECT_FALSE(sz_or.ok());
+}
+
+TEST_F(NewFsStarletTest, test_drop_local_cache_resolves_negative_size_from_stat) {
+    auto mock_fs = std::make_shared<DropCacheMockFileSystem>(4097);
+    int64_t test_shard_id = 55505;
+    SyncPoint::GetInstance()->SetCallBack("new_fs_starlet::get_shard_filesystem", [&](void* arg) {
+        auto* fs_st = static_cast<absl::StatusOr<std::shared_ptr<staros::starlet::fslib::FileSystem>>*>(arg);
+        *fs_st = mock_fs;
+    });
+
+    auto fs = new_fs_starlet(test_shard_id, false);
+    ASSERT_NE(nullptr, fs);
+    ASSERT_OK(fs->drop_local_cache(fmt::format("staros://{}/bundle.meta", test_shard_id)));
+    EXPECT_EQ(1, mock_fs->stat_count);
+    ASSERT_EQ(1, mock_fs->drop_count);
+    EXPECT_EQ("bundle.meta", mock_fs->last_path);
+    EXPECT_EQ(0, mock_fs->last_offset);
+    EXPECT_EQ(4097, mock_fs->last_size);
+}
+
+TEST_F(NewFsStarletTest, test_drop_local_cache_skips_zero_sized_file) {
+    auto mock_fs = std::make_shared<DropCacheMockFileSystem>(0);
+    int64_t test_shard_id = 55506;
+    SyncPoint::GetInstance()->SetCallBack("new_fs_starlet::get_shard_filesystem", [&](void* arg) {
+        auto* fs_st = static_cast<absl::StatusOr<std::shared_ptr<staros::starlet::fslib::FileSystem>>*>(arg);
+        *fs_st = mock_fs;
+    });
+
+    auto fs = new_fs_starlet(test_shard_id, false);
+    ASSERT_NE(nullptr, fs);
+    ASSERT_OK(fs->drop_local_cache(fmt::format("staros://{}/empty.meta", test_shard_id)));
+    EXPECT_EQ(1, mock_fs->stat_count);
+    EXPECT_EQ(0, mock_fs->drop_count);
+}
+
+TEST_F(NewFsStarletTest, test_drop_local_cache_keeps_explicit_positive_size) {
+    auto mock_fs = std::make_shared<DropCacheMockFileSystem>(4097);
+    int64_t test_shard_id = 55507;
+    SyncPoint::GetInstance()->SetCallBack("new_fs_starlet::get_shard_filesystem", [&](void* arg) {
+        auto* fs_st = static_cast<absl::StatusOr<std::shared_ptr<staros::starlet::fslib::FileSystem>>*>(arg);
+        *fs_st = mock_fs;
+    });
+
+    auto fs = new_fs_starlet(test_shard_id, false);
+    ASSERT_NE(nullptr, fs);
+    ASSERT_OK(fs->drop_local_cache(fmt::format("staros://{}/known.meta", test_shard_id), 7, 11));
+    EXPECT_EQ(0, mock_fs->stat_count);
+    ASSERT_EQ(1, mock_fs->drop_count);
+    EXPECT_EQ("known.meta", mock_fs->last_path);
+    EXPECT_EQ(7, mock_fs->last_offset);
+    EXPECT_EQ(11, mock_fs->last_size);
 }
 
 // Test failure scenario when g_worker->get_shard_filesystem returns error
