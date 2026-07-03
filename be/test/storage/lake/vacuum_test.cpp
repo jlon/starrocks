@@ -72,6 +72,13 @@ protected:
         ASSERT_OK(f->close());
     }
 
+    void create_txn_log_file(const std::string& name) {
+        auto full_path = join_path(join_path(kTestDir, kTxnLogDirectoryName), name);
+        ASSIGN_OR_ABORT(auto f, FileSystem::Default()->new_writable_file(full_path));
+        ASSERT_OK(f->append("aaaa"));
+        ASSERT_OK(f->close());
+    }
+
     bool file_exist(const std::string& name) {
         std::string full_path;
         if (is_tablet_metadata(name)) {
@@ -2321,6 +2328,86 @@ TEST_P(LakeVacuumTest, test_dont_delete_txn_log) {
         EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_slog_location(1900, 3000)));
         EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_slog_location(2000, 3000)));
         EXPECT_TRUE(fs::path_exist(_tablet_mgr->txn_slog_location(1900, 4000)));
+    }
+}
+
+TEST_P(LakeVacuumTest, test_vacuum_txn_log_skips_malformed_log_filenames) {
+    ASSERT_OK(_tablet_mgr->put_txn_log(json_to_pb<TxnLogPB>(R"DEL(
+        {
+            "tablet_id": 1900,
+            "txn_id": 2000
+        }
+        )DEL")));
+    ASSERT_OK(_tablet_mgr->put_txn_slog(json_to_pb<TxnLogPB>(R"DEL(
+        {
+            "tablet_id": 1900,
+            "txn_id": 2000
+        }
+        )DEL")));
+    ASSERT_OK(_tablet_mgr->put_combined_txn_log(*json_to_pb<CombinedTxnLogPB>(R"DEL(
+        {
+            "txn_logs": [
+               {
+                  "tablet_id": 1900,
+                  "txn_id": 2000,
+                  "partition_id": 11
+               }
+            ]
+        }
+        )DEL")));
+
+    const std::vector<std::string> malformed_logs = {
+            "xxxx_xxxx.log",
+            "0000000000000001_xxxx.slog",
+            "0000000000000001_0000000000000001_bad_load_id.log",
+            "xxxx.logs",
+    };
+    for (const auto& name : malformed_logs) {
+        create_txn_log_file(name);
+    }
+
+    int64_t vacuumed_files = 0;
+    int64_t vacuumed_file_size = 0;
+    ASSERT_OK(vacuum_txn_log(kTestDir, 3000, &vacuumed_files, &vacuumed_file_size));
+
+    EXPECT_EQ(3, vacuumed_files);
+    EXPECT_GT(vacuumed_file_size, 0);
+    EXPECT_FALSE(file_exist(txn_log_filename(1900, 2000)));
+    EXPECT_FALSE(file_exist(txn_slog_filename(1900, 2000)));
+    EXPECT_FALSE(file_exist(combined_txn_log_filename(2000)));
+    for (const auto& name : malformed_logs) {
+        EXPECT_TRUE(file_exist(name)) << name;
+    }
+}
+
+TEST_P(LakeVacuumTest, test_delete_tablets_skips_malformed_txn_log_filenames) {
+    ASSERT_OK(_tablet_mgr->put_tablet_metadata(json_to_pb<TabletMetadataPB>(R"DEL(
+        {
+        "id": 700,
+        "version": 2
+        }
+        )DEL")));
+
+    const std::vector<std::string> malformed_logs = {
+            "xxxx_xxxx.log",
+            "0000000000000001_xxxx.slog",
+            "0000000000000001_xxxx.vlog",
+            "xxxx.logs",
+    };
+    for (const auto& name : malformed_logs) {
+        create_txn_log_file(name);
+    }
+
+    DeleteTabletRequest request;
+    DeleteTabletResponse response;
+    request.add_tablet_ids(700);
+    delete_tablets(_tablet_mgr.get(), request, &response);
+
+    ASSERT_TRUE(response.has_status());
+    EXPECT_EQ(0, response.status().status_code()) << response.status().error_msgs(0);
+    EXPECT_FALSE(file_exist(tablet_metadata_filename(700, 2)));
+    for (const auto& name : malformed_logs) {
+        EXPECT_TRUE(file_exist(name)) << name;
     }
 }
 

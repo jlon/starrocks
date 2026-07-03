@@ -179,6 +179,13 @@ Status check_vacuum_deadline(int64_t deadline_ms) {
     return Status::OK();
 }
 
+std::string_view normalize_listed_filename(std::string_view name) {
+    if (!name.empty() && name.back() == '/') {
+        name.remove_suffix(1);
+    }
+    return basename(name);
+}
+
 Status delete_files_with_retry(FileSystem* fs, std::span<const std::string> paths) {
     const int64_t base = config::lake_vacuum_retry_min_delay_ms;
     const int64_t max_retries = config::lake_vacuum_retry_max_attempts;
@@ -657,18 +664,36 @@ Status vacuum_txn_log(std::string_view root_location, int64_t min_active_txn_id,
     auto ret = Status::OK();
     auto log_dir = join_path(root_location, kTxnLogDirectoryName);
     auto iter_st = ignore_not_found(fs->iterate_dir2(log_dir, [&](DirEntry entry) {
-        if (is_txn_log(entry.name)) {
-            auto [tablet_id, txn_id] = parse_txn_log_filename(entry.name);
-            if (txn_id >= min_active_txn_id) {
+        const auto name = normalize_listed_filename(entry.name);
+        if (name.empty()) {
+            return true;
+        }
+
+        if (is_txn_log(name)) {
+            auto parsed = try_parse_txn_log_filename(name);
+            if (!parsed.has_value()) {
+                LOG_EVERY_N(WARNING, 100) << "Skip invalid txn log filename: " << entry.name;
                 return true;
             }
-        } else if (is_txn_slog(entry.name)) {
-            auto [tablet_id, txn_id] = parse_txn_slog_filename(entry.name);
-            if (txn_id >= min_active_txn_id) {
+            if (parsed->second >= min_active_txn_id) {
                 return true;
             }
-        } else if (is_combined_txn_log(entry.name)) {
-            auto txn_id = parse_combined_txn_log_filename(entry.name);
+        } else if (is_txn_slog(name)) {
+            auto parsed = try_parse_txn_slog_filename(name);
+            if (!parsed.has_value()) {
+                LOG_EVERY_N(WARNING, 100) << "Skip invalid txn slog filename: " << entry.name;
+                return true;
+            }
+            if (parsed->second >= min_active_txn_id) {
+                return true;
+            }
+        } else if (is_combined_txn_log(name)) {
+            auto parsed = try_parse_combined_txn_log_filename(name);
+            if (!parsed.has_value()) {
+                LOG_EVERY_N(WARNING, 100) << "Skip invalid combined txn log filename: " << entry.name;
+                return true;
+            }
+            auto txn_id = *parsed;
             if (txn_id >= min_active_txn_id) {
                 return true;
             }
@@ -679,9 +704,10 @@ Status vacuum_txn_log(std::string_view root_location, int64_t min_active_txn_id,
         *vacuumed_files += 1;
         *vacuumed_file_size += entry.size.value_or(0);
 
-        auto st = deleter.delete_file(join_path(log_dir, entry.name));
+        auto path = join_path(log_dir, std::string(name));
+        auto st = deleter.delete_file(path);
         if (!st.ok()) {
-            LOG(WARNING) << "Fail to delete " << join_path(log_dir, entry.name) << ": " << st;
+            LOG(WARNING) << "Fail to delete " << path << ": " << st;
             ret.update(st);
         }
         return st.ok(); // Stop list if delete failed
@@ -1012,22 +1038,43 @@ Status delete_tablets_impl(TabletManager* tablet_mgr, const std::string& root_di
     std::set<std::string> txn_logs;
     std::set<std::string> combine_txn_logs;
     RETURN_IF_ERROR(ignore_not_found(fs->iterate_dir(log_dir, [&](std::string_view name) {
+        name = normalize_listed_filename(name);
+        if (name.empty()) {
+            return true;
+        }
+
         if (is_txn_log(name)) {
-            auto [tablet_id, txn_id] = parse_txn_log_filename(name);
-            if (!std::binary_search(tablet_ids.begin(), tablet_ids.end(), tablet_id)) {
+            auto parsed = try_parse_txn_log_filename(name);
+            if (!parsed.has_value()) {
+                LOG_EVERY_N(WARNING, 100) << "Skip invalid txn log filename: " << name;
+                return true;
+            }
+            if (!std::binary_search(tablet_ids.begin(), tablet_ids.end(), parsed->first)) {
                 return true;
             }
         } else if (is_txn_slog(name)) {
-            auto [tablet_id, txn_id] = parse_txn_slog_filename(name);
-            if (!std::binary_search(tablet_ids.begin(), tablet_ids.end(), tablet_id)) {
+            auto parsed = try_parse_txn_slog_filename(name);
+            if (!parsed.has_value()) {
+                LOG_EVERY_N(WARNING, 100) << "Skip invalid txn slog filename: " << name;
+                return true;
+            }
+            if (!std::binary_search(tablet_ids.begin(), tablet_ids.end(), parsed->first)) {
                 return true;
             }
         } else if (is_txn_vlog(name)) {
-            auto [tablet_id, version] = parse_txn_vlog_filename(name);
-            if (!std::binary_search(tablet_ids.begin(), tablet_ids.end(), tablet_id)) {
+            auto parsed = try_parse_txn_vlog_filename(name);
+            if (!parsed.has_value()) {
+                LOG_EVERY_N(WARNING, 100) << "Skip invalid txn vlog filename: " << name;
+                return true;
+            }
+            if (!std::binary_search(tablet_ids.begin(), tablet_ids.end(), parsed->first)) {
                 return true;
             }
         } else if (is_combined_txn_log(name)) {
+            if (!try_parse_combined_txn_log_filename(name).has_value()) {
+                LOG_EVERY_N(WARNING, 100) << "Skip invalid combined txn log filename: " << name;
+                return true;
+            }
             // should be deleted
             combine_txn_logs.emplace(name);
             return true;

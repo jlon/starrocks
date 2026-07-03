@@ -152,4 +152,52 @@ TEST_F(FilenamesTest, gen_segment_filename_from) {
         ASSERT_TRUE(new_file_name.empty());
     }
 }
+
+TEST_F(FilenamesTest, try_parse_txn_log_filename) {
+    const auto name = txn_log_filename(0x445C0, 0xC02);
+    auto parsed = try_parse_txn_log_filename(name);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(0x445C0, parsed->first);
+    EXPECT_EQ(0xC02, parsed->second);
+
+    const std::string listed_path = "/home/service/var/openclaw/test/log/" + name;
+    auto listed_name = basename(listed_path);
+    EXPECT_EQ(name, listed_name);
+    parsed = try_parse_txn_log_filename(listed_name);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(0x445C0, parsed->first);
+    EXPECT_EQ(0xC02, parsed->second);
+
+    parsed = try_parse_txn_log_filename("0000000000000001_0000000000000002_FFFFFFFFFFFFFFFF_8000000000000000.log");
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(1, parsed->first);
+    EXPECT_EQ(2, parsed->second);
+
+    EXPECT_FALSE(try_parse_txn_log_filename(listed_path).has_value());
+    EXPECT_FALSE(try_parse_txn_log_filename("xxxx_xxxx.log").has_value());
+    EXPECT_FALSE(try_parse_txn_log_filename("0000000000000001_0000000000000002_bad_load_id.log").has_value());
+}
+
+TEST_F(FilenamesTest, try_parse_txn_slog_vlog_and_combined_log_filename) {
+    {
+        auto parsed = try_parse_txn_slog_filename(txn_slog_filename(0x445C0, 0xC02));
+        ASSERT_TRUE(parsed.has_value());
+        EXPECT_EQ(0x445C0, parsed->first);
+        EXPECT_EQ(0xC02, parsed->second);
+        EXPECT_FALSE(try_parse_txn_slog_filename("00000000000445C0_xxxxxxxxxxxxxxxx.slog").has_value());
+    }
+    {
+        auto parsed = try_parse_txn_vlog_filename(txn_vlog_filename(0x445C0, 0xC02));
+        ASSERT_TRUE(parsed.has_value());
+        EXPECT_EQ(0x445C0, parsed->first);
+        EXPECT_EQ(0xC02, parsed->second);
+        EXPECT_FALSE(try_parse_txn_vlog_filename("00000000000445C0_xxxxxxxxxxxxxxxx.vlog").has_value());
+    }
+    {
+        auto parsed = try_parse_combined_txn_log_filename(combined_txn_log_filename(0xC02));
+        ASSERT_TRUE(parsed.has_value());
+        EXPECT_EQ(0xC02, *parsed);
+        EXPECT_FALSE(try_parse_combined_txn_log_filename("xxxx.logs").has_value());
+    }
+}
 } // namespace starrocks::lake
