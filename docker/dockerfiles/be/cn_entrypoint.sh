@@ -162,7 +162,7 @@ if [[ "x$LOG_CONSOLE" == "x1" ]] ; then
     # env var `LOG_CONSOLE=1` can be added to enable logging to console
     addition_args="--logconsole"
 fi
-$STARROCKS_HOME/bin/start_cn.sh $addition_args
+$STARROCKS_HOME/bin/start_cn.sh --cn $addition_args
 ret=$?
 
 if [[ $ret -eq 0 || $ret -eq 137 ]] ; then

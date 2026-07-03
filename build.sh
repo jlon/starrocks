@@ -578,6 +578,9 @@ if [ ${FE_MODULES}x != ""x ]; then
     fi
     # clean phase is explicited by `--clean` option, don't bother doing clean again.
     ${MVN_CMD} $addon_mvn_opts package -am -pl ${FE_MODULES} -DskipTests -Dmaven.clean.skip=true -T ${PARALLEL}
+    if [ ${BUILD_FE} -eq 1 ] && [ -d "${STARROCKS_HOME}/fe/fe-plugin-shield" ]; then
+        ${MVN_CMD} $addon_mvn_opts package -am -pl fe-plugin-shield -DskipTests -Dmaven.clean.skip=true -T ${PARALLEL}
+    fi
     cd ${STARROCKS_HOME}/java-extensions
     ${MVN_CMD} $addon_mvn_opts package -am -pl hadoop-ext -DskipTests -T ${PARALLEL}
     cd ${STARROCKS_HOME}
@@ -609,9 +612,15 @@ if [ ${BUILD_FE} -eq 1 -o ${BUILD_SPARK_DPP} -eq 1 ]; then
         cp -r -p ${STARROCKS_HOME}/fe/fe-server/target/lib/* ${STARROCKS_OUTPUT}/fe/lib/
         cp -r -p ${STARROCKS_HOME}/fe/fe-server/target/starrocks-fe.jar ${STARROCKS_OUTPUT}/fe/lib/
         cp -r -p ${STARROCKS_HOME}/java-extensions/hadoop-ext/target/starrocks-hadoop-ext.jar ${STARROCKS_OUTPUT}/fe/lib/
+        if [ -f "${STARROCKS_HOME}/fe/fe-plugin-shield/target/fe-plugin-shield-1.0.0.jar" ]; then
+            cp -r -p ${STARROCKS_HOME}/fe/fe-plugin-shield/target/fe-plugin-shield-1.0.0.jar ${STARROCKS_OUTPUT}/fe/lib/
+        fi
         cp -r -p ${STARROCKS_HOME}/webroot/* ${STARROCKS_OUTPUT}/fe/webroot/
         cp -r -p ${STARROCKS_HOME}/fe/plugin/spark-dpp/target/spark-dpp-*-jar-with-dependencies.jar ${STARROCKS_OUTPUT}/fe/spark-dpp/
         cp -r -p ${STARROCKS_HOME}/fe/plugin/hive-udf/target/hive-udf-*.jar ${STARROCKS_OUTPUT}/fe/hive-udf/
+        if [ -d "${STARROCKS_THIRDPARTY}/installed/async-profiler" ]; then
+            cp -r -p ${STARROCKS_THIRDPARTY}/installed/async-profiler ${STARROCKS_OUTPUT}/fe/bin/
+        fi
         MSG="${MSG} √ ${MSG_FE}"
     elif [ ${BUILD_SPARK_DPP} -eq 1 ]; then
         install -d ${STARROCKS_OUTPUT}/fe/spark-dpp/
@@ -700,10 +709,24 @@ if [ ${BUILD_BE} -eq 1 ]; then
     if [ "${BUILD_JAVA_EXT}" == "ON" ]; then
         # note that conf files will not be overwritten when doing upgrade.
         # so we have to preserve directory structure to avoid upgrade incompatibility.
+        if [ -d "${STARROCKS_THIRDPARTY}/installed/hadoop/lib/native" ]; then
+            cp -r -p ${STARROCKS_THIRDPARTY}/installed/hadoop/lib/native ${STARROCKS_OUTPUT}/be/lib/hadoop/native
+        elif [ -d "${STARROCKS_HOME}/deploy/thirdparty/hadoop-native" ] && [ -n "$(ls -A ${STARROCKS_HOME}/deploy/thirdparty/hadoop-native 2>/dev/null)" ]; then
+            mkdir -p ${STARROCKS_OUTPUT}/be/lib/hadoop/native
+            cp -a ${STARROCKS_HOME}/deploy/thirdparty/hadoop-native/. ${STARROCKS_OUTPUT}/be/lib/hadoop/native/
+        fi
         cp -r -p ${STARROCKS_HOME}/java-extensions/hadoop-lib/target/hadoop-lib ${STARROCKS_OUTPUT}/be/lib/hadoop/common
         # https://github.com/StarRocks/starrocks/issues/71898
         # FIXME: remove the wildfly-openssl jar, ensure it is absent before openssl library in BE thirdparty upgraded to 3.x
         rm -rf ${STARROCKS_OUTPUT}/be/lib/hadoop/common/wildfly-openssl-2.2.5.Final.jar
+        if [ -d "${STARROCKS_HOME}/deploy/thirdparty/jindo" ]; then
+            rm -f ${STARROCKS_OUTPUT}/be/lib/hadoop/common/jindo-*.jar
+            cp -f ${STARROCKS_HOME}/deploy/thirdparty/jindo/*.jar ${STARROCKS_OUTPUT}/be/lib/hadoop/common/
+            if [ -d "${STARROCKS_OUTPUT}/be/lib/hive-reader-lib" ]; then
+                rm -f ${STARROCKS_OUTPUT}/be/lib/hive-reader-lib/jindo-*.jar
+                cp -f ${STARROCKS_HOME}/deploy/thirdparty/jindo/*.jar ${STARROCKS_OUTPUT}/be/lib/hive-reader-lib/
+            fi
+        fi
         cp -r -p ${STARROCKS_HOME}/java-extensions/jdbc-bridge/target/starrocks-jdbc-bridge-jar-with-dependencies.jar ${STARROCKS_OUTPUT}/be/lib/jni-packages
         cp -r -p ${STARROCKS_HOME}/java-extensions/udf-extensions/target/udf-extensions-jar-with-dependencies.jar ${STARROCKS_OUTPUT}/be/lib/jni-packages
         cp -r -p ${STARROCKS_HOME}/java-extensions/java-utils/target/starrocks-java-utils.jar ${STARROCKS_OUTPUT}/be/lib/jni-packages
