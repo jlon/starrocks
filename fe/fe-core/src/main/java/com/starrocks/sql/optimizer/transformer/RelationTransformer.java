@@ -896,13 +896,19 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
                     logicalPlan.getRootBuilder().getInputs(),
                     new ExpressionMapping(node.getScope(), logicalPlan.getOutputColumn(), logicalPlan.getRootBuilder()
                             .getColumnRefToConstOperators()));
-            if (isEnableViewBasedRewrite) {
+            // Connector views (Hive/Iceberg) must stay inlined: expanded query columns may not match
+            // HMS view schema size, and buildViewScan would fail with IllegalStateException.
+            if (isEnableViewBasedRewrite && !node.getView().isConnectorView()) {
                 List<ColumnRefOperator> newOutputColumns = Lists.newArrayList();
                 LogicalViewScanOperator viewScanOperator = buildViewScan(logicalPlan, node, newOutputColumns, true);
                 builder.getRoot().getOp().setEquivalentOp(viewScanOperator);
             }
             return new LogicalPlan(builder, logicalPlan.getOutputColumn(), logicalPlan.getCorrelation());
         } else {
+            // Connector views cannot build LogicalViewScanOperator reliably; inline instead.
+            if (node.getView().isConnectorView()) {
+                return logicalPlan;
+            }
             // do not expand views in logical plan
             List<ColumnRefOperator> newOutputColumns = Lists.newArrayList();
             LogicalViewScanOperator viewScanOperator = buildViewScan(logicalPlan, node, newOutputColumns, false);

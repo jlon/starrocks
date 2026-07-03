@@ -2,24 +2,24 @@ package com.oppo.starrocks.shield;
 
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
  * Real-time Shield permission checker with short-lived cache.
+ * Only non-empty permission lists are cached so a transient deny does not block
+ * re-checks after Shield grants access on another timeline.
  */
 public class ShieldPermissionChecker {
     private static final Logger LOG = LogManager.getLogger(ShieldPermissionChecker.class);
 
     private final ShieldConfig config;
     private final ShieldApiClient apiClient;
-    private final LoadingCache<String, List<DatabaseTable>> permissionCache;
+    private final Cache<String, List<DatabaseTable>> permissionCache;
 
     public ShieldPermissionChecker(Map<String, String> properties) {
         this.config = new ShieldConfig(properties);
@@ -27,14 +27,8 @@ public class ShieldPermissionChecker {
         this.permissionCache = CacheBuilder.newBuilder()
                 .expireAfterWrite(config.getCacheTtlSeconds(), TimeUnit.SECONDS)
                 .maximumSize(10000)
-                .build(new CacheLoader<>() {
-                    @Override
-                    public List<DatabaseTable> load(String cacheKey) {
-                        ShieldUserIdentity identity = ShieldUserIdentity.fromCacheKey(cacheKey);
-                        return apiClient.loadDatabaseTables(identity.getUsername(), identity.getPsaId());
-                    }
-                });
-        LOG.info("Shield permission cache enabled, ttlSeconds={}, slowThresholdMs={}",
+                .build();
+        LOG.info("Shield permission cache enabled, ttlSeconds={}, denyNotCached=true, slowThresholdMs={}",
                 config.getCacheTtlSeconds(), config.getSlowThresholdMs());
     }
 
@@ -91,20 +85,23 @@ public class ShieldPermissionChecker {
         String cacheKey = identity.toCacheKey();
         long start = ShieldTimingLog.startNanos();
         List<DatabaseTable> cached = permissionCache.getIfPresent(cacheKey);
-        boolean cacheHit = cached != null;
-        try {
-            List<DatabaseTable> result = cacheHit ? cached : permissionCache.get(cacheKey);
+        if (cached != null && !cached.isEmpty()) {
             long costMs = ShieldTimingLog.elapsedMs(start);
             ShieldTimingLog.logPermissionLoad(LOG, config.getSlowThresholdMs(), cacheKey,
-                    cacheHit, costMs, result.size());
-            return result;
-        } catch (ExecutionException e) {
-            long costMs = ShieldTimingLog.elapsedMs(start);
-            Throwable cause = e.getCause() == null ? e : e.getCause();
-            LOG.error("Failed to load Shield permissions for user {}, cacheHit={}, costMs={}",
-                    cacheKey, cacheHit, costMs, cause);
-            throw new ShieldApiException("Failed to load Shield permissions for user " + cacheKey, cause);
+                    true, costMs, cached.size());
+            return cached;
         }
+
+        List<DatabaseTable> result = apiClient.loadDatabaseTables(identity.getUsername(), identity.getPsaId());
+        long costMs = ShieldTimingLog.elapsedMs(start);
+        if (!result.isEmpty()) {
+            permissionCache.put(cacheKey, result);
+        } else {
+            permissionCache.invalidate(cacheKey);
+        }
+        ShieldTimingLog.logPermissionLoad(LOG, config.getSlowThresholdMs(), cacheKey,
+                false, costMs, result.size());
+        return result;
     }
 
     public void invalidateAll() {
