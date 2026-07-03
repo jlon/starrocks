@@ -131,16 +131,28 @@ public class ColumnPrivilege {
             }
 
             if (tableUsedExternalAccessController.contains(tableName)) {
-                Set<String> columns = scanColumns.getOrDefault(tableName, new HashSet<>());
-                for (String column : columns) {
+                // Hive/Iceberg connector views are authorized at view (table) granularity.
+                if (table.isConnectorView()) {
                     try {
-                        Authorizer.checkColumnAction(context,
-                                tableName, column, PrivilegeType.SELECT);
+                        Authorizer.checkTableAction(context, tableName, PrivilegeType.SELECT);
                     } catch (AccessDeniedException e) {
                         AccessDeniedException.reportAccessDenied(
                                 tableName.getCatalog(),
                                 context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                PrivilegeType.SELECT.name(), ObjectType.COLUMN.name(), column);
+                                PrivilegeType.SELECT.name(), ObjectType.TABLE.name(), tableName.getTbl());
+                    }
+                } else {
+                    Set<String> columns = scanColumns.getOrDefault(tableName, new HashSet<>());
+                    for (String column : columns) {
+                        try {
+                            Authorizer.checkColumnAction(context,
+                                    tableName, column, PrivilegeType.SELECT);
+                        } catch (AccessDeniedException e) {
+                            AccessDeniedException.reportAccessDenied(
+                                    tableName.getCatalog(),
+                                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                                    PrivilegeType.SELECT.name(), ObjectType.COLUMN.name(), column);
+                        }
                     }
                 }
             } else {
