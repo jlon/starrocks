@@ -1312,9 +1312,41 @@ public class LocalMetastore implements ConnectorMetadata, MVRepairHandler, Memor
         GlobalStateMgr.getCurrentState().getTabletInvertedIndex().deleteTablets(allTabletIds);
     }
 
-    private void cleanTabletIdSetForAll(Set<Long> tabletIdSetForAll) {
-        // Cleanup of shards for LakeTable is taken care by ShardDeleter
+    private void cleanTabletIdSetForAll(OlapTable table, Set<Long> tabletIdSetForAll) {
+        deleteUselessShardsIfCloudNative(table, tabletIdSetForAll);
         GlobalStateMgr.getCurrentState().getTabletInvertedIndex().deleteTablets(tabletIdSetForAll);
+    }
+
+    /**
+     * For LakeTable/LakeMaterializedView, tablet id == StarOS shard id (see LakeTablet). When
+     * tablet/replica creation fails partway through and the caller needs to roll back
+     * previously-created tablets, the remote StarOS shards created for those tablet ids (see
+     * createLakeTablets() -> StarOSAgent#createShards(), which always runs before any
+     * CreateReplicaTask is sent) must be deleted too. Deleting only the FE-local
+     * TabletInvertedIndex entry, as done historically here, leaves an orphan shard (and its
+     * backing remote directory) behind with no further FE-side reference to it; the only
+     * remaining way to reclaim it is StarMgrMetaSyncer's periodic orphan-shard scan, which is
+     * gated by shard_group_clean_threshold_sec and can take a long time to catch it, if ever
+     * (a shard whose shard group is still referenced by a live partition is never picked up by
+     * that scan at all).
+     *
+     * No CN-side deleteTablet RPC is issued here: at this point in the rollback path the
+     * corresponding CreateReplicaTask(s) never completed successfully, so there is no confirmed
+     * remote tablet metadata to ask a CN to clean up. Deleting the shard removes the StarMgr
+     * shard metadata and, depending on StarOS/StarMgr configuration, its backing storage
+     * allocation; the tablet root directory itself is best-effort cleaned up by the delete-tablet
+     * path elsewhere (see LakeTableHelper#removeShardRootDirectory), not by this rollback path.
+     */
+    private void deleteUselessShardsIfCloudNative(OlapTable table, Set<Long> tabletIdSet) {
+        if (table == null || !table.isCloudNativeTableOrMaterializedView() || tabletIdSet.isEmpty()) {
+            return;
+        }
+        try {
+            stateMgr.getStarOSAgent().deleteShards(tabletIdSet);
+        } catch (DdlException e) {
+            LOG.warn("Failed to delete shards {} for table {} after tablet creation rollback: {}",
+                    tabletIdSet, table.getName(), e.getMessage());
+        }
     }
 
     private void checkPartitionNum(OlapTable olapTable) throws DdlException {
@@ -1423,7 +1455,7 @@ public class LocalMetastore implements ConnectorMetadata, MVRepairHandler, Memor
                 locker.unLockTableWithIntensiveDbLock(db.getId(), olapTable.getId(), LockType.WRITE);
             }
         } catch (DdlException e) {
-            cleanTabletIdSetForAll(tabletIdSetForAll);
+            cleanTabletIdSetForAll(olapTable, tabletIdSetForAll);
             throw e;
         }
     }
@@ -4837,7 +4869,7 @@ public class LocalMetastore implements ConnectorMetadata, MVRepairHandler, Memor
             buildPartitions(db, copiedTbl, newPartitions.stream().map(Partition::getSubPartitions)
                     .flatMap(p -> p.stream()).collect(Collectors.toList()), computeResource);
         } catch (DdlException e) {
-            deleteUselessTablets(tabletIdSet);
+            deleteUselessTablets(copiedTbl, tabletIdSet);
             throw e;
         }
         Preconditions.checkState(origPartitions.size() == newPartitions.size());
@@ -4846,7 +4878,7 @@ public class LocalMetastore implements ConnectorMetadata, MVRepairHandler, Memor
         // before replacing, we need to check again.
         if (!locker.lockTableAndCheckDbExist(db, tableId, LockType.WRITE)) {
             // The db could be dropped during the unlock-READ and lock-WRITE.
-            deleteUselessTablets(tabletIdSet);
+            deleteUselessTablets(copiedTbl, tabletIdSet);
             ErrorReport.reportDdlException(ErrorCode.ERR_BAD_DB_ERROR, dbName);
         }
         try {
@@ -4907,7 +4939,7 @@ public class LocalMetastore implements ConnectorMetadata, MVRepairHandler, Memor
                 }
             });
         } catch (DdlException e) {
-            deleteUselessTablets(tabletIdSet);
+            deleteUselessTablets(copiedTbl, tabletIdSet);
             throw e;
         } finally {
             locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.WRITE);
@@ -4919,9 +4951,13 @@ public class LocalMetastore implements ConnectorMetadata, MVRepairHandler, Memor
                 tblRef.getTableName(), tblRef.getPartitionDef() != null ? tblRef.getPartitionDef().getPartitionNames() : null);
     }
 
-    private void deleteUselessTablets(Set<Long> tabletIdSet) {
+    private void deleteUselessTablets(OlapTable table, Set<Long> tabletIdSet) {
         // create partition failed, remove all newly created tablets.
-        // For lakeTable, shards cleanup is taken care in ShardDeleter.
+        // For LakeTable, the backing StarOS shards must be deleted too; see
+        // deleteUselessShardsIfCloudNative() for why (tablet id == shard id and the shards are
+        // created before any CreateReplicaTask is sent, so they exist independently of whether
+        // tablet/replica creation itself succeeded).
+        deleteUselessShardsIfCloudNative(table, tabletIdSet);
         GlobalStateMgr.getCurrentState().getTabletInvertedIndex().deleteTablets(tabletIdSet);
     }
 

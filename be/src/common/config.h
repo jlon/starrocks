@@ -1361,6 +1361,13 @@ CONF_Int32(lake_pk_index_block_cache_limit_percent, "10");
 CONF_mBool(lake_clear_corrupted_cache_meta, "true");
 // clear *.data cache for lake table
 CONF_mBool(lake_clear_corrupted_cache_data, "true");
+// After creating a lake tablet, read the just-written initial tablet metadata back from remote
+// storage to verify it is actually persisted and parseable. This turns a silent persistence
+// failure of the underlying filesystem (e.g. an object store / Curvine mount whose close()
+// reports success without durably persisting the bytes) into an explicit create_tablet failure,
+// so the FE create-tablet flow fails and rolls back the shard instead of leaving an empty
+// tablet directory whose metadata never landed.
+CONF_mBool(lake_create_tablet_readback_check, "true");
 // The maximum number of files which need to rebuilt in cloud native pk index.
 // If files which need to rebuilt larger than this, we will flush memtable immediately.
 CONF_mInt32(cloud_native_pk_index_rebuild_files_threshold, "50");

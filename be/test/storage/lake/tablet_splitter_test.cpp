@@ -694,7 +694,8 @@ struct SortKeyColumnSpec {
 };
 
 static TabletMetadataPtr make_empty_metadata_with_sort_key(const SortKeyColumnSpec& col_spec,
-                                                           const TabletRangePB& parent_range) {
+                                                           const TabletRangePB& parent_range,
+                                                           bool add_sort_key_idx = true) {
     auto m = std::make_shared<TabletMetadataPB>();
     m->set_id(1);
     m->set_version(1);
@@ -711,7 +712,9 @@ static TabletMetadataPtr make_empty_metadata_with_sort_key(const SortKeyColumnSp
     if (col_spec.precision > 0) col->set_precision(col_spec.precision);
     if (col_spec.scale > 0) col->set_frac(col_spec.scale); // ColumnPB.frac is the scale field
     if (col_spec.length > 0) col->set_length(col_spec.length);
-    schema->add_sort_key_idxes(0);
+    if (add_sort_key_idx) {
+        schema->add_sort_key_idxes(0);
+    }
 
     *m->mutable_range() = parent_range;
     return m;
@@ -720,6 +723,12 @@ static TabletMetadataPtr make_empty_metadata_with_sort_key(const SortKeyColumnSp
 static TabletMetadataPtr make_empty_metadata_bigint_key(std::optional<int64_t> parent_lower,
                                                         std::optional<int64_t> parent_upper) {
     return make_empty_metadata_with_sort_key({.type = TYPE_BIGINT}, make_bigint_range_pb(parent_lower, parent_upper));
+}
+
+static TabletMetadataPtr make_empty_metadata_bigint_key_no_sort_key_idxes(std::optional<int64_t> parent_lower,
+                                                                          std::optional<int64_t> parent_upper) {
+    return make_empty_metadata_with_sort_key({.type = TYPE_BIGINT}, make_bigint_range_pb(parent_lower, parent_upper),
+                                             false);
 }
 
 static TabletMetadataPtr make_empty_metadata_decimal64_key(int precision, int scale) {

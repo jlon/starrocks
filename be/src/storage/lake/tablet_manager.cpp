@@ -268,10 +268,20 @@ Status TabletManager::create_tablet(const TCreateTabletReq& req) {
     }
 
     if (req.enable_tablet_creation_optimization) {
-        return put_tablet_metadata(std::move(tablet_metadata_pb), tablet_initial_metadata_location(req.tablet_id));
+        auto metadata_location = tablet_initial_metadata_location(req.tablet_id);
+        RETURN_IF_ERROR(put_tablet_metadata(std::move(tablet_metadata_pb), metadata_location));
+        if (config::lake_create_tablet_readback_check) {
+            RETURN_IF_ERROR(verify_tablet_metadata_persisted(metadata_location));
+        }
+        return Status::OK();
     }
 
-    return put_tablet_metadata(std::move(tablet_metadata_pb));
+    auto metadata_location = tablet_metadata_location(req.tablet_id, kInitialVersion);
+    RETURN_IF_ERROR(put_tablet_metadata(std::move(tablet_metadata_pb)));
+    if (config::lake_create_tablet_readback_check) {
+        RETURN_IF_ERROR(verify_tablet_metadata_persisted(metadata_location));
+    }
+    return Status::OK();
 }
 
 StatusOr<Tablet> TabletManager::get_tablet(int64_t tablet_id) {
@@ -328,6 +338,16 @@ Status TabletManager::put_tablet_metadata(const TabletMetadataPtr& metadata, con
 
 Status TabletManager::put_tablet_metadata(const TabletMetadataPtr& metadata) {
     return put_tablet_metadata(metadata, tablet_metadata_location(metadata->id(), metadata->version()));
+}
+
+Status TabletManager::verify_tablet_metadata_persisted(const std::string& metadata_location) {
+    // Read directly from remote storage. ProtobufFile bypasses the in-memory metacache, and
+    // fill_cache=false avoids polluting the data cache, so a metadata file reported as written
+    // but not actually persisted surfaces here as a NotFound/parse error rather than silently
+    // passing. A single lightweight read of a small file, no retry.
+    TabletMetadataPB metadata;
+    ProtobufFile file(metadata_location);
+    return file.load(&metadata, /*fill_cache=*/false);
 }
 
 Status TabletManager::cache_tablet_metadata(const TabletMetadataPtr& metadata) {
