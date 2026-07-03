@@ -10,16 +10,16 @@ Keep it updated when adding, backporting, or porting a fork-only change.
 - Audit date: 2026-07-03
 - Upstream comparison ref: `upstream/branch-4.1.1`
 - Upstream ref commit: `14b7e3fa6626a9959179d1b4442d021ce1dd895f`
-- Local range audited: `upstream/branch-4.1.1..b00d41c9e32dd4525d80bf45a543cf9e2822c1e9`
-- Local range size at audit time: 119 commits
+- Local range audited: `upstream/branch-4.1.1..6bf5e3f8e867d1d0dea2c8817726442c27644887`
+- Local range size at audit time: 120 commits
 
 Evidence commands:
 
 ```bash
 git rev-parse --verify upstream/branch-4.1.1
-git rev-list --count upstream/branch-4.1.1..b00d41c9e32dd4525d80bf45a543cf9e2822c1e9
+git rev-list --count upstream/branch-4.1.1..6bf5e3f8e867d1d0dea2c8817726442c27644887
 git log --format='%H%x09%h%x09%an <%ae>%x09%s' \
-  upstream/branch-4.1.1..b00d41c9e32dd4525d80bf45a543cf9e2822c1e9 \
+  upstream/branch-4.1.1..6bf5e3f8e867d1d0dea2c8817726442c27644887 \
   --author='oppo.com\|adc.com'
 ```
 
@@ -42,6 +42,34 @@ Treat them as fork-owned changes when moving to another StarRocks branch.
 | `6fcba194b3ef1ace8ed024dc6d94359decca4da3` | `jianglong@oppo.com` | FE lake tablet stats | Preserve parallel collector failure semantics and add serial/parallel correctness verification. |
 | `57ef05bf9e65092a9a7336fe1655d3c73f146182` | `jianglong@oppo.com` | Docs | Update OPPO change log for tablet stat fixes. |
 | `b00d41c9e32dd4525d80bf45a543cf9e2822c1e9` | `jianglong@oppo.com` | FE lake tablet stats | Reuse the lake tablet stat executor across rounds and harden stop/cancel lifecycle. |
+| `6bf5e3f8e867d1d0dea2c8817726442c27644887` | `jianglong@oppo.com` | Docs | Track lake tablet stat executor reuse. |
+
+## Replacement Artifacts
+
+Record the runtime file to replace for fork-owned code commits when they are
+added or ported. The table below records replacement artifacts verified in this
+document update; do not infer replacement files for older commits that are not
+listed here. Use `N/A` only for docs-only commits.
+For the current 4.1.1 package, the verified root is
+`/home/service/var/starrocks/docker/starrocks-4.1.1-centos/starrocks-4.1.1-centos-amd64/StarRocks-4.1.1`.
+
+| Commit | Runtime file to replace | Evidence |
+| --- | --- | --- |
+| `bf21f562e914918721285418bd4ccb526c5fda4f` | `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar` | Adds `TabletStatMgr` and `Config` lake tablet stat logic. |
+| `6fcba194b3ef1ace8ed024dc6d94359decca4da3` | `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar` | Changes `com/starrocks/catalog/TabletStatMgr.class`. |
+| `b00d41c9e32dd4525d80bf45a543cf9e2822c1e9` | `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar` | `jar tf .../fe/lib/fe-core-4.1.1.jar` contains `com/starrocks/catalog/TabletStatMgr.class` and `com/starrocks/common/Config.class`. |
+| Docs-only commits | `N/A` | No runtime replacement. |
+
+## Compatibility Notes
+
+- Shared-nothing mode (存算一体): `updateLocalTabletStat()` still returns unless
+  `RunMode.isSharedNothingMode()` is true. This path does not create the lake
+  tablet stat executor.
+- Shared-data mode (存算分离): `updateLakeTabletStat()` still returns unless
+  `RunMode.isSharedDataMode()` is true. The new executor is lazy and only used
+  when `enable_parallel_lake_tablet_stat_collection` is true.
+- Default behavior remains serial because `enable_parallel_lake_tablet_stat_collection`
+  defaults to false.
 
 ## OPPO Ports On branch-4.1.2
 
@@ -61,30 +89,22 @@ The following commits were observed there on `branch-4.1.2`.
 
 ## Document Maintenance Note
 
-The audited range ends at `b00d41c9e32dd4525d80bf45a543cf9e2822c1e9`.
+The audited range ends at `6bf5e3f8e867d1d0dea2c8817726442c27644887`.
 The commit that updates this document after that code commit is not self-listed,
 because a Git commit cannot contain its own final hash. Record that document
 maintenance commit in the next audit if it needs to be tracked explicitly.
 
 ## Current Unclassified Local Files
 
-The following uncommitted local files existed before this audit. They are not
-classified as OPPO-owned commits in this document until they are reviewed and
-committed:
-
-```text
-fe/fe-core/src/main/java/com/starrocks/leader/LeaderImpl.java
-fe/fe-core/src/main/java/com/starrocks/sql/common/MetaUtils.java
-fe/fe-plugin-shield/pom.xml
-.kiro/
-curvine-article/
-docs/curvine-empty-tablet-directory-incident-analysis.md
-fe/fe-core/src/test/java/com/starrocks/task/TabletCreationOptimizationLatchTest.java
-```
+Uncommitted local files are not classified as OPPO-owned changes in this
+document until they are reviewed and committed. Use `git status --short` for
+the current working tree state.
 
 ## Update Rules
 
 1. Add every OPPO-owned commit with full hash, author, area, and purpose.
 2. Keep upstream StarRocks backports separate from fork-owned changes.
-3. Move pending work into a commit table only after the commit exists.
-4. When porting to a new branch, record the new commit and source change.
+3. Record the runtime file to replace for every code commit, with class or
+   binary evidence.
+4. Move pending work into a commit table only after the commit exists.
+5. When porting to a new branch, record the new commit and source change.
