@@ -7,6 +7,8 @@ import com.starrocks.analysis.TableName;
 import com.starrocks.authorization.AccessDeniedException;
 import com.starrocks.authorization.ExternalAccessController;
 import com.starrocks.authorization.PrivilegeType;
+import com.starrocks.common.ErrorCode;
+import com.starrocks.common.ErrorReportException;
 import com.starrocks.qe.ConnectContext;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -24,10 +26,15 @@ public class ShieldHiveAccessController extends ExternalAccessController impleme
 
     public ShieldHiveAccessController(Map<String, String> properties) {
         this.permissionChecker = new ShieldPermissionChecker(properties);
-        LOG.info("ShieldHiveAccessController initialized, domain={}, cacheTtlSeconds={}, slowThresholdMs={}",
+        LOG.info("ShieldHiveAccessController initialized, domain={}, cacheTtlSeconds={}, slowThresholdMs={}, "
+                        + "connectTimeoutMs={}, readTimeoutMs={}, retryCount={}, retryDelayMs={}",
                 properties.get(ShieldConfig.DOMAIN),
                 properties.getOrDefault(ShieldConfig.CACHE_TTL_SECONDS, "60"),
-                properties.getOrDefault(ShieldConfig.SLOW_THRESHOLD_MS, "500"));
+                properties.getOrDefault(ShieldConfig.SLOW_THRESHOLD_MS, "500"),
+                properties.getOrDefault(ShieldConfig.CONNECT_TIMEOUT_MS, "5000"),
+                properties.getOrDefault(ShieldConfig.READ_TIMEOUT_MS, "10000"),
+                properties.getOrDefault(ShieldConfig.RETRY_COUNT, "3"),
+                properties.getOrDefault(ShieldConfig.RETRY_DELAY_MS, "200"));
     }
 
     @Override
@@ -74,7 +81,7 @@ public class ShieldHiveAccessController extends ExternalAccessController impleme
             }
         } catch (ShieldApiException e) {
             LOG.error("Shield API unavailable when checking database access. user={}, database={}", user, database, e);
-            throw new AccessDeniedException();
+            throw ErrorReportException.report(ErrorCode.ERR_SHIELD_API_UNAVAILABLE, e.toUserMessage());
         }
     }
 
@@ -92,7 +99,7 @@ public class ShieldHiveAccessController extends ExternalAccessController impleme
         } catch (ShieldApiException e) {
             LOG.error("Shield API unavailable when checking table access. user={}, table={}.{}",
                     user, database, table, e);
-            throw new AccessDeniedException();
+            throw ErrorReportException.report(ErrorCode.ERR_SHIELD_API_UNAVAILABLE, e.toUserMessage());
         }
     }
 

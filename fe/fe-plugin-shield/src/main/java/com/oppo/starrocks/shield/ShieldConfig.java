@@ -18,6 +18,15 @@ public class ShieldConfig {
     public static final String CACHE_TTL_SECONDS = "shield.permission.cache.ttl.seconds";
     public static final String RPD_AREA_FILTER = "shield.rpd.area_filter";
     public static final String SLOW_THRESHOLD_MS = "shield.api.slow.threshold.ms";
+    public static final String CONNECT_TIMEOUT_MS = "shield.api.connect.timeout.ms";
+    public static final String READ_TIMEOUT_MS = "shield.api.read.timeout.ms";
+    public static final String RETRY_COUNT = "shield.api.retry.count";
+    public static final String RETRY_DELAY_MS = "shield.api.retry.delay.ms";
+
+    private static final int DEFAULT_CONNECT_TIMEOUT_MS = 5000;
+    private static final int DEFAULT_READ_TIMEOUT_MS = 10000;
+    private static final int DEFAULT_RETRY_COUNT = 3;
+    private static final int DEFAULT_RETRY_DELAY_MS = 200;
 
     private final String domain;
     private final String appKey;
@@ -30,6 +39,10 @@ public class ShieldConfig {
     private final long cacheTtlSeconds;
     private final String rpdAreaFilter;
     private final long slowThresholdMs;
+    private final int connectTimeoutMs;
+    private final int readTimeoutMs;
+    private final int retryCount;
+    private final int retryDelayMs;
 
     public ShieldConfig(Map<String, String> properties) {
         this.domain = getRequired(properties, DOMAIN);
@@ -45,6 +58,22 @@ public class ShieldConfig {
         this.cacheTtlSeconds = Long.parseLong(properties.getOrDefault(CACHE_TTL_SECONDS, "60"));
         this.rpdAreaFilter = properties.getOrDefault(RPD_AREA_FILTER, areaCode + "/");
         this.slowThresholdMs = Long.parseLong(properties.getOrDefault(SLOW_THRESHOLD_MS, "500"));
+        this.connectTimeoutMs = parseNonNegativeInt(properties, CONNECT_TIMEOUT_MS, DEFAULT_CONNECT_TIMEOUT_MS);
+        this.readTimeoutMs = parseNonNegativeInt(properties, READ_TIMEOUT_MS, DEFAULT_READ_TIMEOUT_MS);
+        this.retryCount = parseNonNegativeInt(properties, RETRY_COUNT, DEFAULT_RETRY_COUNT);
+        this.retryDelayMs = parseNonNegativeInt(properties, RETRY_DELAY_MS, DEFAULT_RETRY_DELAY_MS);
+    }
+
+    private static int parseNonNegativeInt(Map<String, String> properties, String key, int defaultValue) {
+        String value = properties.get(key);
+        if (value == null || value.trim().isEmpty()) {
+            return defaultValue;
+        }
+        int parsed = Integer.parseInt(value.trim());
+        if (parsed < 0) {
+            throw new IllegalArgumentException("Catalog property must be non-negative: " + key);
+        }
+        return parsed;
     }
 
     private static String getRequired(Map<String, String> properties, String key) {
@@ -109,5 +138,21 @@ public class ShieldConfig {
 
     public long getSlowThresholdMs() {
         return slowThresholdMs;
+    }
+
+    public int getConnectTimeoutMs() {
+        return connectTimeoutMs;
+    }
+
+    public int getReadTimeoutMs() {
+        return readTimeoutMs;
+    }
+
+    public int getRetryCount() {
+        return retryCount;
+    }
+
+    public int getRetryDelayMs() {
+        return retryDelayMs;
     }
 }

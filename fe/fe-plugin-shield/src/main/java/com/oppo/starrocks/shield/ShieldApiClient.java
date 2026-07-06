@@ -29,8 +29,6 @@ import org.apache.logging.log4j.Logger;
 public class ShieldApiClient {
     private static final Logger LOG = LogManager.getLogger(ShieldApiClient.class);
     private static final Gson GSON = new Gson();
-    private static final int CONNECT_TIMEOUT_MS = 5000;
-    private static final int READ_TIMEOUT_MS = 10000;
 
     private final ShieldConfig config;
 
@@ -110,14 +108,33 @@ public class ShieldApiClient {
     }
 
     private String executePost(String path, Map<String, Object> params) {
+        int maxAttempts = config.getRetryCount() + 1;
+        ShieldApiException lastFailure = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return doExecutePost(path, params, attempt, maxAttempts);
+            } catch (ShieldApiException e) {
+                lastFailure = e;
+                if (!e.isRetryable() || attempt >= maxAttempts) {
+                    throw e;
+                }
+                LOG.warn("Shield API retryable failure, path={}, attempt={}/{}, error={}",
+                        path, attempt, maxAttempts, e.getMessage());
+                sleepBeforeRetry();
+            }
+        }
+        throw lastFailure;
+    }
+
+    private String doExecutePost(String path, Map<String, Object> params, int attempt, int maxAttempts) {
         String url = config.getDomain() + path;
         long start = ShieldTimingLog.startNanos();
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) new URL(url).openConnection();
             connection.setRequestMethod("POST");
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(READ_TIMEOUT_MS);
+            connection.setConnectTimeout(config.getConnectTimeoutMs());
+            connection.setReadTimeout(config.getReadTimeoutMs());
             connection.setDoOutput(true);
             connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
 
@@ -130,20 +147,37 @@ public class ShieldApiClient {
             String content = readResponse(connection);
             long costMs = ShieldTimingLog.elapsedMs(start);
             if (statusCode != HttpURLConnection.HTTP_OK) {
-                LOG.warn("Shield API HTTP error, path={}, statusCode={}, costMs={}, responseSize={}",
-                        path, statusCode, costMs, content.length());
-                throw new ShieldApiException("Shield API HTTP " + statusCode + " for " + path + ": " + content);
+                LOG.warn("Shield API HTTP error, path={}, statusCode={}, attempt={}/{}, costMs={}, responseSize={}",
+                        path, statusCode, attempt, maxAttempts, costMs, content.length());
+                boolean retryable = statusCode >= 500 || statusCode == 429;
+                throw new ShieldApiException("Shield API HTTP " + statusCode + " for " + path + ": " + content,
+                        null, retryable);
             }
-            LOG.debug("Shield API HTTP ok, path={}, costMs={}, responseSize={}", path, costMs, content.length());
+            LOG.debug("Shield API HTTP ok, path={}, attempt={}/{}, costMs={}, responseSize={}",
+                    path, attempt, maxAttempts, costMs, content.length());
             return content;
         } catch (IOException e) {
             long costMs = ShieldTimingLog.elapsedMs(start);
-            LOG.warn("Shield API IO error, path={}, costMs={}", path, costMs, e);
+            LOG.warn("Shield API IO error, path={}, attempt={}/{}, costMs={}",
+                    path, attempt, maxAttempts, costMs, e);
             throw new ShieldApiException("Shield API request failed for " + path, e);
         } finally {
             if (connection != null) {
                 connection.disconnect();
             }
+        }
+    }
+
+    private void sleepBeforeRetry() {
+        int delayMs = config.getRetryDelayMs();
+        if (delayMs <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ShieldApiException("Shield API retry interrupted for " + config.getDomain(), e);
         }
     }
 

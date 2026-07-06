@@ -28,8 +28,11 @@ public class ShieldPermissionChecker {
                 .expireAfterWrite(config.getCacheTtlSeconds(), TimeUnit.SECONDS)
                 .maximumSize(10000)
                 .build();
-        LOG.info("Shield permission cache enabled, ttlSeconds={}, denyNotCached=true, slowThresholdMs={}",
-                config.getCacheTtlSeconds(), config.getSlowThresholdMs());
+        LOG.info("Shield permission cache enabled, ttlSeconds={}, denyNotCached=true, slowThresholdMs={}, "
+                        + "connectTimeoutMs={}, readTimeoutMs={}, retryCount={}, retryDelayMs={}",
+                config.getCacheTtlSeconds(), config.getSlowThresholdMs(),
+                config.getConnectTimeoutMs(), config.getReadTimeoutMs(),
+                config.getRetryCount(), config.getRetryDelayMs());
     }
 
     public boolean isSuperAdmin(String starRocksUser) {
