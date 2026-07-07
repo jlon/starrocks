@@ -89,8 +89,11 @@ public class TrinoParserNotSupportTest extends TrinoTestBase {
     // refer to https://trino.io/docs/current/functions/json.html#cast-to-json
     @Test
     public void testJsonCast() {
-        String sql = "SELECT CAST(MAP(ARRAY['k1', 'k2', 'k3'], ARRAY[1, 23, 456]) AS JSON);";
-        analyzeFail(sql, "Invalid type cast from map<varchar,smallint(6)> to json");
+        String sql = "SELECT CAST(MAP(ARRAY['k1', 'k2', 'k3'], ARRAY[1, 23, 456]) AS JSON)";
+        analyzeSuccess(sql);
+
+        sql = "select cast(c3 as json) from test_map";
+        analyzeSuccess(sql);
     }
 
     // refer to https://trino.io/docs/current/functions/json.html#json-value

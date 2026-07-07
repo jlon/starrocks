@@ -83,6 +83,7 @@ public class Trino2SRFunctionCallTransformer {
         registerBinaryFunctionTransformer();
         registerHLLFunctionTransformer();
         registerMathFunctionTransformer();
+        registerConditionalFunctionTransformer();
         // todo: support more function transform
     }
 
@@ -139,6 +140,14 @@ public class Trino2SRFunctionCallTransformer {
         // contains_sequence -> array_contains_seq
         registerFunctionTransformer("contains_sequence", 2, "array_contains_seq",
                 List.of(Expr.class, Expr.class));
+        // size(array|map) -> cardinality
+        registerFunctionTransformer("size", 1, "cardinality",
+                List.of(Expr.class));
+        // sequence(start, end[, step]) -> array_generate(start, end[, step])
+        registerFunctionTransformer("sequence", 2, "array_generate",
+                List.of(Expr.class, Expr.class));
+        registerFunctionTransformer("sequence", 3, "array_generate",
+                List.of(Expr.class, Expr.class, Expr.class));
     }
 
     private static void registerDateFunctionTransformer() {
@@ -395,6 +404,12 @@ public class Trino2SRFunctionCallTransformer {
         registerFunctionTransformer("truncate", 1, new FunctionCallExpr("truncate",
                 List.of(new PlaceholderExpr(1, Expr.class), new IntLiteral(0))));
 
+    }
+
+    private static void registerConditionalFunctionTransformer() {
+        // nvl -> coalesce
+        registerFunctionTransformer("nvl", 2, "coalesce",
+                List.of(Expr.class, Expr.class));
     }
 
     private static void registerFunctionTransformer(String trinoFnName, int trinoFnArgNums, String starRocksFnName,

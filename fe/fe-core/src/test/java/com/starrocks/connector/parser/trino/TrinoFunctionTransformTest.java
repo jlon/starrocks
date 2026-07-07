@@ -73,6 +73,21 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
         sql = "select contains(array[1,2,3], 1)";
         assertPlanContains(sql, " <slot 2> : TRUE");
 
+        sql = "select size(array[1,2,3])";
+        assertPlanContains(sql, "cardinality([1,2,3])");
+
+        sql = "select size(array_intersect(split('a_b', '_'), array['a']))";
+        assertPlanContains(sql, "cardinality(array_intersect(split('a_b', '_'), ['a']))");
+
+        sql = "select sequence(1, 5)";
+        assertPlanContains(sql, "array_generate(1, 5)");
+
+        sql = "select sequence(1, cardinality(split('1,2,3', ',')))";
+        assertPlanContains(sql, "array_generate(1, cardinality(split('1,2,3', ',')))");
+
+        sql = "select sequence(1, 10, 2)";
+        assertPlanContains(sql, "array_generate(1, 10, 2)");
+
         sql = "select slice(array[1,2,3,4], 2, 2)";
         assertPlanContains(sql, "array_slice([1,2,3,4], 2, 2)");
 
@@ -285,6 +300,15 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
 
         sql = "select date_add('millisecond', -100, TIMESTAMP '2014-03-08 09:00:00');";
         assertPlanContains(sql, "2014-03-08 08:59:59.900000");
+    }
+
+    @Test
+    public void testConditionalFnTransform() throws Exception {
+        String sql = "select nvl(tb, 'ALL') from tall";
+        assertPlanContains(sql, "coalesce(2: tb, 'ALL')");
+
+        sql = "select nvl(`tb`, 'ALL') from tall";
+        assertPlanContains(sql, "coalesce(2: tb, 'ALL')");
     }
 
     @Test
