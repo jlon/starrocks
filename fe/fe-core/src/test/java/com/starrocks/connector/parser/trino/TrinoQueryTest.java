@@ -472,6 +472,9 @@ public class TrinoQueryTest extends TrinoTestBase {
         assertPlanContains(sql, "1:Project\n" +
                 "  |  <slot 5> : 4: c3['10']");
 
+        sql = "select c3['not_exist_key'] from test_map";
+        analyzeSuccess(sql);
+
         analyzeFail("select c3[\"10\"] from test_map");
     }
 

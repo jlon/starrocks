@@ -20,7 +20,8 @@ import com.starrocks.type.Type;
 
 public class CollectionElementExpr extends Expr {
 
-    // For trino and presto, access out of bound in map/array, it will throw error msg
+    // When true, missing map keys or out-of-range array indexes return an error at runtime.
+    // Trino/Presto return NULL for these cases, so the Trino parser sets this to false.
     private final boolean checkIsOutOfBounds;
 
     public CollectionElementExpr(Expr expr, Expr subscript, boolean checkIsOutOfBounds) {
