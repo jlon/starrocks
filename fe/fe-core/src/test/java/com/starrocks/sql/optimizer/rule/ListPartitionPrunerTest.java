@@ -716,6 +716,31 @@ public class ListPartitionPrunerTest {
     }
 
     @Test
+    public void testGetEffectivePartitionPredicateWithIntEq() {
+        Column daynoCol = new Column("dayno", Type.INT);
+        Column hourCol = new Column("hour", Type.INT);
+        ColumnRefOperator daynoRef = new ColumnRefOperator(10, Type.INT, "dayno", true);
+        ColumnRefOperator hourRef = new ColumnRefOperator(11, Type.INT, "hour", true);
+
+        Map<Column, ColumnRefOperator> columnMetaToColRefMap = Maps.newHashMap();
+        columnMetaToColRefMap.put(daynoCol, daynoRef);
+        columnMetaToColRefMap.put(hourCol, hourRef);
+
+        LogicalHiveScanOperator scanOperator = new LogicalHiveScanOperator(new HiveTable(), Maps.newHashMap(),
+                columnMetaToColRefMap, Operator.DEFAULT_LIMIT, null);
+
+        ScalarOperator predicate = new BinaryPredicateOperator(BinaryType.EQ, daynoRef,
+                ConstantOperator.createInt(20260704));
+
+        List<Optional<ScalarOperator>> result = OptExternalPartitionPruner.getEffectivePartitionPredicate(scanOperator,
+                ImmutableList.of(daynoCol, hourCol), predicate);
+        Assert.assertTrue(result.get(0).isPresent());
+        Assert.assertFalse(result.get(1).isPresent());
+        Assert.assertEquals("20260704",
+                ((ConstantOperator) result.get(0).get().getChild(1)).toString());
+    }
+
+    @Test
     public void testCastTypePredicate() throws AnalysisException {
         // date_col = "2021-01-01"
         conjuncts.clear();

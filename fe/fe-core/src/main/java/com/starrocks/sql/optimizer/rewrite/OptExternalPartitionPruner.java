@@ -26,6 +26,7 @@ import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Pair;
 import com.starrocks.common.util.DebugUtil;
@@ -259,8 +260,8 @@ public class OptExternalPartitionPruner {
         List<Optional<ScalarOperator>> effectivePartitionPredicate = Lists.newArrayList();
         for (Column partitionColumn : partitionColumns) {
             ColumnRefOperator partitionColumnRefOperator = operator.getColumnReference(partitionColumn);
-            // only support string type partition column
-            if (partitionColumn.getType().isStringType() && equalPredicateMap.containsKey(partitionColumnRefOperator)) {
+            if (supportHMSPartitionValuePushdown(partitionColumn.getType())
+                    && equalPredicateMap.containsKey(partitionColumnRefOperator)) {
                 effectivePartitionPredicate.add(Optional.of(equalPredicateMap.get(partitionColumnRefOperator)));
             } else {
                 effectivePartitionPredicate.add(Optional.empty());
@@ -269,18 +270,30 @@ public class OptExternalPartitionPruner {
         return effectivePartitionPredicate;
     }
 
+    private static boolean supportHMSPartitionValuePushdown(Type type) {
+        return type.isStringType() || type.isIntegerType() || type.isLargeint()
+                || type.isDateType() || type.isDatetime();
+    }
+
     private static List<Optional<String>> getPartitionValue(List<Optional<ScalarOperator>> predicates) {
         List<Optional<String>> partitionValues = Lists.newArrayList();
         for (Optional<ScalarOperator> predicate : predicates) {
             if (predicate.isPresent()) {
                 Preconditions.checkState(predicate.get() instanceof BinaryPredicateOperator);
                 ConstantOperator constantOperator = predicate.get().getChild(1).cast();
-                partitionValues.add(Optional.of(constantOperator.getVarchar()));
+                partitionValues.add(Optional.of(formatConstantForHivePartition(constantOperator)));
             } else {
                 partitionValues.add(Optional.empty());
             }
         }
         return partitionValues;
+    }
+
+    private static String formatConstantForHivePartition(ConstantOperator constant) {
+        if (constant.getType().isStringType()) {
+            return constant.getVarchar();
+        }
+        return constant.toString();
     }
 
     private static void initPartitionInfo(LogicalScanOperator operator, OptimizerContext context,
