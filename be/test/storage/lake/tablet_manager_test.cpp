@@ -1248,6 +1248,69 @@ TEST_F(LakeTabletManagerTest, get_tablet_metadata_with_bundle_cache_falls_back_t
     EXPECT_EQ(2, loaded->version());
 }
 
+TEST_F(LakeTabletManagerTest, get_tablet_metadata_initial_version_reads_initial_file_first) {
+    // An empty initial-version tablet (created with tablet-creation optimization) persists only the shared
+    // initial metadata file (0000000000000000_0000000000000001.meta); the per-tablet
+    // <tablet_id>_0000000000000001.meta file does not exist. Reading version=1 must go straight to the
+    // initial file instead of first probing the missing per-tablet path, which the object store reports as
+    // FileNotFound and background stat collection amplifies into a log/CPU storm.
+    auto tablet_id = next_id();
+    starrocks::TabletMetadata initial_metadata;
+    initial_metadata.set_version(1);
+    initial_metadata.set_next_rowset_id(1);
+    EXPECT_OK(_tablet_manager->put_tablet_metadata(std::make_shared<starrocks::TabletMetadata>(initial_metadata),
+                                                   _tablet_manager->tablet_initial_metadata_location(tablet_id)));
+    _tablet_manager->metacache()->prune();
+
+    // Count how many times load_tablet_metadata is entered. The reorder makes it exactly one (the initial
+    // file). Before the fix it was two: a guaranteed-miss probe on the per-tablet path followed by the
+    // initial file read.
+    std::atomic<int> load_calls{0};
+    SyncPoint::GetInstance()->SetCallBack("TabletManager::load_tablet_metadata",
+                                          [&](void* /*arg*/) { load_calls.fetch_add(1, std::memory_order_relaxed); });
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([]() {
+        SyncPoint::GetInstance()->ClearCallBack("TabletManager::load_tablet_metadata");
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+
+    // Plain path (query/repair callers).
+    ASSIGN_OR_ABORT(auto loaded, _tablet_manager->get_tablet_metadata(tablet_id, 1));
+    EXPECT_EQ(tablet_id, loaded->id());
+    EXPECT_EQ(1, loaded->version());
+    EXPECT_EQ(1, load_calls.load(std::memory_order_relaxed));
+
+    // get_tablet_stats path: a request-local BundleMetadataCache is passed, and the initial file is still
+    // read directly without the per-tablet probe.
+    _tablet_manager->metacache()->prune();
+    load_calls.store(0, std::memory_order_relaxed);
+    lake::BundleMetadataCache bundle_cache;
+    lake::CacheOptions opts{.fill_meta_cache = false, .fill_data_cache = false};
+    ASSIGN_OR_ABORT(auto stat_loaded,
+                    _tablet_manager->get_tablet_metadata(tablet_id, 1, opts, 0, nullptr, &bundle_cache));
+    EXPECT_EQ(tablet_id, stat_loaded->id());
+    EXPECT_EQ(1, stat_loaded->version());
+    EXPECT_EQ(1, load_calls.load(std::memory_order_relaxed));
+}
+
+TEST_F(LakeTabletManagerTest, get_tablet_metadata_initial_version_falls_back_to_legacy_file) {
+    // Backward compatibility: a tablet created without the optimization persists the per-tablet
+    // <tablet_id>_0000000000000001.meta file and no shared initial file. Reading version=1 must fall back to
+    // the per-tablet file when the initial file is absent.
+    auto tablet_id = next_id();
+    starrocks::TabletMetadata legacy_metadata;
+    legacy_metadata.set_id(tablet_id);
+    legacy_metadata.set_version(1);
+    legacy_metadata.set_next_rowset_id(1);
+    EXPECT_OK(_tablet_manager->put_tablet_metadata(std::make_shared<starrocks::TabletMetadata>(legacy_metadata),
+                                                   _tablet_manager->tablet_metadata_location(tablet_id, 1)));
+    _tablet_manager->metacache()->prune();
+
+    ASSIGN_OR_ABORT(auto loaded, _tablet_manager->get_tablet_metadata(tablet_id, 1));
+    EXPECT_EQ(tablet_id, loaded->id());
+    EXPECT_EQ(1, loaded->version());
+}
+
 TEST_F(LakeTabletManagerTest, lake_tablet_stat_cache_default_config) {
     EXPECT_TRUE(config::enable_lake_tablet_stat_cache);
     EXPECT_EQ(1048576, config::lake_tablet_stat_cache_capacity);

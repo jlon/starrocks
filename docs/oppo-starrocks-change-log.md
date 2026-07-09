@@ -73,6 +73,50 @@ from `git show --name-only <commit>` and the current source files listed below.
 
 ## Current Working Tree Update
 
+2026-07-09 `ebd-starrocks-crm-uat` 现场把 CN 高 CPU 与海量 `FileNotFoundException`
+定位到"后台 tablet 统计回填扫描空初始分区"这条链路。现场证据：全库 `765577`
+分区中 `648050` 个满足 `VISIBLE_VERSION=1 AND ROW_COUNT=0 AND DATA_SIZE=0`，CN 日志
+5 分钟内绝大多数 `FileNotFound` 版本为 `0000000000000001`，路径首段为非零 tablet id
+的 `.../meta/<tablet_id>_0000000000000001.meta`（legacy 探测），随后 initial 兜底成功
+（FE `failed responses: 0`）。这说明 2026-07-08 的 bundle-first 修复没有覆盖
+`version==kInitialVersion` 场景：`get_single_tablet_metadata` 对初始版本直接返回
+`NotFound`，回退后仍先探测必然不存在的 legacy per-tablet 文件。
+
+当前工作区两处修复（互补，均可运行时回滚）：
+
+- FE `TabletStatMgr` 在采集前跳过仍处初始版本的物理分区
+  （`visibleVersion <= PARTITION_INIT_VERSION`）。初始版本分区从未提交过导入，
+  row_count/data_size 恒为 0，无需向 CN 发 `get_tablet_stats`。跳过判断为 O(1)
+  版本比较，不发 RPC、不改 `dataSizeUpdateTime`，每轮重评估成本可忽略。语义与
+  `ConsistencyChecker` 对初始版本"无数据"的既有判断一致。并行采集路径
+  （`createCollectTabletStatJob`）与 CN-batch 路径（`collectStaleTabletsAndSubmitBatches`）
+  两个调用点均生效。开关 `enable_lake_tablet_stat_skip_initial_version` 默认 `true`。
+- CN `TabletManager::get_tablet_metadata(const string& path, ...)` 对
+  `version==kInitialVersion && tablet_id!=0` 先读共享 initial metadata 文件
+  （`0000000000000000_<kInitialVersion>.meta`），仅当其 `NotFound` 时才回退到
+  legacy per-tablet 文件。对初始版本不再调用 `get_single_tablet_metadata`
+  （它对 `kInitialVersion` 必然短路返回 `NotFound`，只会重复顶层已做过的一次
+  metacache 查找），因此还顺带省掉一次冗余的 metacache 加锁查找。这样即使 FE
+  漏跳（多 FE、升级、并发新建分区尚未 bump 版本），CN 也不再对空初始 tablet 制造
+  一次可预期的对象存储 `FileNotFound`。非初始版本（`version>1`）路径逐字未变，
+  查询热路径零影响。
+  取舍（诚实标注）：`0000000000000000_<v=1>.meta` 是 file-bundling / 优化建表
+  （`lake_enable_tablet_creation_optimization` 或 `table.isFileBundling()`，见
+  `LocalMetastore.java:2051`）写入的共享 initial 文件；故障现场日志正是
+  legacy-miss + initial-hit，证明该集群为此形态，"initial-first" 是纯收益。对
+  未启用 file bundling 且关闭优化的旧部署（v=1 仅有 legacy 文件），会在初始版本
+  读取上多一次 initial 文件 miss；但该路径在 FE 跳过后属低频（仅空分区查询/修复
+  触发），可接受。
+
+测试：FE `TabletStatMgrTest` 新增
+`testParallelCollectionSkipsInitialVersionPartitions`、
+`testCnBatchCollectionSkipsInitialVersionPartitions`、
+`testInitialVersionSkipCanBeDisabled`；BE `tablet_manager_test` 新增
+`get_tablet_metadata_initial_version_reads_initial_file_first`（用 SyncPoint 计数证明
+`load_tablet_metadata` 从两次降到一次）与
+`get_tablet_metadata_initial_version_falls_back_to_legacy_file`（旧格式 fallback）。
+注意：受仓库规则限制，本次改动未在本地执行编译与单测，测试按既有模式补充，尚未实机运行。
+
 2026-07-08 `starrocks-cluster-sync` 验证把新的瓶颈定位到 CN
 `StarOSWorker` filesystem cache 构建路径：
 
@@ -207,6 +251,7 @@ current `branch-4.1.1` source.
 | `lake_tablet_stat_cancel_wait_ms` | `5000` | `b00d41c9e32...` | `Config.java` | Max wait for canceled lake tablet stat jobs before executor recreation. |
 | `enable_lake_tablet_stat_cn_batch_collection` | `false` | current worktree | `Config.java` | Enables CN-batch lake tablet stat collection; default is conservative rollback to the legacy path. |
 | `lake_tablet_stat_batch_size` | `100` | current worktree | `Config.java` | Max tablets per CN-batch `get_tablet_stats` request. |
+| `enable_lake_tablet_stat_skip_initial_version` | `true` | current worktree | `Config.java` | Skips stat collection for physical partitions still at the initial version (`visibleVersion <= PARTITION_INIT_VERSION`); such partitions are guaranteed empty, so no `get_tablet_stats` RPC is issued. |
 
 ### BE Config
 
@@ -263,7 +308,7 @@ For the current 4.1.1 package, the verified root is
 | `3439a375bd26a96691603cfdec0ee6cc3c8dda63` | `StarRocks-4.1.1/be/lib/starrocks_be` | Changes BE lake vacuum code compiled into the BE binary. |
 | `59c3b1750b3d9c51ddae263f2f2eaeefbabc7759` | `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar`, `StarRocks-4.1.1/fe/lib/fe-plugin-shield-1.0.0.jar` | Changes `MetaUtils` in FE core and Shield plugin packaging compatibility. |
 | `46af8f3929f2e1e870931b0fe920854729d2a9bb` | `StarRocks-4.1.1/be/lib/starrocks_be`, `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar`, `StarRocks-4.1.1/fe/lib/fe-plugin-shield-1.0.0.jar` | Changes BE lake tablet manager/config, FE `LocalMetastore`, and Shield plugin classes. |
-| Current working tree | `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar`, `StarRocks-4.1.1/be/lib/starrocks_be` | Changes `TabletStatMgr` CN-batch scheduling and `Config` CN-batch defaults; changes `StarletFileSystem::drop_local_cache` cache-clear length handling; changes `StarOSWorker::new_shared_filesystem` to per-cache-key singleflight; changes lake `TabletManager` bundle-aware metadata lookup to try bundle metadata before legacy per-tablet metadata probing. |
+| Current working tree | `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar`, `StarRocks-4.1.1/be/lib/starrocks_be` | Changes `TabletStatMgr` CN-batch scheduling and initial-version skip, plus `Config` CN-batch/skip defaults; changes `StarletFileSystem::drop_local_cache` cache-clear length handling; changes `StarOSWorker::new_shared_filesystem` to per-cache-key singleflight; changes lake `TabletManager` metadata lookup to try bundle metadata before legacy per-tablet probing and to read the shared initial metadata file first for the initial version. |
 | Docs-only commits | `N/A` | No runtime replacement. |
 
 ## 2026-07-04 4.1.1 Package Replacement Whitelist

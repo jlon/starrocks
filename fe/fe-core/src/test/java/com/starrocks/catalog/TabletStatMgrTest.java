@@ -345,6 +345,23 @@ public class TabletStatMgrTest {
         }
     }
 
+    // Force the physical partitions owning the given tablets back to the initial version so they look like
+    // empty just-created partitions that never had a load committed.
+    private void markPartitionsInitialVersion(LakeTable table, long... initialTabletIds) {
+        long now = System.currentTimeMillis();
+        for (Partition partition : table.getAllPartitions()) {
+            LakeTablet tablet = (LakeTablet) partition.getDefaultPhysicalPartition()
+                    .getLatestBaseIndex().getTablets().get(0);
+            for (long id : initialTabletIds) {
+                if (tablet.getId() == id) {
+                    partition.getDefaultPhysicalPartition()
+                            .setVisibleVersion(PhysicalPartition.PARTITION_INIT_VERSION, now);
+                    break;
+                }
+            }
+        }
+    }
+
     @Test
     public void testParallelLakeTabletStatProgressLogDisabledByDefault() {
         Assertions.assertEquals(-1, Config.lake_tablet_stat_progress_log_interval_ms);
@@ -1833,6 +1850,160 @@ public class TabletStatMgrTest {
             Config.lake_tablet_stat_collect_parallelism = oldParallelism;
             Config.lake_tablet_stat_max_inflight_tasks = oldMaxInflight;
         }
+    }
+
+    @Test
+    public void testParallelCollectionSkipsInitialVersionPartitions(@Mocked WarehouseManager warehouseManager,
+            @Mocked LakeService lakeService, @Mocked GlobalStateMgr globalStateMgr) {
+        boolean oldEnabled = Config.enable_parallel_lake_tablet_stat_collection;
+        boolean oldCnBatch = Config.enable_lake_tablet_stat_cn_batch_collection;
+        boolean oldSkip = Config.enable_lake_tablet_stat_skip_initial_version;
+        try {
+            Config.enable_parallel_lake_tablet_stat_collection = true;
+            Config.enable_lake_tablet_stat_cn_batch_collection = false;
+            Config.enable_lake_tablet_stat_skip_initial_version = true;
+
+            LakeTable table = createLakeTableWithPartitionsForTest(4); // tablets 10,11,12,13
+            Database db = new Database(DB_ID, "db");
+            db.registerTableUnlocked(table);
+            markPartitionsInitialVersion(table, 10L, 12L);
+
+            List<Long> requestedTabletIds = new CopyOnWriteArrayList<>();
+            mockComputeNodeAndTabletStats(warehouseManager, lakeService, globalStateMgr, requestedTabletIds);
+
+            Deencapsulation.invoke(createTabletStatMgrForTest(), "updateLakeTableTabletStat", db, table);
+
+            Assertions.assertEquals(2, requestedTabletIds.size());
+            Assertions.assertTrue(requestedTabletIds.contains(11L));
+            Assertions.assertTrue(requestedTabletIds.contains(13L));
+            Assertions.assertFalse(requestedTabletIds.contains(10L));
+            Assertions.assertFalse(requestedTabletIds.contains(12L));
+        } finally {
+            Config.enable_parallel_lake_tablet_stat_collection = oldEnabled;
+            Config.enable_lake_tablet_stat_cn_batch_collection = oldCnBatch;
+            Config.enable_lake_tablet_stat_skip_initial_version = oldSkip;
+        }
+    }
+
+    @Test
+    public void testCnBatchCollectionSkipsInitialVersionPartitions(@Mocked WarehouseManager warehouseManager,
+            @Mocked LakeService lakeService, @Mocked GlobalStateMgr globalStateMgr) {
+        boolean oldEnabled = Config.enable_parallel_lake_tablet_stat_collection;
+        boolean oldCnBatch = Config.enable_lake_tablet_stat_cn_batch_collection;
+        boolean oldSkip = Config.enable_lake_tablet_stat_skip_initial_version;
+        int oldBatchSize = Config.lake_tablet_stat_batch_size;
+        try {
+            Config.enable_parallel_lake_tablet_stat_collection = false;
+            Config.enable_lake_tablet_stat_cn_batch_collection = true;
+            Config.enable_lake_tablet_stat_skip_initial_version = true;
+            Config.lake_tablet_stat_batch_size = 100;
+
+            LakeTable table = createLakeTableWithPartitionsForTest(4); // tablets 10,11,12,13
+            Database db = new Database(DB_ID, "db");
+            db.registerTableUnlocked(table);
+            markPartitionsInitialVersion(table, 10L, 12L);
+
+            List<Long> requestedTabletIds = new CopyOnWriteArrayList<>();
+            mockComputeNodeAndTabletStats(warehouseManager, lakeService, globalStateMgr, requestedTabletIds);
+
+            runCnBatch(createTabletStatMgrForTest(), db, table);
+
+            Assertions.assertEquals(2, requestedTabletIds.size());
+            Assertions.assertTrue(requestedTabletIds.contains(11L));
+            Assertions.assertTrue(requestedTabletIds.contains(13L));
+            Assertions.assertFalse(requestedTabletIds.contains(10L));
+            Assertions.assertFalse(requestedTabletIds.contains(12L));
+        } finally {
+            Config.enable_parallel_lake_tablet_stat_collection = oldEnabled;
+            Config.enable_lake_tablet_stat_cn_batch_collection = oldCnBatch;
+            Config.enable_lake_tablet_stat_skip_initial_version = oldSkip;
+            Config.lake_tablet_stat_batch_size = oldBatchSize;
+        }
+    }
+
+    @Test
+    public void testInitialVersionSkipCanBeDisabled(@Mocked WarehouseManager warehouseManager,
+            @Mocked LakeService lakeService, @Mocked GlobalStateMgr globalStateMgr) {
+        boolean oldEnabled = Config.enable_parallel_lake_tablet_stat_collection;
+        boolean oldCnBatch = Config.enable_lake_tablet_stat_cn_batch_collection;
+        boolean oldSkip = Config.enable_lake_tablet_stat_skip_initial_version;
+        try {
+            Config.enable_parallel_lake_tablet_stat_collection = true;
+            Config.enable_lake_tablet_stat_cn_batch_collection = false;
+            Config.enable_lake_tablet_stat_skip_initial_version = false;
+
+            LakeTable table = createLakeTableWithPartitionsForTest(4); // tablets 10,11,12,13
+            Database db = new Database(DB_ID, "db");
+            db.registerTableUnlocked(table);
+            markPartitionsInitialVersion(table, 10L, 12L);
+
+            List<Long> requestedTabletIds = new CopyOnWriteArrayList<>();
+            mockComputeNodeAndTabletStats(warehouseManager, lakeService, globalStateMgr, requestedTabletIds);
+
+            Deencapsulation.invoke(createTabletStatMgrForTest(), "updateLakeTableTabletStat", db, table);
+
+            // With the skip disabled, every stale tablet is still requested, including initial-version ones.
+            Assertions.assertEquals(4, requestedTabletIds.size());
+            Assertions.assertTrue(requestedTabletIds.contains(10L));
+            Assertions.assertTrue(requestedTabletIds.contains(12L));
+        } finally {
+            Config.enable_parallel_lake_tablet_stat_collection = oldEnabled;
+            Config.enable_lake_tablet_stat_cn_batch_collection = oldCnBatch;
+            Config.enable_lake_tablet_stat_skip_initial_version = oldSkip;
+        }
+    }
+
+    private void mockComputeNodeAndTabletStats(WarehouseManager warehouseManager, LakeService lakeService,
+            GlobalStateMgr globalStateMgr, List<Long> requestedTabletIds) {
+        new MockUp<GlobalStateMgr>() {
+            @Mock
+            public GlobalStateMgr getCurrentState() {
+                return globalStateMgr;
+            }
+        };
+        new MockUp<WarehouseManager>() {
+            @Mock
+            public WarehouseManager getWarehouseMgr() {
+                return warehouseManager;
+            }
+        };
+        new MockUp<BrpcProxy>() {
+            @Mock
+            public LakeService getLakeService(String host, int port) {
+                return lakeService;
+            }
+        };
+        new Expectations() {
+            {
+                warehouseManager.getComputeNodeAssignedToTablet((ComputeResource) any, anyLong);
+                result = new Delegate() {
+                    ComputeNode getComputeNodeAssignedToTablet(ComputeResource cr, long tabletId) {
+                        return new ComputeNode(1000L, "127.0.0.1", 9030);
+                    }
+                };
+            }
+        };
+        new Expectations() {
+            {
+                lakeService.getTabletStats((TabletStatRequest) any);
+                result = new Delegate() {
+                    Future<TabletStatResponse> getTabletStats(TabletStatRequest request) {
+                        TabletStatResponse response = new TabletStatResponse();
+                        List<TabletStat> stats = Lists.newArrayList();
+                        for (TabletStatRequest.TabletInfo tabletInfo : request.tabletInfos) {
+                            requestedTabletIds.add(tabletInfo.tabletId);
+                            TabletStat stat = new TabletStat();
+                            stat.tabletId = tabletInfo.tabletId;
+                            stat.numRows = 1L;
+                            stat.dataSize = 10L;
+                            stats.add(stat);
+                        }
+                        response.tabletStats = stats;
+                        return CompletableFuture.completedFuture(response);
+                    }
+                };
+            }
+        };
     }
 
     @Test

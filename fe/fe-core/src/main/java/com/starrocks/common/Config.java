@@ -1841,6 +1841,16 @@ public class Config extends ConfigBase {
     @ConfField(mutable = true)
     public static int lake_tablet_stat_batch_size = 100;
 
+    /**
+     * When enabled, lake tablet statistic collection skips physical partitions still at the initial version
+     * (visibleVersion &lt;= PARTITION_INIT_VERSION). Such partitions never had a load committed, so their row count
+     * and data size are guaranteed to be 0 and querying the CN would only read remote initial metadata and, for
+     * bundle-optimized tablets, trigger an object-store FileNotFound on the per-tablet metadata path. Disable it only
+     * if a partition can legitimately hold data at the initial version.
+     */
+    @ConfField(mutable = true)
+    public static boolean enable_lake_tablet_stat_skip_initial_version = true;
+
     @ConfField(mutable = true, comment = "time interval to collect tablet info from backend")
     public static long tablet_collect_interval_seconds = 60;
 

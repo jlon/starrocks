@@ -587,7 +587,25 @@ StatusOr<TabletMetadataPtr> TabletManager::get_tablet_metadata(const string& pat
     StatusOr<TabletMetadataPtr> metadata_or;
     auto [tablet_id, version] = parse_tablet_metadata_filename(basename(path));
     auto cache_key = _location_provider->real_location(tablet_metadata_root_location(tablet_id));
-    if (cache_key.ok() && _metacache->lookup_aggregation_partition(*cache_key)) {
+
+    if (tablet_id != 0 && version == kInitialVersion) {
+        // The initial version is persisted once as the shared initial metadata file
+        // (0000000000000000_<kInitialVersion>.meta), or, for older non-optimized creates, as the per-tablet
+        // <tablet_id>_<kInitialVersion>.meta file. That shared file is a plain metadata PB, not a bundle, so
+        // get_single_tablet_metadata always returns NotFound for kInitialVersion and the bundle path holds
+        // nothing here. Read the shared initial file first and fall back to the per-tablet file; this avoids
+        // a guaranteed-miss probe on the per-tablet path, which the object store reports as FileNotFound and
+        // background stat collection over huge numbers of empty initial partitions amplifies into a log/CPU
+        // storm.
+        std::string initial_path = join_path(prefix_name(path), tablet_initial_metadata_filename());
+        metadata_or = load_tablet_metadata(initial_path, cache_opts.fill_data_cache, expected_gtid, fs);
+        if (metadata_or.ok()) {
+            auto metadata = const_cast<starrocks::TabletMetadataPB*>(metadata_or.value().get());
+            metadata->set_id(tablet_id);
+        } else if (metadata_or.status().is_not_found()) {
+            metadata_or = load_tablet_metadata(path, cache_opts.fill_data_cache, expected_gtid, fs);
+        }
+    } else if (cache_key.ok() && _metacache->lookup_aggregation_partition(*cache_key)) {
         metadata_or = get_single_tablet_metadata(tablet_id, version, cache_opts, expected_gtid, fs);
         if (metadata_or.status().is_not_found()) {
             metadata_or = load_tablet_metadata(path, cache_opts.fill_data_cache, expected_gtid, fs);
@@ -599,17 +617,6 @@ StatusOr<TabletMetadataPtr> TabletManager::get_tablet_metadata(const string& pat
             if (metadata_or.ok() && cache_key.ok()) {
                 _metacache->cache_aggregation_partition(*cache_key, true);
             }
-        }
-    }
-
-    if (metadata_or.status().is_not_found() && tablet_id != 0 && version == kInitialVersion) {
-        // If the metadata is not found, we will try to read the initial metadata at least
-        std::string new_path = join_path(prefix_name(path), tablet_initial_metadata_filename());
-        metadata_or = load_tablet_metadata(new_path, cache_opts.fill_data_cache, expected_gtid, fs);
-        // set tablet id for initial metadata
-        if (metadata_or.ok()) {
-            auto metadata = const_cast<starrocks::TabletMetadataPB*>(metadata_or.value().get());
-            metadata->set_id(tablet_id);
         }
     }
 

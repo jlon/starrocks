@@ -466,6 +466,9 @@ public class TabletStatMgr extends FrontendDaemon {
             }
             PartitionSnapshot snapshot = createPartitionSnapshot(db, table, partition);
             long visibleVersion = snapshot.visibleVersion;
+            if (isInitialEmptyPartition(visibleVersion)) {
+                continue;
+            }
             long visibleVersionTime = snapshot.visibleVersionTime;
             Map<Long, ComputeNode> nodeById = new LinkedHashMap<>();
             Map<Long, List<TabletStatEntry>> partitionTabletsByNode = new LinkedHashMap<>();
@@ -539,6 +542,10 @@ public class TabletStatMgr extends FrontendDaemon {
     private CollectTabletStatJob createCollectTabletStatJob(@NotNull Database db, @NotNull OlapTable table,
                                                             @NotNull PhysicalPartition partition) {
         PartitionSnapshot snapshot = createPartitionSnapshot(db, table, partition);
+        if (isInitialEmptyPartition(snapshot.visibleVersion)) {
+            LOG.debug("Skipped tablet stat collection of initial empty partition {}", snapshot.debugName());
+            return null;
+        }
         long visibleVersionTime = snapshot.visibleVersionTime;
         snapshot.tablets.removeIf(t -> ((LakeTablet) t).getDataSizeUpdateTime() >= visibleVersionTime);
         if (snapshot.tablets.isEmpty()) {
@@ -546,6 +553,15 @@ public class TabletStatMgr extends FrontendDaemon {
             return null;
         }
         return new CollectTabletStatJob(snapshot, computeResource);
+    }
+
+    // A physical partition still at the initial version has never had a load committed, so its row count and
+    // data size are guaranteed to be 0. Collecting stats for it would only make the CN read remote initial
+    // metadata and, for bundle-optimized tablets, trigger an object-store FileNotFound on the per-tablet
+    // metadata path. The same "initial version means no data" semantics are used by ConsistencyChecker.
+    private static boolean isInitialEmptyPartition(long visibleVersion) {
+        return Config.enable_lake_tablet_stat_skip_initial_version
+                && visibleVersion <= PhysicalPartition.PARTITION_INIT_VERSION;
     }
 
     private void updateLakeTableTabletStat(@NotNull Database db, @NotNull OlapTable table) {
