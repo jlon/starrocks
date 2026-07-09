@@ -30,7 +30,7 @@ namespace starrocks {
  * Try to do aggregate in adjacent rows if the keys equal, will reduce the 
  * output rows
  */
-class AggregateIterator final : public ChunkIterator {
+class AggregateIterator final : public ChunkIterator, public PreparedChunkIterator {
 public:
     explicit AggregateIterator(ChunkIteratorPtr child, int factor, bool is_vertical_merge, bool is_key)
             : ChunkIterator(child->schema(), child->chunk_size()),
@@ -57,6 +57,8 @@ public:
     void close() override;
 
     size_t merged_rows() const override { return _aggregator->merged_rows(); }
+
+    Status prepare() override { return prepare_chunk_iterator(_child); }
 
     Status init_encoded_schema(ColumnIdToGlobalDictMap& dict_maps) override {
         RETURN_IF_ERROR(ChunkIterator::init_encoded_schema(dict_maps));

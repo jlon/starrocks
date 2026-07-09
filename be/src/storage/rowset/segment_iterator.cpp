@@ -104,13 +104,14 @@ static int compare(const Slice& lhs_index_key, const Chunk& rhs_chunk, const Sch
     return lhs_index_key.compare(rhs);
 }
 
-class SegmentIterator final : public ChunkIterator {
+class SegmentIterator final : public ChunkIterator, public PreparedChunkIterator {
 public:
     SegmentIterator(std::shared_ptr<Segment> segment, Schema _schema, const SegmentReadOptions& options);
 
     ~SegmentIterator() override = default;
 
     void close() override;
+    Status prepare() override;
 
     // Public entry point used by segment_seek_range_to_rowid_range(). The caller
     // must ensure the segment's short-key index has already been loaded; this
@@ -315,6 +316,7 @@ private:
 
     Status _init();
     Status _init_internal();
+    Status _ensure_inited();
     Status _try_to_update_ranges_by_runtime_filter();
     Status _do_get_next(Chunk* result, vector<rowid_t>* rowid);
 
@@ -518,6 +520,7 @@ private:
     int _reserve_chunk_size = 0;
 
     bool _inited = false;
+    Status _init_status;
 
     std::unordered_map<ColumnId, ColumnAccessPath*> _column_access_paths;
     std::unordered_map<ColumnId, ColumnAccessPath*> _predicate_column_access_paths;
@@ -836,6 +839,21 @@ Status SegmentIterator::_init() {
         StarRocksMetrics::instance()->segment_file_not_found_total.increment(1);
     }
     return st;
+}
+
+Status SegmentIterator::_ensure_inited() {
+    if (!_inited) {
+        _init_status = _init();
+        if (_init_status.ok() || _init_status.is_end_of_file()) {
+            _inited = true;
+        }
+    }
+    return _init_status;
+}
+
+Status SegmentIterator::prepare() {
+    auto st = _ensure_inited();
+    return st.is_end_of_file() ? Status::OK() : st;
 }
 
 Status SegmentIterator::_init_internal() {
@@ -1945,10 +1963,7 @@ inline Status SegmentIterator::_read(Chunk* chunk, vector<rowid_t>* rowids, size
 }
 
 Status SegmentIterator::do_get_next(Chunk* chunk) {
-    if (!_inited) {
-        RETURN_IF_ERROR(_init());
-        _inited = true;
-    }
+    RETURN_IF_ERROR(_ensure_inited());
 
     RETURN_IF_ERROR(_try_to_update_ranges_by_runtime_filter());
 
@@ -1965,10 +1980,7 @@ Status SegmentIterator::do_get_next(Chunk* chunk) {
 }
 
 Status SegmentIterator::do_get_next(Chunk* chunk, vector<uint32_t>* rowid) {
-    if (!_inited) {
-        RETURN_IF_ERROR(_init());
-        _inited = true;
-    }
+    RETURN_IF_ERROR(_ensure_inited());
 
     RETURN_IF_ERROR(_try_to_update_ranges_by_runtime_filter());
 
@@ -1982,10 +1994,7 @@ Status SegmentIterator::do_get_next(Chunk* chunk, vector<uint32_t>* rowid) {
 }
 
 Status SegmentIterator::do_get_next(Chunk* chunk, vector<uint64_t>* rssid_rowids) {
-    if (!_inited) {
-        RETURN_IF_ERROR(_init());
-        _inited = true;
-    }
+    RETURN_IF_ERROR(_ensure_inited());
 
     RETURN_IF_ERROR(_try_to_update_ranges_by_runtime_filter());
 

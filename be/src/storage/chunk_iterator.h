@@ -15,6 +15,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include "column/chunk.h"
 #include "column/schema.h"
@@ -168,6 +169,17 @@ protected:
 };
 
 using ChunkIteratorPtr = std::shared_ptr<ChunkIterator>;
+
+class PreparedChunkIterator {
+public:
+    virtual ~PreparedChunkIterator() = default;
+
+    // Prepare expensive iterator-local metadata without fetching rows.
+    virtual Status prepare() = 0;
+};
+
+Status prepare_chunk_iterator(const ChunkIteratorPtr& child);
+Status prepare_chunk_iterators(const std::vector<ChunkIteratorPtr>& children, size_t start = 0);
 
 ChunkIteratorPtr timed_chunk_iterator(const ChunkIteratorPtr& iter, RuntimeProfile::Counter* counter);
 

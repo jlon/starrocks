@@ -659,6 +659,16 @@ CONF_Bool(enable_load_segment_parallel, "false");
 CONF_Int32(load_segment_thread_pool_num_max, "128");
 CONF_Int32(load_segment_thread_pool_queue_size, "10240");
 
+// When enabled, a lake rowset automatically loads its segments in parallel on a cold read (metacache
+// miss) even if enable_load_segment_parallel is off, to shorten cold-query segment open time. Set to
+// false to fall back to the enable_load_segment_parallel-only behavior as a runtime safety valve.
+CONF_mBool(enable_adaptive_load_segment_parallel, "true");
+
+// When enabled, the lake metadata warmup path (cache_file_only, e.g. CACHE SELECT) pre-initializes
+// segment iterators in parallel so their column-iterator init is warmed before the first get_next.
+// Set to false to fall back to lazy per-segment initialization on that path.
+CONF_mBool(enable_lake_segment_parallel_prepare, "true");
+
 // Enable segment metadata filter for lake tables.
 // When enabled, segments whose sort key range does not intersect with query predicates will be skipped.
 CONF_mBool(enable_lake_segment_metadata_filter, "true");

@@ -16,7 +16,10 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "column/chunk.h"
@@ -24,6 +27,7 @@
 #include "column/schema.h"
 #include "common/config.h"
 #include "storage/chunk_helper.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 
@@ -74,6 +78,48 @@ protected:
     private:
         size_t _idx = 0;
         std::vector<int32_t> _numbers;
+    };
+
+    class PrepareTrackingIterator final : public ChunkIterator, public PreparedChunkIterator {
+    public:
+        PrepareTrackingIterator(std::vector<int32_t> numbers, std::atomic<int>* active, std::atomic<int>* max_active,
+                                std::atomic<int>* prepare_count)
+                : ChunkIterator(IntIterator::schema()),
+                  _numbers(std::move(numbers)),
+                  _active(active),
+                  _max_active(max_active),
+                  _prepare_count(prepare_count) {}
+
+        Status prepare() override {
+            _prepare_count->fetch_add(1);
+            int active = _active->fetch_add(1) + 1;
+            int old_max = _max_active->load();
+            while (active > old_max && !_max_active->compare_exchange_weak(old_max, active)) {
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            _active->fetch_sub(1);
+            return Status::OK();
+        }
+
+        Status do_get_next(Chunk* chunk) override {
+            if (_idx >= _numbers.size()) {
+                return Status::EndOfFile("eof");
+            }
+            size_t n = std::min(10LU, _numbers.size() - _idx);
+            auto* c = chunk->get_column_raw_ptr_by_index(0);
+            (void)c->append_numbers(_numbers.data() + _idx, n * sizeof(int32_t));
+            _idx += n;
+            return Status::OK();
+        }
+
+        void close() override {}
+
+    private:
+        size_t _idx = 0;
+        std::vector<int32_t> _numbers;
+        std::atomic<int>* _active;
+        std::atomic<int>* _max_active;
+        std::atomic<int>* _prepare_count;
     };
 };
 
@@ -155,6 +201,20 @@ TEST_F(UnionIteratorTest, union_one) {
     chunk->reset();
     st = iter->get_next(chunk.get());
     ASSERT_TRUE(st.is_end_of_file());
+}
+
+TEST_F(UnionIteratorTest, prepare_children_in_parallel) {
+    std::atomic<int> active{0};
+    std::atomic<int> max_active{0};
+    std::atomic<int> prepare_count{0};
+    auto sub1 = std::make_shared<PrepareTrackingIterator>(std::vector<int32_t>{1}, &active, &max_active, &prepare_count);
+    auto sub2 = std::make_shared<PrepareTrackingIterator>(std::vector<int32_t>{2}, &active, &max_active, &prepare_count);
+
+    auto iter = new_union_iterator({sub1, sub2});
+    ASSERT_OK(prepare_chunk_iterator(iter));
+
+    EXPECT_EQ(2, prepare_count.load());
+    EXPECT_GE(max_active.load(), 2);
 }
 
 } // namespace starrocks
