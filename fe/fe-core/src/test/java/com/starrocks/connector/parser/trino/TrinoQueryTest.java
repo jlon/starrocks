@@ -1277,4 +1277,10 @@ public class TrinoQueryTest extends TrinoTestBase {
         String sql = "select regexp_replace('123', '321')";
         assertPlanContains(sql, "<slot 2> : '123'");
     }
+
+    @Test
+    public void testUnresolvableColumnErrorContainsLineNumber() {
+        analyzeFail("select t0.missing_col from t0", "at line 1, column");
+        analyzeFail("select v1\nfrom t0\nwhere missing_col = 1", "at line 3, column");
+    }
 }

@@ -94,7 +94,9 @@ public class Scope {
     public ResolvedField resolveField(SlotRef expression, RelationId outerRelationId) {
         Optional<ResolvedField> resolvedField = resolveField(expression, 0, outerRelationId);
         if (!resolvedField.isPresent()) {
-            throw new SemanticException("Column '%s' cannot be resolved", ExprToSql.toSql(expression));
+            throw new SemanticException(
+                    String.format("Column '%s' cannot be resolved", ExprToSql.toSql(expression)),
+                    expression.getPos());
         }
         return resolvedField.get();
     }
@@ -102,7 +104,9 @@ public class Scope {
     private Optional<ResolvedField> resolveField(SlotRef expression, int fieldIndexOffset, RelationId outerRelationId) {
         List<Field> matchFields = relationFields.resolveFields(expression);
         if (matchFields.size() > 1) {
-            throw new SemanticException("Column '%s' is ambiguous", expression.getColumnName());
+            throw new SemanticException(
+                    String.format("Column '%s' is ambiguous", expression.getColumnName()),
+                    expression.getPos());
         } else if (matchFields.size() == 1) {
             if (matchFields.get(0).getType().getPrimitiveType().equals(PrimitiveType.UNKNOWN_TYPE)) {
                 throw new SemanticException("Datatype of external table column [" + matchFields.get(0).getName()
