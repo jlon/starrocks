@@ -1,0 +1,66 @@
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.starrocks.connector.parser.trino;
+
+import com.starrocks.analysis.ArithmeticExpr;
+import com.starrocks.analysis.CollectionElementExpr;
+import com.starrocks.analysis.Expr;
+import com.starrocks.analysis.FunctionCallExpr;
+import com.starrocks.analysis.IntLiteral;
+import com.starrocks.catalog.FunctionSet;
+import com.starrocks.qe.ConnectContext;
+
+public class TrinoSubscriptRewriter {
+    private TrinoSubscriptRewriter() {
+    }
+
+    public static Expr rewrite(Expr expr, ConnectContext session) {
+        if (expr == null || session == null || !isZeroBasedSubscriptEnabled(session)) {
+            return expr;
+        }
+        if (expr instanceof CollectionElementExpr) {
+            return rewriteSplitSubscript((CollectionElementExpr) expr);
+        }
+        return expr;
+    }
+
+    private static Expr toOneBasedIndex(Expr zeroBasedIndex) {
+        if (zeroBasedIndex instanceof IntLiteral) {
+            return new IntLiteral(((IntLiteral) zeroBasedIndex).getValue() + 1);
+        }
+        return new ArithmeticExpr(ArithmeticExpr.Operator.ADD, zeroBasedIndex, new IntLiteral(1));
+    }
+
+    private static boolean isZeroBasedSubscriptEnabled(ConnectContext session) {
+        return "trino".equalsIgnoreCase(session.getSessionVariable().getSqlDialect())
+                && session.getSessionVariable().isTrinoZeroBasedSubscript();
+    }
+
+    private static CollectionElementExpr rewriteSplitSubscript(CollectionElementExpr node) {
+        Expr base = node.getChild(0);
+        if (!isSplitCall(base)) {
+            return node;
+        }
+        return new CollectionElementExpr(base, toOneBasedIndex(node.getChild(1)), node.isCheckIsOutOfBounds());
+    }
+
+    private static boolean isSplitCall(Expr expr) {
+        if (!(expr instanceof FunctionCallExpr)) {
+            return false;
+        }
+        FunctionCallExpr functionCall = (FunctionCallExpr) expr;
+        return FunctionSet.SPLIT.equalsIgnoreCase(functionCall.getFnName().getFunction());
+    }
+}

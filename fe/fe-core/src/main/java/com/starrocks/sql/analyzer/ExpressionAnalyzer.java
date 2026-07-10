@@ -40,6 +40,7 @@ import com.starrocks.cluster.ClusterNamespace;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
 import com.starrocks.connector.parser.trino.TrinoCastRewriter;
+import com.starrocks.connector.parser.trino.TrinoSubscriptRewriter;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.qe.SqlModeHelper;
@@ -429,6 +430,7 @@ public class ExpressionAnalyzer {
             try {
                 analyzeHighOrderFunction(visitor, expression, scope);
                 Expr nodeToVisit = TrinoCastRewriter.rewriteCastToJson(expression, session);
+                nodeToVisit = TrinoSubscriptRewriter.rewrite(nodeToVisit, session);
                 visitor.visit(nodeToVisit, scope);
                 return nodeToVisit;
             } catch (SemanticException e) {
@@ -439,6 +441,7 @@ public class ExpressionAnalyzer {
                 expression.setChild(i, bottomUpAnalyze(visitor, expression.getChild(i), scope));
             }
             Expr nodeToVisit = TrinoCastRewriter.rewriteCastToJson(expression, session);
+            nodeToVisit = TrinoSubscriptRewriter.rewrite(nodeToVisit, session);
             visitor.visit(nodeToVisit, scope);
             return nodeToVisit;
         }

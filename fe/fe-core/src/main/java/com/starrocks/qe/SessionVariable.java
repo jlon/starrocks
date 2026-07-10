@@ -905,6 +905,9 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public static final String SQL_DIALECT = "sql_dialect";
 
+    // Rewrite split()[n] with 0-based index for Spark/Hive SQL migration under Trino dialect.
+    public static final String TRINO_ZERO_BASED_SUBSCRIPT = "trino_zero_based_subscript";
+
     // Is Trino dialect downgraded to Starrocks
     public static final String ENABLE_DIALECT_DOWNGRADE = "enable_dialect_downgrade";
 
@@ -2872,6 +2875,9 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     @VarAttr(name = SQL_DIALECT)
     private String sqlDialect = "StarRocks";
+
+    @VarAttr(name = TRINO_ZERO_BASED_SUBSCRIPT)
+    private boolean trinoZeroBasedSubscript = false;
 
     @VarAttr(name = ENABLE_DIALECT_DOWNGRADE)
     private boolean enableDialectDowngrade = true;
@@ -5308,6 +5314,14 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public void setSqlDialect(String dialect) {
         this.sqlDialect = dialect;
+    }
+
+    public boolean isTrinoZeroBasedSubscript() {
+        return trinoZeroBasedSubscript;
+    }
+
+    public void setTrinoZeroBasedSubscript(boolean trinoZeroBasedSubscript) {
+        this.trinoZeroBasedSubscript = trinoZeroBasedSubscript;
     }
 
     public boolean isEnableDialectDowngrade() {
