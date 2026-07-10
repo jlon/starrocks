@@ -79,10 +79,60 @@ readlink /home/oppo/.m2/repository
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `fe/lib/fe-core-4.1.1.jar` | `dc38ac2de04508a5cbb356897ade4940d4919e60ec2b88b079038c5cb1717ec1` |
+| `fe/lib/fe-core-4.1.1.jar` | `d18b435dd47ae112b9f4ea673aeac7fb6db465ad1964ba0afcb088cf17276302` |
 | `fe/lib/fe-spi-4.1.1.jar` | `588c33e9e5e6c7d18871574d862d3f5d885eb8f48aad5fdea9fa6cf723a29afc` |
 | `fe/lib/fe-plugin-shield-1.0.0.jar` | `e45de6de027a80376da382aa7e9766a917b9845b5c18f5f5b31e818d1d5ef107` |
-| `be/lib/starrocks_be` | `4e4b84b33afef9a258d8dcec943f620d4588cdd73fbb2401d52b06d82bfcdda1` |
+| `be/lib/starrocks_be` | `ff3a10d8272bc4167e43e87e52d1c6d8c7171da7e28eb0a01bee9f2dc7a0aff0` |
+
+2026-07-10 更新记录：
+
+- 按源码 diff 映射，只替换 `fe/lib/fe-core-4.1.1.jar` 和
+  `be/lib/starrocks_be`。
+- FE 改动集中在 `gensrc/thrift/PlanNodes.thrift` 和
+  `fe/fe-core/src/main/java/com/starrocks/planner/OlapScanNode.java`：
+  planner 把 file-bundling 表信息写入 `TInternalScanRange.is_file_bundling`。
+  运行产物只涉及 `fe-core-4.1.1.jar`。
+- BE 改动集中在 `be/src/common/config.h`、
+  `be/src/connector/lake_connector.cpp`、`be/src/storage/lake/tablet_manager.*`：
+  file-bundling scan 可优先读 bundle metadata，并增加 aggregate publish
+  bundle metadata read-back 校验。运行产物为 `be/lib/starrocks_be`。
+- FE 编译命令使用 `starrocks/dev-env-centos7:4.1-latest`，并正确挂载
+  `/home/oppo/.m2:/root/.m2` 与 `/mnt/data/maven-repo:/mnt/data/maven-repo`：
+  `./build.sh --fe -j 28`。
+- FE 编译结果：
+  `Successfully build StarRocks √ Frontend`，`StartTime:2026-07-09 17:12:10,
+  EndTime:2026-07-09 17:14:39, TotalTime:149s`。
+- FE 产物验证：
+  `/mnt/data/starrocks/output/fe/lib/fe-core-4.1.1.jar` SHA-256 为
+  `d18b435dd47ae112b9f4ea673aeac7fb6db465ad1964ba0afcb088cf17276302`；
+  `TInternalScanRange.class` 包含 `is_file_bundling`，`OlapScanNode.class`
+  包含 `setIs_file_bundling`。
+- BE 编译命令使用 `starrocks/dev-env-centos7:4.1-latest`：
+  `BUILD_TYPE=Release ./build.sh --be --enable-shared-data -j 8`。
+- BE 编译结果：
+  `Successfully build StarRocks √ Backend`，`StartTime:2026-07-09 13:19:45,
+  EndTime:2026-07-09 14:58:44, TotalTime:5939s`。
+- BE 编译配置确认：
+  `CMAKE_BUILD_TYPE:STRING=Release`，`USE_STAROS:BOOL=ON`，
+  `WITH_STARCACHE:BOOL=ON`；链接 flags 包含 `-DUSE_STAROS -DWITH_STARCACHE`。
+- BE 聚焦回归测试：
+  `be/ut_build_ASAN/test/storage/lake/tablet_manager_test` 中 7 个
+  `LakeTabletManagerTest` 用例通过，覆盖 read-back 校验、bundle-first lookup、
+  legacy fallback、prefer-bundle 路径和并发 bundle cache single-load。
+- 物料替换备份：
+  - FE: `_backups_20260710011535/fe-lib/fe-core-4.1.1.jar`
+  - BE: `_backups_20260710003905/be-lib/starrocks_be`
+- 替换前后 SHA-256：
+  - FE: `03979e69f78016578fa68f7643dca62857f5b32cd2e8ac9641114b64fd51e587`
+    -> `d18b435dd47ae112b9f4ea673aeac7fb6db465ad1964ba0afcb088cf17276302`
+  - BE: `4e4b84b33afef9a258d8dcec943f620d4588cdd73fbb2401d52b06d82bfcdda1`
+    -> `ff3a10d8272bc4167e43e87e52d1c6d8c7171da7e28eb0a01bee9f2dc7a0aff0`
+- 本地整目录 `podman buildx build` 在
+  `COPY StarRocks-4.1.1 $STARROCKS_ROOT` 层挂住；`strace` 证据显示
+  `podman` 和两个 `buildah-copier` 均停在 `futex(FUTEX_WAIT_PRIVATE)`。
+  本轮改用临时容器精确替换 `fe-core-4.1.1.jar` 和 `starrocks_be` 后
+  `podman commit`，最终 `4.1.1-centos-amd64` 与 `4.1.1` tag 指向 image ID
+  `174df1ec7696186c1e0b3abd0f96f485e32fdeefca088843d8ccfa4174e5626b`。
 
 2026-07-08 12:48 更新记录：
 

@@ -122,7 +122,7 @@ public:
     StatusOr<Tablet> get_tablet(int64_t tablet_id);
 
     StatusOr<VersionedTablet> get_tablet(int64_t tablet_id, int64_t version, bool fill_meta_cache = true,
-                                         bool fill_data_cache = true);
+                                         bool fill_data_cache = true, bool prefer_bundle_metadata = false);
 
     StatusOr<CompactionTaskPtr> compact(CompactionTaskContext* context);
 
@@ -148,7 +148,8 @@ public:
     StatusOr<TabletMetadataPtr> get_tablet_metadata(int64_t tablet_id, int64_t version, const CacheOptions& cache_opts,
                                                     int64_t expected_gtid = 0,
                                                     const std::shared_ptr<FileSystem>& fs = nullptr,
-                                                    BundleMetadataCache* bundle_cache = nullptr);
+                                                    BundleMetadataCache* bundle_cache = nullptr,
+                                                    bool prefer_bundle = false);
 
     // Do not use this function except in a list dir
     StatusOr<TabletMetadataPtr> get_tablet_metadata(const std::string& path, bool fill_cache = true,
@@ -351,6 +352,11 @@ private:
     // metacache, to verify it was actually persisted and parseable. Lightweight: a single read
     // of a small metadata file with no cache fill and no retry.
     Status verify_tablet_metadata_persisted(const std::string& metadata_location);
+    // Read the just-written bundle tablet metadata back from remote storage, bypassing the in-memory
+    // metacache, to verify it was actually persisted, parseable, and contains the expected tablet count.
+    // Reuses the write-time filesystem handle to avoid an extra shard lookup. A single read, no retry.
+    Status verify_bundle_metadata_persisted(const std::string& meta_location, size_t expected_tablet_count,
+                                            FileSystem* fs);
     StatusOr<TabletMetadataPtr> load_tablet_metadata(const std::string& metadata_location, bool fill_data_cache,
                                                      int64_t expected_gtid, const std::shared_ptr<FileSystem>& fs);
     StatusOr<TxnLogPtr> load_txn_log(const std::string& txn_log_location, bool fill_cache);

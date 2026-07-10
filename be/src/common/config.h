@@ -673,6 +673,14 @@ CONF_mBool(enable_lake_segment_parallel_prepare, "true");
 // When enabled, segments whose sort key range does not intersect with query predicates will be skipped.
 CONF_mBool(enable_lake_segment_metadata_filter, "true");
 
+// When enabled, a lake scan that FE marked as file-bundling reads the shared bundle tablet metadata first
+// instead of first probing the per-tablet <tablet_id>_<version>.meta path. For file-bundling tablets that
+// per-tablet path does not exist, so the legacy-first probe produces a guaranteed FileNotFound (object-store
+// log/CPU pressure), especially after a CN restart clears the in-memory aggregation-partition marker. The
+// legacy per-tablet path is still used as a fallback when the bundle is not found, preserving compatibility
+// with metadata written before file bundling was enabled. Set to false as a runtime safety valve.
+CONF_mBool(enable_lake_scan_prefer_bundle_metadata, "true");
+
 // Fragment thread pool
 CONF_Int32(fragment_pool_thread_num_min, "64");
 CONF_Int32(fragment_pool_thread_num_max, "4096");
@@ -1394,6 +1402,14 @@ CONF_mBool(lake_clear_corrupted_cache_data, "true");
 // so the FE create-tablet flow fails and rolls back the shard instead of leaving an empty
 // tablet directory whose metadata never landed.
 CONF_mBool(lake_create_tablet_readback_check, "true");
+// After an aggregate (file_bundling) publish writes the bundle tablet metadata, read it back from remote
+// storage to verify it is actually persisted and parseable before reporting publish success. This turns a
+// silent persistence failure of the underlying filesystem (e.g. an object store / Curvine mount whose
+// close() reports success without durably persisting the bytes) into an explicit publish failure, so the FE
+// does not advance the partition visible version (and does not delete the still-needed txn logs) on a
+// non-durable bundle. A missing bundle meta on the next version's base read would otherwise stall publish.
+// Set to false as a runtime safety valve if the extra read-back is not desired.
+CONF_mBool(lake_aggregate_publish_readback_check, "true");
 // The maximum number of files which need to rebuilt in cloud native pk index.
 // If files which need to rebuilt larger than this, we will flush memtable immediately.
 CONF_mInt32(cloud_native_pk_index_rebuild_files_threshold, "50");

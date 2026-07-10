@@ -143,6 +143,11 @@ struct TInternalScanRange {
   // skip local disk data cache when access page data
   15: optional bool skip_disk_cache = false;
   16: optional i64 gtid
+  // Whether the source table uses file bundling (shared-data only). When true, the CN reads the
+  // shared bundle tablet metadata first instead of probing the per-tablet <tablet_id>_<version>.meta
+  // path, which for file-bundling tablets does not exist and would otherwise produce a FileNotFound
+  // probe (and object-store log/CPU pressure) before falling back to the bundle.
+  17: optional bool is_file_bundling = false;
 }
 
 enum TFileFormatType {

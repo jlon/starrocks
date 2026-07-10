@@ -188,7 +188,13 @@ Status LakeDataSource::get_tablet(const TInternalScanRange& scan_range) {
     int64_t tablet_id = scan_range.tablet_id;
     int64_t version = strtoul(scan_range.version.c_str(), nullptr, 10);
     auto tablet_manager = ExecEnv::GetInstance()->lake_tablet_manager();
-    ASSIGN_OR_RETURN(_tablet, tablet_manager->get_tablet(tablet_id, version));
+    // For a FE-marked file-bundling table, read the shared bundle metadata first so a cold aggregation
+    // marker (e.g. after a CN restart) does not trigger a guaranteed-miss probe on the per-tablet
+    // <tablet_id>_<version>.meta path.
+    bool prefer_bundle_metadata = scan_range.__isset.is_file_bundling && scan_range.is_file_bundling &&
+                                  config::enable_lake_scan_prefer_bundle_metadata;
+    ASSIGN_OR_RETURN(_tablet, tablet_manager->get_tablet(tablet_id, version, /*fill_meta_cache=*/true,
+                                                         /*fill_data_cache=*/true, prefer_bundle_metadata));
     auto& lake_scan_node = _provider->_t_lake_scan_node;
     if (lake_scan_node.__isset.schema_key) {
         const auto& t_schema_key = lake_scan_node.schema_key;

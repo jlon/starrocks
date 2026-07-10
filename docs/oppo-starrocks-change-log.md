@@ -228,6 +228,37 @@ Build/replacement evidence:
   `StarRocks-4.1.1/be/lib/starrocks_be` and the build artifact
   `/mnt/data/starrocks/output/be/lib/starrocks_be` have the same SHA-256:
   `4e4b84b33afef9a258d8dcec943f620d4588cdd73fbb2401d52b06d82bfcdda1`.
+- 2026-07-10 current worktree rebuild found that the previously staged FE jar
+  did not contain the new `TInternalScanRange.is_file_bundling` thrift field or
+  the `OlapScanNode.setIs_file_bundling` call. FE was rebuilt with
+  `starrocks/dev-env-centos7:4.1-latest` and
+  `./build.sh --fe -j 28`; the build printed
+  `Successfully build StarRocks √ Frontend` with `TotalTime:149s`.
+- New 2026-07-10 FE SHA-256:
+  `d18b435dd47ae112b9f4ea673aeac7fb6db465ad1964ba0afcb088cf17276302`.
+  The rebuilt jar was verified by checking that
+  `TInternalScanRange.class` contains `is_file_bundling` and
+  `OlapScanNode.class` contains `setIs_file_bundling`.
+- 2026-07-10 BE build used `starrocks/dev-env-centos7:4.1-latest` and
+  `BUILD_TYPE=Release ./build.sh --be --enable-shared-data -j 8`; the build
+  printed `Successfully build StarRocks √ Backend` with `TotalTime:5939s`.
+  `CMakeCache.txt` confirmed `USE_STAROS:BOOL=ON` and `WITH_STARCACHE:BOOL=ON`.
+- New 2026-07-10 BE SHA-256:
+  `ff3a10d8272bc4167e43e87e52d1c6d8c7171da7e28eb0a01bee9f2dc7a0aff0`.
+  Focused ASAN `LakeTabletManagerTest` regression coverage passed 7/7 tests for
+  read-back check, bundle-first lookup, legacy fallback, prefer-bundle lookup,
+  and concurrent bundle cache single-load.
+- 2026-07-10 Docker material backups:
+  `/home/service/var/starrocks/docker/starrocks-4.1.1-centos/starrocks-4.1.1-centos-amd64/_backups_20260710011535/fe-lib`
+  and
+  `/home/service/var/starrocks/docker/starrocks-4.1.1-centos/starrocks-4.1.1-centos-amd64/_backups_20260710003905/be-lib`.
+- 2026-07-10 local image update did not use a full directory rebuild because
+  `podman buildx build` hung at `COPY StarRocks-4.1.1 $STARROCKS_ROOT`; `strace`
+  showed `podman` and both `buildah-copier` processes waiting in
+  `futex(FUTEX_WAIT_PRIVATE)`. The final local image was produced by replacing
+  only `fe/lib/fe-core-4.1.1.jar` and `be/lib/starrocks_be` in a temporary
+  container and committing it. Final image ID:
+  `174df1ec7696186c1e0b3abd0f96f485e32fdeefca088843d8ccfa4174e5626b`.
 
 ## Custom Parameter Index
 
@@ -258,6 +289,8 @@ current `branch-4.1.1` source.
 | Parameter | Default | Added by | Source | Purpose |
 | --- | --- | --- | --- | --- |
 | `lake_create_tablet_readback_check` | `true` | `46af8f3929f...` | `be/src/common/config.h` | Reads just-written lake initial tablet metadata back from remote storage before `create_tablet` returns success. |
+| `enable_lake_scan_prefer_bundle_metadata` | `true` | current worktree | `be/src/common/config.h` | For FE-marked file-bundling lake scans, read shared bundle tablet metadata before probing the legacy per-tablet metadata path; legacy metadata remains the `NotFound` fallback. |
+| `lake_aggregate_publish_readback_check` | `true` | current worktree | `be/src/common/config.h` | After aggregate/file-bundling publish writes bundle tablet metadata, read it back from remote storage before reporting publish success. |
 
 ### Shield Catalog Properties
 
