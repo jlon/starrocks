@@ -1,0 +1,62 @@
+bundle: oppo-hive-udf
+default_isolation: shared
+functions:
+  - name: dc_udf.normalize_app_version
+    symbol: com.oppo.starrocks.udfs.dcfunctions.NormalizeAppVersion
+    args: [string]
+    returns: string
+
+  - name: dc_udf.normalize_os_version
+    symbol: com.oppo.starrocks.udfs.dcfunctions.NormalizeOsVersion
+    args: [string]
+    returns: string
+
+  - name: dc_udf.cal_loc_dist
+    symbol: com.oppo.starrocks.udfs.dcfunctions.CalLocDist2Strings
+    args: [string, string]
+    returns: string
+
+  - name: dc_udf.cal_loc_dist
+    symbol: com.oppo.starrocks.udfs.dcfunctions.CalLocDist4Strings
+    args: [string, string, string, string]
+    returns: string
+
+  - name: dc_udf.date_diff
+    symbol: com.oppo.starrocks.udfs.dcfunctions.DateDiffString
+    args: [string, string]
+    returns: int
+
+  - name: dc_udf.date_diff
+    symbol: com.oppo.starrocks.udfs.dcfunctions.DateDiffInt
+    args: [int, int]
+    returns: int
+
+  - name: dc_udf.date_add
+    symbol: com.oppo.starrocks.udfs.dcfunctions.DateAddStringInt
+    args: [string, int]
+    returns: int
+
+  - name: dc_udf.date_add
+    symbol: com.oppo.starrocks.udfs.dcfunctions.DateAddInt
+    args: [int, int]
+    returns: int
+
+  - name: dc_udf.sha2_encrypt
+    symbol: com.oppo.starrocks.udfs.dcfunctions.Sha2EncryptDefault
+    args: [string]
+    returns: string
+
+  - name: dc_udf.sha2_encrypt
+    symbol: com.oppo.starrocks.udfs.dcfunctions.Sha2EncryptWithAlgorithm
+    args: [string, string]
+    returns: string
+
+  - name: dc_udf.get_ssoid
+    symbol: com.oppo.starrocks.udfs.dcfunctions.GetSsoIdDefault
+    args: [string]
+    returns: string
+
+  - name: dc_udf.get_ssoid
+    symbol: com.oppo.starrocks.udfs.dcfunctions.GetSsoIdWithKey
+    args: [string, string]
+    returns: string
