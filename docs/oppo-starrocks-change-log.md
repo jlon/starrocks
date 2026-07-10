@@ -260,6 +260,22 @@ Build/replacement evidence:
   container and committing it. Final image ID:
   `174df1ec7696186c1e0b3abd0f96f485e32fdeefca088843d8ccfa4174e5626b`.
 
+2026-07-10 `80172b74f22` 补齐 file-bundling 表 `version>1` 场景的 FileNotFound 风暴：
+
+- FE `OlapScanNode` 在 `TInternalScanRange` 写入 `is_file_bundling`（仅
+  `isCloudNativeTableOrMaterializedView && isFileBundling()` 为 true 时设置）。
+- CN `LakeDataSource::get_tablet` 读取该标记，配合
+  `enable_lake_scan_prefer_bundle_metadata`（默认 `true`，`CONF_mBool`）走
+  `get_tablet_metadata(..., prefer_bundle=true)`，在 aggregation marker 冷时
+  仍 bundle-first，legacy per-tablet 路径仅作 `NotFound` fallback。
+- CN `put_bundle_tablet_metadata` 增加
+  `lake_aggregate_publish_readback_check`（默认 `true`，`CONF_mBool`）读回校验，
+  将 bundle 未持久化从静默成功改为 publish 失败。
+- 与 2026-07-09 初始版本修复互补：v=1 仍走 initial-first；stat 路径仍靠
+  `bundle_cache`；scan 路径靠 FE 透传 + `prefer_bundle`。
+- 测试：`LakeTabletManagerTest` 7/7 通过（含 `get_tablet_metadata_prefer_bundle_skips_legacy_probe`
+  与 read-back 校验用例）。
+
 ## Custom Parameter Index
 
 Use this index to find fork-added knobs quickly. Values are defaults in the
@@ -289,8 +305,8 @@ current `branch-4.1.1` source.
 | Parameter | Default | Added by | Source | Purpose |
 | --- | --- | --- | --- | --- |
 | `lake_create_tablet_readback_check` | `true` | `46af8f3929f...` | `be/src/common/config.h` | Reads just-written lake initial tablet metadata back from remote storage before `create_tablet` returns success. |
-| `enable_lake_scan_prefer_bundle_metadata` | `true` | current worktree | `be/src/common/config.h` | For FE-marked file-bundling lake scans, read shared bundle tablet metadata before probing the legacy per-tablet metadata path; legacy metadata remains the `NotFound` fallback. |
-| `lake_aggregate_publish_readback_check` | `true` | current worktree | `be/src/common/config.h` | After aggregate/file-bundling publish writes bundle tablet metadata, read it back from remote storage before reporting publish success. |
+| `enable_lake_scan_prefer_bundle_metadata` | `true` | `80172b74f22` | `be/src/common/config.h` | For FE-marked file-bundling lake scans, read shared bundle tablet metadata before probing the legacy per-tablet metadata path; legacy metadata remains the `NotFound` fallback. `CONF_mBool`, runtime mutable. |
+| `lake_aggregate_publish_readback_check` | `true` | `80172b74f22` | `be/src/common/config.h` | After aggregate/file-bundling publish writes bundle tablet metadata, read it back from remote storage before reporting publish success. `CONF_mBool`, runtime mutable. |
 
 ### Shield Catalog Properties
 

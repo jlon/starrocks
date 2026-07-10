@@ -329,11 +329,13 @@ find "$base/be/lib" -maxdepth 3 -name "netty-*4.1.133.Final*.jar" | wc -l'
 | `lake_tablet_stat_collect_slow_log_ms` | `5000` | FE 侧慢 partition/batch 日志阈值，单位 ms。 | FE 日志出现 `slow lake tablet stat collection` 或 `slow lake tablet stat batch`。 |
 | `lake_tablet_stat_cancel_wait_ms` | `5000` | FE 停止 collector 时等待已取消任务退出的时间，单位 ms。 | 停止/重启 FE 时无长时间残留的 lake tablet stat collection job。 |
 
-CN 侧日常使用只需要知道一个回滚开关。默认值已经启用 request-local bundle 复用和独立 stat cache，普通使用人员不需要配置容量、TTL 或清理周期。
+CN 侧日常使用只需要知道回滚开关。默认值已经启用 request-local bundle 复用、独立 stat cache，以及 file-bundling 元数据优化；普通使用人员不需要配置容量、TTL 或清理周期。
 
 | 参数 | 默认值 | 作用 | 验证方式 |
 | --- | --- | --- | --- |
 | `enable_lake_tablet_stat_cache` | `true` | BE/CN 默认启用独立 tablet stat cache；发现 cache 相关问题时关闭即可回退。request-local bundle 复用没有外部参数，随 `get_tablet_stats` 自动生效。 | 重复 `get_tablet_stats` 请求时 cache hit 增加；关闭后 hit/miss 计数不变。 |
+| `enable_lake_scan_prefer_bundle_metadata` | `true` | FE 在 scan range 标记 `is_file_bundling=true` 时，CN 查询优先读共享 bundle metadata（`0000000000000000_<version>.meta`），不再先探测不存在的 per-tablet `<tablet_id>_<version>.meta`；bundle 返回 `NotFound` 时仍 fallback 到 legacy 路径。CN 重启后 metacache 冷时尤其有效。`CONF_mBool`，可运行时关闭回退。 | file-bundling 表查询/CN 重启后，对象存储日志中 `<tablet_id>_<version>.meta` 的 `FileNotFound` 明显减少；关闭后恢复 legacy-first 探测行为。 |
+| `lake_aggregate_publish_readback_check` | `true` | aggregate/file-bundling publish 写完 bundle metadata 后，从远端读回校验文件已持久化且 tablet 数量正确，再向 FE 报告 publish 成功；避免底层存储 close 成功但未落盘时版本推进、txn log 被删。`CONF_mBool`，可运行时关闭回退。 | publish 路径 bundle 写后多一次读回；底层存储异常时 publish 显式失败而非静默推进版本。 |
 
 其余 CN 参数属于证据驱动的高级诊断或容量调优参数。只有看到对应指标或日志证据时才调整。
 
@@ -352,10 +354,19 @@ CN 侧日常使用只需要知道一个回滚开关。默认值已经启用 requ
 ADMIN SET FRONTEND CONFIG ("lake_tablet_stat_progress_log_interval_ms" = "10000");
 ```
 
+BE/CN 运行时回滚 file-bundling 优化（两个开关默认均为 `true`，一般无需配置）：
+
+```properties
+# be.conf / cn.conf
+enable_lake_scan_prefer_bundle_metadata = false
+lake_aggregate_publish_readback_check = false
+```
+
 `lake_tablet_stat_progress_log_interval_ms` 只增加观测日志，不改变采集线程池大小、
 in-flight 限流或默认调度周期。FE 参数使用 `ADMIN SET FRONTEND CONFIG` 动态调整；
-BE/CN `CONF_m*` 参数按 StarRocks 配置规则在对应节点配置文件或动态配置入口调整，
-具体以参数是否支持 mutable 为准。
+BE/CN `CONF_mBool` 参数（含上述两个 file-bundling 开关）支持运行时修改，也可写入
+`be.conf`/`cn.conf` 持久化；其余 `CONF_m*` 参数按 StarRocks 配置规则在对应节点
+配置文件或动态配置入口调整，具体以参数是否支持 mutable 为准。
 
 ## FE 测试
 
