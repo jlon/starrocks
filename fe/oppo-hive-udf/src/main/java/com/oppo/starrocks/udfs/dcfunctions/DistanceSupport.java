@@ -10,8 +10,13 @@ final class DistanceSupport {
         if (lng1 == null || lat1 == null || lng2 == null || lat2 == null) {
             return null;
         }
-        double result = distanceCal(Double.valueOf(lng1), Double.valueOf(lat1), Double.valueOf(lng2), Double.valueOf(lat2));
-        return String.valueOf(result);
+        try {
+            double result = distanceCal(Double.parseDouble(lng1), Double.parseDouble(lat1),
+                    Double.parseDouble(lng2), Double.parseDouble(lat2));
+            return String.valueOf(result);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     static String distance(String loc1, String loc2) {
@@ -20,6 +25,9 @@ final class DistanceSupport {
         }
         String[] p1 = loc1.split(",");
         String[] p2 = loc2.split(",");
+        if (p1.length < 2 || p2.length < 2) {
+            return null;
+        }
         return distance(p1[0], p1[1], p2[0], p2[1]);
     }
 
