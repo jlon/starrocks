@@ -1,5 +1,6 @@
 *.swp
 *.pyc
+*.class
 be/output
 be/build
 be/build_Release

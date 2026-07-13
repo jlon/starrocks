@@ -1,22 +1,26 @@
-#Ignore any files or directories at any level, including the context root, named thirdparty
-**/cmake-build*
-**/ut_build_*
-**/be/output
-be/build_
-thirdparty/installed
-thirdparty/src
-**/target
-**/log
-**/.github
-**/.idea
-**/*.o
-**/output
-# negate the output as it might be used for packing container from locally build artifact
-!output
-output/fe/meta
-output/fe/log
-output/be/storage
-output/be/log
-# allow build fs_broker into allin1 docker image
-!fs_brokers/apache_hdfs_broker/output
-fs_brokers/apache_hdfs_broker/output/log
+# Build artifacts (keep output/fe and output/be for local artifact image builds)
+output/*
+!output/fe/
+!output/be/
+**/target/
+be/build*/
+be/output/
+thirdparty/installed/
+thirdparty/src/
+
+# Version control and IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+*.iml
+
+# Docs and tests (not needed for image build)
+docs/
+test/
+**/src/test/
+
+# Logs and temp files
+**/*.log
+**/*.tmp
+**/*.swp
