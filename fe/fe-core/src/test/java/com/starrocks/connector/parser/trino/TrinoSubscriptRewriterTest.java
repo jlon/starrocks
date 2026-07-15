@@ -58,9 +58,29 @@ public class TrinoSubscriptRewriterTest extends TrinoTestBase {
     }
 
     @Test
-    public void testNoRewriteForNonSplitArraySubscript() throws Exception {
+    public void testArrayColumnSubscriptRewritesWithZeroBasedFlag() throws Exception {
         connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
-        String sql = "select c1[1] from test_array";
+        String sql = "select c1[0] from test_array";
+        assertPlanContains(sql, "2: c1[1]");
+
+        sql = "select c1[1] from test_array";
+        assertPlanContains(sql, "2: c1[2]");
+    }
+
+    @Test
+    public void testNestedArraySubscriptRewritesWithZeroBasedFlag() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "select split(ta, ',')[32] from tall";
+        assertPlanContains(sql, "split(1: ta, ',')[33]");
+
+        sql = "select * from (select split(ta, ',') as arr from tall) t where arr[32] = 'x'";
+        analyzeSuccess(sql);
+    }
+
+    @Test
+    public void testNoRewriteForMapSubscript() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "select c1[1] from test_map";
         assertPlanContains(sql, "2: c1[1]");
     }
 

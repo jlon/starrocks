@@ -15,6 +15,7 @@
 package com.starrocks.connector.parser.trino;
 
 import com.starrocks.catalog.FunctionSet;
+import com.starrocks.catalog.Type;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.expression.ArithmeticExpr;
 import com.starrocks.sql.ast.expression.CollectionElementExpr;
@@ -31,7 +32,7 @@ public class TrinoSubscriptRewriter {
             return expr;
         }
         if (expr instanceof CollectionElementExpr) {
-            return rewriteSplitSubscript((CollectionElementExpr) expr);
+            return rewriteArraySubscript((CollectionElementExpr) expr);
         }
         return expr;
     }
@@ -48,9 +49,14 @@ public class TrinoSubscriptRewriter {
                 && session.getSessionVariable().isTrinoZeroBasedSubscript();
     }
 
-    private static CollectionElementExpr rewriteSplitSubscript(CollectionElementExpr node) {
+    private static CollectionElementExpr rewriteArraySubscript(CollectionElementExpr node) {
         Expr base = node.getChild(0);
-        if (!isSplitCall(base)) {
+        Type baseType = base.getType();
+        if (baseType != null) {
+            if (!baseType.isArrayType()) {
+                return node;
+            }
+        } else if (!isSplitCall(base)) {
             return node;
         }
         return new CollectionElementExpr(base, toOneBasedIndex(node.getChild(1)), node.isCheckIsOutOfBounds());

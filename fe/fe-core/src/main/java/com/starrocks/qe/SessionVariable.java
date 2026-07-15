@@ -905,7 +905,7 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public static final String SQL_DIALECT = "sql_dialect";
 
-    // Rewrite split()[n] with 0-based index for Spark/Hive SQL migration under Trino dialect.
+    // Rewrite array[n] and split()[n] with 0-based index for Spark/Hive SQL migration under Trino dialect.
     public static final String TRINO_ZERO_BASED_SUBSCRIPT = "trino_zero_based_subscript";
 
     // Is Trino dialect downgraded to Starrocks
