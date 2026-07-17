@@ -22,7 +22,9 @@ ARG RUN_AS_USER
 ARG GROUP
 
 RUN yum install -y java-17-openjdk-devel tzdata openssl curl vim ca-certificates \
-        fontconfig gzip tar less hostname procps-ng lsof python3-pip nc && \
+        fontconfig gzip tar less hostname procps-ng lsof python3 python3-pip nc && \
+    ln -sf /usr/bin/python3 /usr/bin/python && \
+    pip3 install 'requests==2.12.2' -i https://mirrors.aliyun.com/pypi/simple/ && \
     rpm -ivh https://repo.mysql.com/mysql80-community-release-el8-7.noarch.rpm && \
     yum -y install mysql-community-client --nogpgcheck && \
     yum remove -y mysql80-community-release && \
@@ -45,7 +47,22 @@ COPY --from=artifacts --chown=${USER}:${GROUP} /release/be_artifacts/ ${STARROCK
 COPY --chown=${USER}:${GROUP} docker/dockerfiles/fe/*.sh ${STARROCKS_ROOT}/
 COPY --chown=${USER}:${GROUP} docker/dockerfiles/be/*.sh ${STARROCKS_ROOT}/
 
-RUN mkdir -p ${STARROCKS_ROOT}/fe/meta ${STARROCKS_ROOT}/be/storage && \
+# Consul /metrics registration for UMS monitoring (same contract as starrocks-*-centos images).
+USER root
+RUN set -eux; \
+    for f in fe_entrypoint cn_entrypoint be_entrypoint fe_prestop cn_prestop be_prestop; do \
+      if [ -f "${STARROCKS_ROOT}/${f}.sh" ]; then mv "${STARROCKS_ROOT}/${f}.sh" "${STARROCKS_ROOT}/${f}.orig.sh"; fi; \
+    done
+COPY --chown=${USER}:${GROUP} deploy/monitor/register_to_consul.py ${STARROCKS_ROOT}/
+COPY --chown=${USER}:${GROUP} deploy/monitor/unregister_to_consul.py ${STARROCKS_ROOT}/
+COPY --chown=${USER}:${GROUP} deploy/monitor/fe_entrypoint.sh ${STARROCKS_ROOT}/fe_entrypoint.sh
+COPY --chown=${USER}:${GROUP} deploy/monitor/cn_entrypoint.sh ${STARROCKS_ROOT}/cn_entrypoint.sh
+COPY --chown=${USER}:${GROUP} deploy/monitor/be_entrypoint.sh ${STARROCKS_ROOT}/be_entrypoint.sh
+COPY --chown=${USER}:${GROUP} deploy/monitor/fe_prestop.sh ${STARROCKS_ROOT}/fe_prestop.sh
+COPY --chown=${USER}:${GROUP} deploy/monitor/cn_prestop.sh ${STARROCKS_ROOT}/cn_prestop.sh
+COPY --chown=${USER}:${GROUP} deploy/monitor/be_prestop.sh ${STARROCKS_ROOT}/be_prestop.sh
+RUN chmod +x ${STARROCKS_ROOT}/*.sh ${STARROCKS_ROOT}/*.orig.sh && \
+    mkdir -p ${STARROCKS_ROOT}/fe/meta ${STARROCKS_ROOT}/be/storage && \
     ln -sfT be ${STARROCKS_ROOT}/cn
 
 USER ${RUN_AS_USER}
