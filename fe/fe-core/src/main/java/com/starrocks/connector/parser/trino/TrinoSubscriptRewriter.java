@@ -15,7 +15,7 @@
 package com.starrocks.connector.parser.trino;
 
 import com.starrocks.catalog.FunctionSet;
-import com.starrocks.catalog.Type;
+import com.starrocks.type.Type;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.expression.ArithmeticExpr;
 import com.starrocks.sql.ast.expression.CollectionElementExpr;

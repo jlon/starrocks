@@ -864,8 +864,9 @@ public class FunctionAnalyzer {
         // Unqualified calls keep the historical builtin-first resolution order.
         // Note: default dialect still rewrites unqualified/qualified date_add into
         // TimestampArithmeticExpr before this path; use Trino dialect for dc_udf.date_add.
-        if (StringUtils.isNotEmpty(node.getFnName().getDb())) {
-            Function qualifiedUdf = AnalyzerUtils.getUdfFunction(session, node.getFnName(), argumentTypes);
+        if (StringUtils.isNotEmpty(node.getDbName())) {
+            Function qualifiedUdf = AnalyzerUtils.getUdfFunction(
+                    session, FunctionName.createFnName(node.getFnName().toString()), argumentTypes);
             if (qualifiedUdf != null) {
                 return qualifiedUdf;
             }

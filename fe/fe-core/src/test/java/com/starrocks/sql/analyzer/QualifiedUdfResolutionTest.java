@@ -14,20 +14,22 @@
 
 package com.starrocks.sql.analyzer;
 
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.FunctionCallExpr;
-import com.starrocks.analysis.FunctionName;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.Function;
+import com.starrocks.catalog.FunctionName;
 import com.starrocks.catalog.ScalarFunction;
-import com.starrocks.catalog.Type;
 import com.starrocks.common.Config;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.QueryRelation;
 import com.starrocks.sql.ast.QueryStatement;
 import com.starrocks.sql.ast.SelectRelation;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.FunctionCallExpr;
 import com.starrocks.thrift.TFunctionBinaryType;
+import com.starrocks.type.IntegerType;
+import com.starrocks.type.Type;
+import com.starrocks.type.VarcharType;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
@@ -46,15 +48,15 @@ public class QualifiedUdfResolutionTest {
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("dc_udf");
         Function udf = ScalarFunction.createUdf(
                 new FunctionName("dc_udf", "date_add"),
-                new Type[] {Type.VARCHAR, Type.INT},
-                Type.INT,
+                new Type[] {VarcharType.VARCHAR, IntegerType.INT},
+                IntegerType.INT,
                 false,
                 TFunctionBinaryType.SRJAR,
                 "file:///tmp/oppo-hive-udf-1.0.0.jar",
                 "com.oppo.starrocks.udfs.dcfunctions.DateAddStringInt",
                 "",
                 "",
-                false);
+                null);
         udf.setChecksum("dummy");
         db.addFunction(udf);
     }
@@ -87,8 +89,8 @@ public class QualifiedUdfResolutionTest {
             QueryStatement stmt = (QueryStatement) AnalyzeTestUtil.analyzeSuccess(
                     "select dc_udf.date_add('20240101', 1)");
             FunctionCallExpr call = extractFirstFunctionCall(stmt);
-            Assert.assertEquals("dc_udf", call.getFnName().getDb());
-            Assert.assertEquals("date_add", call.getFnName().getFunction());
+            Assert.assertEquals("dc_udf", call.getDbName());
+            Assert.assertEquals("date_add", call.getFunctionName());
             Assert.assertEquals(TFunctionBinaryType.SRJAR, call.getFn().getBinaryType());
             Assert.assertTrue(call.getType().isInt());
         } finally {

@@ -23,12 +23,15 @@ cp -r -p "${STARROCKS_HOME}/conf/core-site.xml" "${OUTPUT_DIR}/conf/"
 cp -r -p "${STARROCKS_HOME}/conf/cluster_snapshot.yaml" "${OUTPUT_DIR}/conf/"
 
 rm -rf "${OUTPUT_DIR}/lib/"*
-cp -r -p "${STARROCKS_HOME}/fe/fe-core/target/lib/"* "${OUTPUT_DIR}/lib/"
-cp -r -p "${STARROCKS_HOME}/fe/fe-core/target/starrocks-fe.jar" "${OUTPUT_DIR}/lib/"
+cp -r -p "${STARROCKS_HOME}/fe/fe-server/target/lib/"* "${OUTPUT_DIR}/lib/"
+cp -r -p "${STARROCKS_HOME}/fe/fe-server/target/starrocks-fe.jar" "${OUTPUT_DIR}/lib/"
 cp -r -p "${STARROCKS_HOME}/java-extensions/hadoop-ext/target/starrocks-hadoop-ext.jar" "${OUTPUT_DIR}/lib/"
+if [ -f "${STARROCKS_HOME}/fe/fe-plugin-shield/target/fe-plugin-shield-1.0.0.jar" ]; then
+    cp -r -p "${STARROCKS_HOME}/fe/fe-plugin-shield/target/fe-plugin-shield-1.0.0.jar" "${OUTPUT_DIR}/lib/"
+fi
 cp -r -p "${STARROCKS_HOME}/webroot/"* "${OUTPUT_DIR}/webroot/"
-cp -r -p "${STARROCKS_HOME}/fe/spark-dpp/target/"spark-dpp-"*"-jar-with-dependencies.jar" "${OUTPUT_DIR}/spark-dpp/"
-cp -r -p "${STARROCKS_HOME}/fe/hive-udf/target/hive-udf-1.0.0.jar" "${OUTPUT_DIR}/hive-udf/"
+cp -r -p "${STARROCKS_HOME}/fe/plugin/spark-dpp/target/"spark-dpp-"*"-jar-with-dependencies.jar" "${OUTPUT_DIR}/spark-dpp/"
+cp -r -p "${STARROCKS_HOME}/fe/plugin/hive-udf/target/"hive-udf-"*.jar" "${OUTPUT_DIR}/hive-udf/"
 if [ -f "${STARROCKS_HOME}/fe/oppo-hive-udf/target/oppo-hive-udf-1.0.0.jar" ]; then
     cp -r -p "${STARROCKS_HOME}/fe/oppo-hive-udf/target/oppo-hive-udf-1.0.0.jar" "${OUTPUT_DIR}/oppo-hive-udf/"
 fi

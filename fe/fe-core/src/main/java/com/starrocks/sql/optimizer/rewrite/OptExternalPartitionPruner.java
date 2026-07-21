@@ -26,7 +26,7 @@ import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Type;
+import com.starrocks.type.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Pair;
 import com.starrocks.common.util.DebugUtil;
