@@ -550,7 +550,8 @@ public class SelectAnalyzer {
                         RewriteAliasVisitor visitor =
                                 new RewriteAliasVisitor(sourceScope, outputScope, outputExpressions, session);
                         groupingExpr = groupingExpr.accept(visitor, null);
-                        analyzeExpression(groupingExpr, analyzeState, sourceScope);
+                        // Must use rewritten expression (e.g. trino_zero_based_subscript), same as SELECT list.
+                        groupingExpr = analyzeExpression(groupingExpr, analyzeState, sourceScope);
                     }
 
                     if (!groupingExpr.getType().canGroupBy()) {
@@ -622,8 +623,8 @@ public class SelectAnalyzer {
             RewriteAliasVisitor visitor =
                     new RewriteAliasVisitor(sourceScope, outputScope, outputExpressions, session);
             Expr rewrite = e.accept(visitor, null);
-            analyzeExpression(rewrite, analyzeState, sourceScope);
-            return rewrite;
+            // Must use rewritten expression (e.g. trino_zero_based_subscript), same as SELECT list.
+            return analyzeExpression(rewrite, analyzeState, sourceScope);
         }).collect(Collectors.toList());
     }
 
@@ -637,7 +638,8 @@ public class SelectAnalyzer {
 
             AnalyzerUtils.verifyNoWindowFunctions(predicate, "HAVING");
             AnalyzerUtils.verifyNoGroupingFunctions(predicate, "HAVING");
-            analyzeExpression(predicate, analyzeState, sourceScope);
+            // Must use rewritten expression (e.g. trino_zero_based_subscript), same as SELECT list.
+            predicate = analyzeExpression(predicate, analyzeState, sourceScope);
 
             if (!predicate.getType().matchesType(BooleanType.BOOLEAN) && !predicate.getType().matchesType(NullType.NULL)) {
                 throw new SemanticException("HAVING clause must evaluate to a boolean: actual type %s",
