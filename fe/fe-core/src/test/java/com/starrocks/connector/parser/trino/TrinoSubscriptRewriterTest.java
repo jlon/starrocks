@@ -96,4 +96,22 @@ public class TrinoSubscriptRewriterTest extends TrinoTestBase {
             connectContext.getSessionVariable().setSqlDialect(originDialect);
         }
     }
+
+    @Test
+    public void testGroupBySplitSubscriptWithZeroBasedFlag() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        // SELECT and GROUP BY both use zero-based index; rewrite must stay consistent.
+        String sql = "select split(ta, '-')[1], count(*) from tall group by split(ta, '-')[1]";
+        assertPlanContains(sql, "split(1: ta, '-')[2]");
+        analyzeSuccess(sql);
+    }
+
+    @Test
+    public void testGroupBySplitSubscriptWithoutZeroBasedFlag() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(false);
+        // Original one-based flow unchanged when flag is off.
+        String sql = "select split(ta, '-')[1], count(*) from tall group by split(ta, '-')[1]";
+        assertPlanContains(sql, "split(1: ta, '-')[1]");
+        analyzeSuccess(sql);
+    }
 }
