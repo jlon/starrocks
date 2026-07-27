@@ -27,10 +27,12 @@ public class TextFileFormatDescTest {
         Assertions.assertFalse(tTextFileDesc.isSetLine_delim());
         Assertions.assertFalse(tTextFileDesc.isSetCollection_delim());
         Assertions.assertFalse(tTextFileDesc.isSetMapkey_delim());
+        Assertions.assertFalse(tTextFileDesc.isSetEnclose());
+        Assertions.assertFalse(tTextFileDesc.isSetEscape());
         Assertions.assertTrue(tTextFileDesc.isSetSkip_header_line_count());
         Assertions.assertEquals(0, tTextFileDesc.getSkip_header_line_count());
 
-        desc = new TextFileFormatDesc("a", "b", "c", "d", 10);
+        desc = new TextFileFormatDesc("a", "b", "c", "d", 10, (byte) '"', (byte) '\\');
         tTextFileDesc = desc.toThrift();
         Assertions.assertTrue(tTextFileDesc.isSetField_delim());
         Assertions.assertTrue(tTextFileDesc.isSetLine_delim());
@@ -41,6 +43,8 @@ public class TextFileFormatDescTest {
         Assertions.assertEquals("c", tTextFileDesc.getCollection_delim());
         Assertions.assertEquals("d", tTextFileDesc.getMapkey_delim());
         Assertions.assertEquals(10, tTextFileDesc.getSkip_header_line_count());
+        Assertions.assertEquals((byte) '"', tTextFileDesc.getEnclose());
+        Assertions.assertEquals((byte) '\\', tTextFileDesc.getEscape());
     }
 
 
