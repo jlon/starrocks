@@ -181,6 +181,12 @@ public class UnifiedMetadata implements ConnectorMetadata {
     }
 
     @Override
+    public List<String> listPartitionNamesByFilter(String databaseName, String tableName, String filter) {
+        ConnectorMetadata metadata = metadataOfTable(databaseName, tableName);
+        return metadata.listPartitionNamesByFilter(databaseName, tableName, filter);
+    }
+
+    @Override
     public Table getTable(ConnectContext context, String dbName, String tblName) {
         ConnectorMetadata metadata = metadataOfTable(dbName, tblName);
         return metadata.getTable(context, dbName, tblName);

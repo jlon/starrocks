@@ -144,6 +144,11 @@ public class CatalogConnectorMetadata implements ConnectorMetadata {
     }
 
     @Override
+    public List<String> listPartitionNamesByFilter(String databaseName, String tableName, String filter) {
+        return normal.listPartitionNamesByFilter(databaseName, tableName, filter);
+    }
+
+    @Override
     public Table getTable(ConnectContext context, String dbName, String tblName) {
         ConnectorMetadata metadata = metadataOfTable(tblName);
         if (metadata == null) {

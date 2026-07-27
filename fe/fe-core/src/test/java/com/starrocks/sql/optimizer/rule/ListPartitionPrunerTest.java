@@ -741,6 +741,56 @@ public class ListPartitionPrunerTest {
     }
 
     @Test
+    public void testBuildHmsPartitionFilterRangeAndIn() {
+        Column daynoCol = new Column("dayno", VarcharType.VARCHAR);
+        Column hourCol = new Column("hour", IntegerType.INT);
+        ColumnRefOperator daynoRef = new ColumnRefOperator(20, VarcharType.VARCHAR, "dayno", true);
+        ColumnRefOperator hourRef = new ColumnRefOperator(21, IntegerType.INT, "hour", true);
+
+        Map<Column, ColumnRefOperator> columnMetaToColRefMap = Maps.newHashMap();
+        columnMetaToColRefMap.put(daynoCol, daynoRef);
+        columnMetaToColRefMap.put(hourCol, hourRef);
+        LogicalHiveScanOperator scanOperator = new LogicalHiveScanOperator(new HiveTable(), Maps.newHashMap(),
+                columnMetaToColRefMap, Operator.DEFAULT_LIMIT, null);
+
+        ScalarOperator rangePredicate = Utils.compoundAnd(
+                new BinaryPredicateOperator(BinaryType.GE, daynoRef, ConstantOperator.createVarchar("20260726")),
+                new BinaryPredicateOperator(BinaryType.LE, daynoRef, ConstantOperator.createVarchar("20260726")));
+        Optional<String> filter = OptExternalPartitionPruner.buildHmsPartitionFilter(
+                scanOperator, ImmutableList.of(daynoCol, hourCol), rangePredicate);
+        Assertions.assertTrue(filter.isPresent());
+        Assertions.assertEquals("dayno >= '20260726' AND dayno <= '20260726'", filter.get());
+
+        ScalarOperator intEq = new BinaryPredicateOperator(BinaryType.EQ, hourRef, ConstantOperator.createInt(10));
+        filter = OptExternalPartitionPruner.buildHmsPartitionFilter(
+                scanOperator, ImmutableList.of(daynoCol, hourCol), intEq);
+        Assertions.assertTrue(filter.isPresent());
+        Assertions.assertEquals("hour = 10", filter.get());
+
+        ScalarOperator inPredicate = new InPredicateOperator(daynoRef,
+                ConstantOperator.createVarchar("20260725"),
+                ConstantOperator.createVarchar("20260726"));
+        filter = OptExternalPartitionPruner.buildHmsPartitionFilter(
+                scanOperator, ImmutableList.of(daynoCol, hourCol), inPredicate);
+        Assertions.assertTrue(filter.isPresent());
+        Assertions.assertEquals("(dayno = '20260725' OR dayno = '20260726')", filter.get());
+
+        ScalarOperator castRange = new BinaryPredicateOperator(BinaryType.GE,
+                new CastOperator(VarcharType.VARCHAR, daynoRef),
+                ConstantOperator.createVarchar("20260726"));
+        filter = OptExternalPartitionPruner.buildHmsPartitionFilter(
+                scanOperator, ImmutableList.of(daynoCol, hourCol), castRange);
+        Assertions.assertFalse(filter.isPresent());
+
+        ScalarOperator quoteLiteral = new BinaryPredicateOperator(BinaryType.EQ, daynoRef,
+                ConstantOperator.createVarchar("a'b"));
+        filter = OptExternalPartitionPruner.buildHmsPartitionFilter(
+                scanOperator, ImmutableList.of(daynoCol, hourCol), quoteLiteral);
+        Assertions.assertTrue(filter.isPresent());
+        Assertions.assertEquals("dayno = 'a''b'", filter.get());
+    }
+
+    @Test
     public void testCastTypePredicate() throws AnalysisException {
         // date_col = "2021-01-01"
         conjuncts.clear();
