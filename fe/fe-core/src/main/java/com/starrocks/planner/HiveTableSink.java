@@ -65,7 +65,9 @@ public class HiveTableSink extends DataSink {
         }
         this.fileFormat = hiveTable.getStorageFormat().name().toLowerCase();
         if (format == HiveStorageFormat.TEXTFILE) {
-            this.textFileFormatDesc = Optional.of(toTextFileFormatDesc(hiveTable.getSerdeProperties()));
+            this.textFileFormatDesc = Optional.of(toTextFileFormatDesc(
+                    hiveTable.getSerdeProperties(),
+                    hiveTable.getProperties().get(HiveTable.HIVE_TABLE_SERDE_LIB)));
             this.compressionType = String.valueOf(TCompressionType.NO_COMPRESSION);
         } else {
             this.compressionType = hiveTable.getProperties().getOrDefault("compression_codec",

@@ -27,8 +27,8 @@ class HdfsScannerCSVReader : public CSVReader {
 public:
     // |file| must outlive HdfsScannerCSVReader
     HdfsScannerCSVReader(RandomAccessFile* file, const std::string& row_delimiter, bool need_probe_line_delimiter,
-                         const std::string& column_separator, size_t file_length)
-            : CSVReader(CSVParseOptions(row_delimiter, column_separator)) {
+                         const std::string& column_separator, char escape, char enclose, size_t file_length)
+            : CSVReader(CSVParseOptions(row_delimiter, column_separator, 0, false, escape, enclose)) {
         _file = file;
         _offset = 0;
         _remain_length = file_length;
@@ -225,6 +225,13 @@ Status HdfsTextScanner::_setup_delimiter(const TTextFileDesc& text_file_desc) {
     } else {
         _mapkey_delimiter = DEFAULT_MAPKEY_DELIM.front();
     }
+
+    if (text_file_desc.__isset.enclose) {
+        _enclose = text_file_desc.enclose;
+    }
+    if (text_file_desc.__isset.escape) {
+        _escape = text_file_desc.escape;
+    }
     return Status::OK();
 }
 
@@ -400,11 +407,12 @@ Status HdfsTextScanner::_create_csv_reader() {
         // we don't know real stream size in adavance, so we set a very large stream size
         auto file_size = static_cast<size_t>(-1);
         _reader = std::make_shared<HdfsScannerCSVReader>(_file.get(), _line_delimiter, _need_probe_line_delimiter,
-                                                         _field_delimiter, file_size);
+                                                         _field_delimiter, _escape, _enclose, file_size);
     } else {
         // no compressed file, splittable.
         _reader = std::make_shared<HdfsScannerCSVReader>(_file.get(), _line_delimiter, _need_probe_line_delimiter,
-                                                         _field_delimiter, scan_range->file_length);
+                                                         _field_delimiter, _escape, _enclose,
+                                                         scan_range->file_length);
     }
     auto* reader = down_cast<HdfsScannerCSVReader*>(_reader.get());
 

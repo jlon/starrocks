@@ -240,7 +240,7 @@ public class HiveMetaClientTest {
         Assertions.assertNull(blankDesc.getMapkeyDelim());
         Assertions.assertEquals(0, blankDesc.getSkipHeaderLineCount());
 
-        // Check is using OpenCSVSerde
+        // Check is using OpenCSVSerde with explicit separatorChar
         Map<String, String> openCSVParameters = new HashMap<>();
         openCSVParameters.put("separatorChar", ",");
         TextFileFormatDesc openCSVDesc = HiveMetastoreApiConverter.toTextFileFormatDesc(openCSVParameters);
@@ -248,6 +248,31 @@ public class HiveMetaClientTest {
         Assertions.assertNull(openCSVDesc.getLineDelim());
         Assertions.assertNull(openCSVDesc.getCollectionDelim());
         Assertions.assertNull(openCSVDesc.getMapkeyDelim());
+
+        // OpenCSVSerde without separatorChar should default to ',' (align with Hive), not fall back to '\001'
+        TextFileFormatDesc openCSVDefaultDesc = HiveMetastoreApiConverter.toTextFileFormatDesc(
+                new HashMap<>(), "org.apache.hadoop.hive.serde2.OpenCSVSerde");
+        Assert.assertEquals(",", openCSVDefaultDesc.getFieldDelim());
+        Assert.assertNull(openCSVDefaultDesc.getLineDelim());
+        Assert.assertNull(openCSVDefaultDesc.getCollectionDelim());
+        Assert.assertNull(openCSVDefaultDesc.getMapkeyDelim());
+        Assert.assertEquals(Byte.valueOf((byte) '"'), openCSVDefaultDesc.getEnclose());
+        Assert.assertEquals(Byte.valueOf((byte) '"'), openCSVDefaultDesc.getEscape());
+
+        Map<String, String> customOpenCSVParameters = new HashMap<>();
+        customOpenCSVParameters.put("quoteChar", "'");
+        customOpenCSVParameters.put("escapeChar", "~");
+        TextFileFormatDesc customOpenCSVDesc = HiveMetastoreApiConverter.toTextFileFormatDesc(
+                customOpenCSVParameters, "org.apache.hadoop.hive.serde2.OpenCSVSerde");
+        Assert.assertEquals(Byte.valueOf((byte) '\''), customOpenCSVDesc.getEnclose());
+        Assert.assertEquals(Byte.valueOf((byte) '~'), customOpenCSVDesc.getEscape());
+
+        // LazySimpleSerDe / unknown serde without field.delim keeps null (BE uses '\001')
+        TextFileFormatDesc lazySimpleDesc = HiveMetastoreApiConverter.toTextFileFormatDesc(
+                new HashMap<>(), "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe");
+        Assert.assertNull(lazySimpleDesc.getFieldDelim());
+        Assert.assertNull(lazySimpleDesc.getEnclose());
+        Assert.assertNull(lazySimpleDesc.getEscape());
 
         // Check is using custom delimiter
         Map<String, String> parameters = new HashMap<>();

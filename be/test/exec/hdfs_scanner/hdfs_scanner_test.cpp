@@ -2237,6 +2237,32 @@ TEST_F(HdfsScannerTest, TestCSVWithWindowsEndDelemeter) {
     }
 }
 
+TEST_F(HdfsScannerTest, TestOpenCSVSerde) {
+    SlotDesc csv_descs[] = {{"imei", TypeDescriptor::from_logical_type(LogicalType::TYPE_VARCHAR)},
+                            {"user_id", TypeDescriptor::from_logical_type(LogicalType::TYPE_VARCHAR)},
+                            {"group_id", TypeDescriptor::from_logical_type(LogicalType::TYPE_INT)},
+                            {"tjp_group_id", TypeDescriptor::from_logical_type(LogicalType::TYPE_INT)},
+                            {"value", TypeDescriptor::from_logical_type(LogicalType::TYPE_VARCHAR)},
+                            {"type", TypeDescriptor::from_logical_type(LogicalType::TYPE_VARCHAR)},
+                            {""}};
+    const std::string file = "./be/test/exec/test_data/csv_scanner/open_csv_serde.csv";
+    auto* range = _create_scan_range(file, 0, 0);
+    range->text_file_desc.__set_enclose('"');
+    range->text_file_desc.__set_escape('"');
+    auto* tuple_desc = _create_tuple_desc(csv_descs);
+    auto* param = _create_param(file, range, tuple_desc);
+    build_hive_column_names(param, tuple_desc);
+    auto scanner = std::make_shared<HdfsTextScanner>();
+
+    ASSERT_OK(scanner->init(_runtime_state, *param));
+    ASSERT_OK(scanner->open(_runtime_state));
+    ChunkPtr chunk = ChunkHelper::new_chunk(*tuple_desc, 1);
+    ASSERT_OK(scanner->get_next(_runtime_state, &chunk));
+    ASSERT_EQ(1, chunk->num_rows());
+    EXPECT_EQ("['864325076877998', 'flink', 14785, 592317, '495,591', 'tjp']", chunk->debug_row(0));
+    scanner->close();
+}
+
 TEST_F(HdfsScannerTest, TestCSVWithUTFBOM) {
     SlotDesc csv_descs[] = {{"uuid", TypeDescriptor::from_logical_type(LogicalType::TYPE_VARCHAR, 22)}, {""}};
 

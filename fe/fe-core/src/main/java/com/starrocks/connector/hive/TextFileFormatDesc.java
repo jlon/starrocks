@@ -32,17 +32,28 @@ public class TextFileFormatDesc {
 
     private final int skipHeaderLineCount;
 
+    private final Byte enclose;
+
+    private final Byte escape;
+
     public TextFileFormatDesc(String fieldDelim, String lineDelim, String collectionDelim, String mapkeyDelim) {
-        this(fieldDelim, lineDelim, collectionDelim, mapkeyDelim, 0);
+        this(fieldDelim, lineDelim, collectionDelim, mapkeyDelim, 0, null, null);
     }
 
     public TextFileFormatDesc(String fieldDelim, String lineDelim, String collectionDelim, String mapkeyDelim,
                               int skipHeaderLineCount) {
+        this(fieldDelim, lineDelim, collectionDelim, mapkeyDelim, skipHeaderLineCount, null, null);
+    }
+
+    public TextFileFormatDesc(String fieldDelim, String lineDelim, String collectionDelim, String mapkeyDelim,
+                              int skipHeaderLineCount, Byte enclose, Byte escape) {
         this.fieldDelim = fieldDelim;
         this.lineDelim = lineDelim;
         this.collectionDelim = collectionDelim;
         this.mapkeyDelim = mapkeyDelim;
         this.skipHeaderLineCount = skipHeaderLineCount;
+        this.enclose = enclose;
+        this.escape = escape;
     }
 
     public String getFieldDelim() {
@@ -65,6 +76,14 @@ public class TextFileFormatDesc {
         return skipHeaderLineCount;
     }
 
+    public Byte getEnclose() {
+        return enclose;
+    }
+
+    public Byte getEscape() {
+        return escape;
+    }
+
     public TTextFileDesc toThrift() {
         TTextFileDesc desc = new TTextFileDesc();
         if (fieldDelim != null) {
@@ -80,6 +99,12 @@ public class TextFileFormatDesc {
             desc.setMapkey_delim(mapkeyDelim);
         }
         desc.setSkip_header_line_count(skipHeaderLineCount);
+        if (enclose != null) {
+            desc.setEnclose(enclose);
+        }
+        if (escape != null) {
+            desc.setEscape(escape);
+        }
         return desc;
     }
 
@@ -91,6 +116,8 @@ public class TextFileFormatDesc {
         sb.append(", collectionDelim='").append(collectionDelim).append('\'');
         sb.append(", mapkeyDelim='").append(mapkeyDelim).append('\'');
         sb.append(", skipHeaderLineCount='").append(skipHeaderLineCount).append('\'');
+        sb.append(", enclose='").append(enclose).append('\'');
+        sb.append(", escape='").append(escape).append('\'');
         sb.append('}');
         return sb.toString();
     }

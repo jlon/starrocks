@@ -368,11 +368,12 @@ public class HiveMetastoreApiConverter {
         textFileParameters.putAll(sd.getSerdeInfo().getParameters());
         // "skip.header.line.count" is set in TBLPROPERTIES
         textFileParameters.putAll(params);
+        String serdeLib = sd.getSerdeInfo().getSerializationLib();
         Partition.Builder partitionBuilder = Partition.builder()
                 .setParams(params)
                 .setFullPath(sd.getLocation())
                 .setInputFormat(toRemoteFileInputFormat(sd.getInputFormat()))
-                .setTextFileFormatDesc(toTextFileFormatDesc(textFileParameters))
+                .setTextFileFormatDesc(toTextFileFormatDesc(textFileParameters, serdeLib))
                 .setSplittable(RemoteFileInputFormat.isSplittable(sd.getInputFormat()));
 
         return partitionBuilder.build();
@@ -582,6 +583,11 @@ public class HiveMetastoreApiConverter {
     }
 
     public static TextFileFormatDesc toTextFileFormatDesc(Map<String, String> parameters) {
+        return toTextFileFormatDesc(parameters, null);
+    }
+
+    public static TextFileFormatDesc toTextFileFormatDesc(Map<String, String> parameters, String serdeLib) {
+        final boolean openCSVSerde = isOpenCSVSerde(serdeLib);
         // Get properties 'field.delim', 'line.delim', 'collection.delim' and 'mapkey.delim' from StorageDescriptor
         // Detail refer to:
         // https://github.com/apache/hive/blob/90428cc5f594bd0abb457e4e5c391007b2ad1cb8/serde/src/gen/thrift/gen-javabean/org/apache/hadoop/hive/serde/serdeConstants.java#L34-L40
@@ -602,6 +608,16 @@ public class HiveMetastoreApiConverter {
             // https://cwiki.apache.org/confluence/display/hive/csv+serde
             fieldDelim = parameters.getOrDefault(OpenCSVSerde.SEPARATORCHAR, "");
         }
+        // Hive OpenCSVSerde defaults separatorChar to ',' when unset; StarRocks must not fall back to '\001'.
+        if (fieldDelim.isEmpty() && openCSVSerde) {
+            fieldDelim = ",";
+        }
+        Byte enclose = null;
+        Byte escape = null;
+        if (openCSVSerde) {
+            enclose = firstCharAsByte(parameters.getOrDefault(OpenCSVSerde.QUOTECHAR, "\""), '"');
+            escape = firstCharAsByte(parameters.getOrDefault(OpenCSVSerde.ESCAPECHAR, "\""), '"');
+        }
         String lineDelim = parameters.getOrDefault(serdeConstants.LINE_DELIM, "");
         String mapkeyDelim = parameters.getOrDefault(serdeConstants.MAPKEY_DELIM, "");
         int skipHeaderLineCount = Integer.parseInt(parameters.getOrDefault(serdeConstants.HEADER_COUNT, "0"));
@@ -615,7 +631,17 @@ public class HiveMetastoreApiConverter {
         collectionDelim = collectionDelim.isEmpty() ? null : collectionDelim;
         mapkeyDelim = mapkeyDelim.isEmpty() ? null : mapkeyDelim;
 
-        return new TextFileFormatDesc(fieldDelim, lineDelim, collectionDelim, mapkeyDelim, skipHeaderLineCount);
+        return new TextFileFormatDesc(fieldDelim, lineDelim, collectionDelim, mapkeyDelim,
+                skipHeaderLineCount, enclose, escape);
+    }
+
+    private static byte firstCharAsByte(String value, char defaultValue) {
+        return (byte) (value.isEmpty() ? defaultValue : value.charAt(0));
+    }
+
+    private static boolean isOpenCSVSerde(String serdeLib) {
+        return StringUtils.isNotEmpty(serdeLib) &&
+                OpenCSVSerde.class.getName().equalsIgnoreCase(serdeLib.trim());
     }
 
     public static HiveCommonStats toHiveCommonStats(Map<String, String> params) {

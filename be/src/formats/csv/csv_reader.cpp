@@ -585,6 +585,50 @@ Status CSVReader::_expand_buffer_loosely() {
 void CSVReader::split_record(const Record& record, Fields* columns) const {
     DCHECK(_column_delimiter_length > 0);
 
+    if (_parse_options.enclose != 0 || _parse_options.escape != 0) {
+        char* read = record.data;
+        char* write = record.data;
+        char* const end = record.data + record.size;
+
+        while (read <= end) {
+            char* const field_start = write;
+            bool enclosed = read < end && _parse_options.enclose != 0 && *read == _parse_options.enclose;
+            if (enclosed) {
+                ++read;
+            }
+
+            while (read < end) {
+                if (enclosed && *read == _parse_options.enclose) {
+                    if (read + 1 < end && *(read + 1) == _parse_options.enclose) {
+                        *write++ = _parse_options.enclose;
+                        read += 2;
+                    } else {
+                        enclosed = false;
+                        ++read;
+                    }
+                    continue;
+                }
+                if (_parse_options.escape != 0 && *read == _parse_options.escape && read + 1 < end) {
+                    *write++ = *(read + 1);
+                    read += 2;
+                    continue;
+                }
+                if (!enclosed && static_cast<size_t>(end - read) >= _column_delimiter_length &&
+                    memcmp(read, _parse_options.column_delimiter.data(), _column_delimiter_length) == 0) {
+                    break;
+                }
+                *write++ = *read++;
+            }
+
+            columns->emplace_back(field_start, static_cast<size_t>(write - field_start));
+            if (read == end) {
+                break;
+            }
+            read += _column_delimiter_length;
+        }
+        return;
+    }
+
     const char* value = record.data;
     const char* ptr = record.data;
     const size_t size = record.size;
