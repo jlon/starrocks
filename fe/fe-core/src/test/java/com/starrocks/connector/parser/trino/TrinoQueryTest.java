@@ -808,6 +808,10 @@ public class TrinoQueryTest extends TrinoTestBase {
         sql = "select regexp_like('abc123','abc*');";
         assertPlanContains(sql, "regexp('abc123', 'abc*')");
 
+        // Hive/Spark RLIKE operator is normalized to regexp_like in Trino dialect.
+        sql = "select 'abc123' RLIKE 'abc*';";
+        assertPlanContains(sql, "regexp('abc123', 'abc*')");
+
         sql = "select regexp_extract('1a 2b 14m', '\\d+');";
         assertPlanContains(sql, "if(regexp_extract('1a 2b 14m', '\\\\d+', 0) = '', NULL, " +
                 "regexp_extract('1a 2b 14m', '\\\\d+', 0))");
@@ -819,6 +823,15 @@ public class TrinoQueryTest extends TrinoTestBase {
         sql = "select regexp_extract('1abb 2b 14m', '[a-z]+', 1);";
         assertPlanContains(sql, "<slot 2> : if(regexp_extract('1abb 2b 14m', '[a-z]+', 1) = '', NULL, " +
                 "regexp_extract('1abb 2b 14m', '[a-z]+', 1))");
+    }
+
+    @Test
+    public void testHiveArrayConstructorCompat() throws Exception {
+        String sql = "select array_intersect(split('a_b', '_'), ARRAY('a'))";
+        assertPlanContains(sql, "array_intersect(split('a_b', '_'), ['a'])");
+
+        sql = "select ARRAY('42260')[1]";
+        assertPlanContains(sql, "['42260']");
     }
 
     @Test
