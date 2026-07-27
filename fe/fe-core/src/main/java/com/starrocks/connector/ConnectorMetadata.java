@@ -122,7 +122,7 @@ public interface ConnectorMetadata {
     }
 
     /**
-     * Return partition names filtered by an HMS partition filter expression.
+     * Return partition names filtered by HMS/Glue partition filter expression.
      * Default falls back to listing all partition names for connectors that do not support filter pushdown.
      */
     default List<String> listPartitionNamesByFilter(String databaseName, String tableName, String filter) {
@@ -181,15 +181,6 @@ public interface ConnectorMetadata {
                                                           TvrTableSnapshot fromSnapshotExclusive,
                                                           TvrTableSnapshot toSnapshotInclusive) {
         return Lists.newArrayList();
-    }
-
-    /**
-     * Commit time of {@code version} (the table's own version space, e.g. an Iceberg snapshot id)
-     * in epoch millis, or empty when it cannot be resolved (unknown/expired version, or a format
-     * with no per-version commit time).
-     */
-    default Optional<Long> getVersionCommitTimeMillis(String dbName, Table table, long version) {
-        return Optional.empty();
     }
 
     default boolean tableExists(ConnectContext context, String dbName, String tblName) {
