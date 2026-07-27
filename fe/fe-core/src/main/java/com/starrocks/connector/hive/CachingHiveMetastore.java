@@ -300,6 +300,12 @@ public class CachingHiveMetastore extends CachingMetastore implements IHiveMetas
     }
 
     @Override
+    public List<String> getPartitionKeysByFilter(String dbName, String tableName, String filter) {
+        // Do not cache filter results to avoid high-cardinality keys.
+        return metastore.getPartitionKeysByFilter(dbName, tableName, filter);
+    }
+
+    @Override
     public boolean partitionExists(Table table, List<String> partitionValues) {
         return metastore.partitionExists(table, partitionValues);
     }
