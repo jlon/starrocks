@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <iomanip>
 #include <utility>
 
@@ -24,8 +25,10 @@
 #include "column/fixed_length_column.h"
 #include "column/schema.h"
 #include "column/vectorized_fwd.h"
+#include "common/config.h"
 #include "common/logging.h"
 #include "exec/pipeline/scan/morsel.h"
+#include "gen_cpp/InternalService_types.h"
 #include "storage/chunk_helper.h"
 #include "storage/lake/tablet.h"
 #include "storage/lake/tablet_manager.h"
@@ -230,6 +233,78 @@ TEST_F(LakeDuplicateTabletReaderTest, test_cache_file_only_prepares_segment_iter
     auto read_chunk_ptr = ChunkHelper::new_chunk(*_schema, 1024);
     ASSERT_TRUE(reader->get_next(read_chunk_ptr.get()).is_end_of_file());
     reader->close();
+}
+
+TEST_F(LakeDuplicateTabletReaderTest, test_issue_75203_physical_split_transient_segment_load) {
+    std::vector<int> keys{1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    std::vector<int> values{10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
+    auto key_column = Int32Column::create();
+    auto value_column = Int32Column::create();
+    key_column->append_numbers(keys.data(), keys.size() * sizeof(int));
+    value_column->append_numbers(values.data(), values.size() * sizeof(int));
+    Chunk chunk({std::move(key_column), std::move(value_column)}, _schema);
+
+    VersionedTablet tablet(_tablet_mgr.get(), _tablet_metadata);
+    {
+        int64_t txn_id = next_id();
+        ASSIGN_OR_ABORT(auto writer, tablet.new_writer(kHorizontal, txn_id));
+        ASSERT_OK(writer->open());
+        ASSERT_OK(writer->write(chunk));
+        ASSERT_OK(writer->finish());
+        auto* rowset = _tablet_metadata->add_rowsets();
+        rowset->set_overlapped(false);
+        rowset->set_id(1);
+        for (const auto& file : writer->segments()) {
+            rowset->add_segments(file.path);
+            rowset->add_segment_size(file.size.value());
+        }
+        writer->close();
+    }
+    _tablet_metadata->set_version(2);
+    CHECK_OK(_tablet_mgr->put_tablet_metadata(*_tablet_metadata));
+
+    auto old_parallel = config::enable_load_segment_parallel;
+    config::enable_load_segment_parallel = true;
+    DeferOp restore_config([&]() { config::enable_load_segment_parallel = old_parallel; });
+
+    std::atomic<int> load_calls{0};
+    SyncPoint::GetInstance()->EnableProcessing();
+    SyncPoint::GetInstance()->SetCallBack("Rowset::load_segments::parallel_load", [&](void* arg) {
+        if (load_calls.fetch_add(1) == 0) {
+            *reinterpret_cast<Status*>(arg) = Status::IOError("injected transient segment load failure");
+        }
+    });
+    DeferOp clear_sync_point([]() {
+        SyncPoint::GetInstance()->ClearCallBack("Rowset::load_segments::parallel_load");
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+
+    auto rowsets = Rowset::get_rowsets(_tablet_mgr.get(), _tablet_metadata);
+    ASSERT_FALSE(rowsets.empty());
+
+    TScanRange scan_range;
+    TInternalScanRange internal_scan_range;
+    internal_scan_range.tablet_id = _tablet_metadata->id();
+    internal_scan_range.version = "2";
+    internal_scan_range.partition_id = 1;
+    scan_range.__set_internal_scan_range(internal_scan_range);
+
+    pipeline::Morsels morsels;
+    morsels.emplace_back(std::make_unique<pipeline::ScanMorsel>(1, scan_range));
+    pipeline::PhysicalSplitMorselQueue queue(std::move(morsels), 1, 1);
+
+    std::vector<BaseTabletSharedPtr> tablets{std::make_shared<Tablet>(_tablet_mgr.get(), _tablet_metadata->id())};
+    queue.set_tablets(tablets);
+    queue.set_tablet_rowsets({{rowsets[0]}});
+    queue.set_tablet_schema(_tablet_schema);
+
+    auto result = queue.try_get();
+    ASSERT_FALSE(result.ok());
+    EXPECT_NE(result.status().to_string().find("injected"), std::string::npos) << result.status().to_string();
+
+    auto again = queue.try_get();
+    ASSERT_TRUE(again.ok());
+    ASSERT_EQ(again.value(), nullptr);
 }
 
 class LakeAggregateTabletReaderTest : public TestBase {
