@@ -15,6 +15,7 @@
 package com.starrocks.connector.parser.trino;
 
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -103,6 +104,91 @@ public class TrinoSubscriptRewriterTest extends TrinoTestBase {
         // SELECT and GROUP BY both use zero-based index; rewrite must stay consistent.
         String sql = "select split(ta, '-')[1], count(*) from tall group by split(ta, '-')[1]";
         assertPlanContains(sql, "split(1: ta, '-')[2]");
+        analyzeSuccess(sql);
+    }
+
+    @Test
+    public void testAggregateArgSubscriptShiftedOnlyOnce() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        // SelectAnalyzer analyzes aggregations a second time; the shift must stay idempotent.
+        String sql = "select sum(cast(split(ta, '-')[7] as double)) from tall";
+        assertSubscriptShiftedOnlyOnce(sql);
+
+        // The same subscript used bare and inside an aggregate must resolve to the same index.
+        sql = "select split(ta, '-')[7], sum(cast(split(ta, '-')[7] as double)) from tall group by 1";
+        assertSubscriptShiftedOnlyOnce(sql);
+    }
+
+    @Test
+    public void testMultipleAggregatesShareSameSubscript() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "select sum(cast(split(ta, '-')[7] as double)), max(split(ta, '-')[7]), "
+                + "min(split(ta, '-')[7]) from tall";
+        assertSubscriptShiftedOnlyOnce(sql);
+        analyzeSuccess(sql);
+    }
+
+    private void assertSubscriptShiftedOnlyOnce(String sql) throws Exception {
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan, plan.contains("split(1: ta, '-')[8]") || plan.contains("split[8]"));
+        Assert.assertFalse(plan.contains("split[9]"));
+    }
+
+    @Test
+    public void testArrayColumnInAggregateShiftedOnlyOnce() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "select max(c1[3]) from test_array";
+        assertPlanContains(sql, "2: c1[4]");
+        analyzeSuccess(sql);
+    }
+
+    @Test
+    public void testVariableSubscriptInWhereAndAggregate() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        // Non-literal index must still type-check after the +1 rewrite.
+        String sql = "select count(*) from tall where split(ta, '-')[td] is not null";
+        analyzeSuccess(sql);
+
+        sql = "select sum(cast(split(ta, '-')[td] as double)) from tall";
+        analyzeSuccess(sql);
+    }
+
+    @Test
+    public void testHavingAndOrderByAggregateSubscript() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "select tb from tall group by tb "
+                + "having sum(cast(split(ta, '-')[7] as double)) > 0 "
+                + "order by sum(cast(split(ta, '-')[7] as double))";
+        assertPlanContains(sql, "split(1: ta, '-')[8]");
+        analyzeSuccess(sql);
+    }
+
+    @Test
+    public void testCteAggregateSubscriptShiftedOnlyOnce() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "with c as (select sum(cast(split(ta, '-')[7] as double)) s from tall) select s from c";
+        assertPlanContains(sql, "split(1: ta, '-')[8]");
+        analyzeSuccess(sql);
+    }
+
+    @Test
+    public void testMapSubscriptUnchangedInAggregate() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "select max(c1[1]) from test_map";
+        assertPlanContains(sql, "2: c1[1]");
+        analyzeSuccess(sql);
+    }
+
+    @Test
+    public void testOrderByBareSubscriptUsesRewrittenExpr() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        // ORDER BY root CollectionElementExpr must keep the rewritten node, otherwise type is invalid.
+        String sql = "select split(ta, '-')[7] from tall order by split(ta, '-')[7]";
+        assertPlanContains(sql, "split(1: ta, '-')[8]");
+        analyzeSuccess(sql);
+
+        sql = "select distinct split(ta, '-')[7] from tall order by split(ta, '-')[7]";
+        assertPlanContains(sql, "split(1: ta, '-')[8]");
         analyzeSuccess(sql);
     }
 

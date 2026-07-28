@@ -429,8 +429,7 @@ public class ExpressionAnalyzer {
             String originalSQL = ExprToSql.toSql(expression);
             try {
                 analyzeHighOrderFunction(visitor, expression, scope);
-                Expr nodeToVisit = TrinoCastRewriter.rewriteCastToJson(expression, session);
-                nodeToVisit = TrinoSubscriptRewriter.rewrite(nodeToVisit, session);
+                Expr nodeToVisit = applyTrinoDialectRewrites(visitor, expression, scope);
                 visitor.visit(nodeToVisit, scope);
                 return nodeToVisit;
             } catch (SemanticException e) {
@@ -440,11 +439,19 @@ public class ExpressionAnalyzer {
             for (int i = 0; i < expression.getChildren().size(); i++) {
                 expression.setChild(i, bottomUpAnalyze(visitor, expression.getChild(i), scope));
             }
-            Expr nodeToVisit = TrinoCastRewriter.rewriteCastToJson(expression, session);
-            nodeToVisit = TrinoSubscriptRewriter.rewrite(nodeToVisit, session);
+            Expr nodeToVisit = applyTrinoDialectRewrites(visitor, expression, scope);
             visitor.visit(nodeToVisit, scope);
             return nodeToVisit;
         }
+    }
+
+    private Expr applyTrinoDialectRewrites(Visitor visitor, Expr expression, Scope scope) {
+        Expr rewritten = TrinoCastRewriter.rewriteCastToJson(expression, session);
+        Expr shifted = TrinoSubscriptRewriter.rewrite(rewritten, session);
+        if (shifted != rewritten) {
+            shifted.setChild(1, bottomUpAnalyze(visitor, shifted.getChild(1), scope));
+        }
+        return shifted;
     }
 
     public static class Visitor implements AstVisitorExtendInterface<Void, Scope> {

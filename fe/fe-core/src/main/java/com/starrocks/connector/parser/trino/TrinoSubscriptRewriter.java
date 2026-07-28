@@ -50,6 +50,9 @@ public class TrinoSubscriptRewriter {
     }
 
     private static CollectionElementExpr rewriteArraySubscript(CollectionElementExpr node) {
+        if (node.isZeroBasedSubscriptRewritten()) {
+            return node;
+        }
         Expr base = node.getChild(0);
         Type baseType = base.getType();
         if (baseType != null) {
@@ -59,7 +62,10 @@ public class TrinoSubscriptRewriter {
         } else if (!isSplitCall(base)) {
             return node;
         }
-        return new CollectionElementExpr(base, toOneBasedIndex(node.getChild(1)), node.isCheckIsOutOfBounds());
+        CollectionElementExpr rewritten =
+                new CollectionElementExpr(base, toOneBasedIndex(node.getChild(1)), node.isCheckIsOutOfBounds());
+        rewritten.setZeroBasedSubscriptRewritten(true);
+        return rewritten;
     }
 
     private static boolean isSplitCall(Expr expr) {
