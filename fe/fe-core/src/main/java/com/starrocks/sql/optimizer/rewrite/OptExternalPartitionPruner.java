@@ -157,7 +157,8 @@ public class OptExternalPartitionPruner {
                 ScalarOperator leftChild = scalarOperator.getChild(0);
                 ScalarOperator rightChild = scalarOperator.getChild(1);
                 BinaryType binaryType = binary.getBinaryType();
-                if (binaryType.isEqual() && leftChild.isColumnRef() && rightChild.isConstantRef()) {
+                if (binaryType.isEqual() && extractPartitionColumnRef(leftChild) != null
+                        && extractConstantOperand(rightChild) != null) {
                     equalPredicates.add(scalarOperator);
                 }
             }
@@ -342,11 +343,13 @@ public class OptExternalPartitionPruner {
             }
             ColumnRefOperator columnRef = extractPartitionColumnRef(binary.getChild(0));
             ScalarOperator right = binary.getChild(1);
-            if (columnRef == null || !right.isConstantRef() || !partitionColumnMap.containsKey(columnRef)) {
+            ConstantOperator constant = extractConstantOperand(right);
+            if (columnRef == null || constant == null || !partitionColumnMap.containsKey(columnRef)) {
                 // also allow constant on left, column on right for range/eq
                 columnRef = extractPartitionColumnRef(binary.getChild(1));
                 right = binary.getChild(0);
-                if (columnRef == null || !right.isConstantRef() || !partitionColumnMap.containsKey(columnRef)) {
+                constant = extractConstantOperand(right);
+                if (columnRef == null || constant == null || !partitionColumnMap.containsKey(columnRef)) {
                     return Optional.empty();
                 }
                 binaryType = flipBinaryType(binaryType);
@@ -355,7 +358,6 @@ public class OptExternalPartitionPruner {
                 }
             }
             Column partitionColumn = partitionColumnMap.get(columnRef);
-            ConstantOperator constant = (ConstantOperator) right;
             String literal = formatLiteralForHmsFilter(constant, partitionColumn.getType());
             if (literal == null) {
                 return Optional.empty();
@@ -374,10 +376,11 @@ public class OptExternalPartitionPruner {
             List<String> equals = Lists.newArrayList();
             for (int i = 1; i < inPredicate.getChildren().size(); i++) {
                 ScalarOperator child = inPredicate.getChild(i);
-                if (!child.isConstantRef()) {
+                ConstantOperator constant = extractConstantOperand(child);
+                if (constant == null) {
                     return Optional.empty();
                 }
-                String literal = formatLiteralForHmsFilter((ConstantOperator) child, partitionColumn.getType());
+                String literal = formatLiteralForHmsFilter(constant, partitionColumn.getType());
                 if (literal == null) {
                     return Optional.empty();
                 }
@@ -400,6 +403,16 @@ public class OptExternalPartitionPruner {
         }
         if (operator.isColumnRef()) {
             return (ColumnRefOperator) operator;
+        }
+        return null;
+    }
+
+    private static ConstantOperator extractConstantOperand(ScalarOperator operator) {
+        if (operator instanceof ConstantOperator) {
+            return (ConstantOperator) operator;
+        }
+        if (operator instanceof CastOperator && operator.getChild(0).isConstantRef()) {
+            return (ConstantOperator) operator.getChild(0);
         }
         return null;
     }
@@ -429,12 +442,21 @@ public class OptExternalPartitionPruner {
         boolean quoted = partitionColumnType.isStringType() || partitionColumnType.isDateType()
                 || partitionColumnType.isDatetime();
         String raw;
-        if (constant.getType().isStringType()) {
-            raw = constant.getVarchar();
-        } else if (constant.getType().isDate() || constant.getType().isDatetime()) {
-            raw = constant.toString();
+        if (constant.getType().matchesType(partitionColumnType)) {
+            if (constant.getType().isStringType()) {
+                raw = constant.getVarchar();
+            } else if (constant.getType().isDate() || constant.getType().isDatetime()) {
+                raw = constant.toString();
+            } else {
+                raw = constant.toString();
+            }
         } else {
-            raw = constant.toString();
+            try {
+                LiteralExpr literal = LiteralExpr.create(constant.toString(), partitionColumnType);
+                raw = literal.getStringValue();
+            } catch (AnalysisException e) {
+                return null;
+            }
         }
         if (quoted) {
             return "'" + raw.replace("'", "''") + "'";

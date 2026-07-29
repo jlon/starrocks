@@ -224,6 +224,7 @@ import com.starrocks.sql.optimizer.operator.stream.PhysicalStreamAggOperator;
 import com.starrocks.sql.optimizer.operator.stream.PhysicalStreamJoinOperator;
 import com.starrocks.sql.optimizer.operator.stream.PhysicalStreamScanOperator;
 import com.starrocks.sql.optimizer.rewrite.ReplaceColumnRefRewriter;
+import com.starrocks.sql.optimizer.rewrite.ScalarOperatorRewriter;
 import com.starrocks.sql.optimizer.rule.tree.prunesubfield.SubfieldAccessPathNormalizer;
 import com.starrocks.sql.optimizer.rule.tree.prunesubfield.SubfieldExpressionCollector;
 import com.starrocks.sql.optimizer.statistics.Statistics;
@@ -1176,18 +1177,25 @@ public class PlanFragmentBuilder {
             List<ScalarOperator> partitionConjuncts = predicates.getPartitionConjuncts();
             ScalarOperatorToExpr.FormatterContext formatterContext =
                     new ScalarOperatorToExpr.FormatterContext(context.getColRefToExpr());
+            ScalarOperatorRewriter castRewriter = new ScalarOperatorRewriter();
 
             for (ScalarOperator partitionConjunct : partitionConjuncts) {
+                ScalarOperator casted = castRewriter.rewrite(partitionConjunct,
+                        ScalarOperatorRewriter.DEFAULT_TYPE_CAST_RULE);
                 scanNodePredicates.getPartitionConjuncts().
-                        add(ScalarOperatorToExpr.buildExecExpression(partitionConjunct, formatterContext));
+                        add(ScalarOperatorToExpr.buildExecExpression(casted, formatterContext));
             }
             for (ScalarOperator noEvalPartitionConjunct : noEvalPartitionConjuncts) {
+                ScalarOperator casted = castRewriter.rewrite(noEvalPartitionConjunct,
+                        ScalarOperatorRewriter.DEFAULT_TYPE_CAST_RULE);
                 scanNodePredicates.getNoEvalPartitionConjuncts().
-                        add(ScalarOperatorToExpr.buildExecExpression(noEvalPartitionConjunct, formatterContext));
+                        add(ScalarOperatorToExpr.buildExecExpression(casted, formatterContext));
             }
             for (ScalarOperator nonPartitionConjunct : nonPartitionConjuncts) {
+                ScalarOperator casted = castRewriter.rewrite(nonPartitionConjunct,
+                        ScalarOperatorRewriter.DEFAULT_TYPE_CAST_RULE);
                 scanNodePredicates.getNonPartitionConjuncts().
-                        add(ScalarOperatorToExpr.buildExecExpression(nonPartitionConjunct, formatterContext));
+                        add(ScalarOperatorToExpr.buildExecExpression(casted, formatterContext));
             }
         }
 
