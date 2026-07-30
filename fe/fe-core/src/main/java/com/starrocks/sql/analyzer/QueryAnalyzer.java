@@ -1452,9 +1452,10 @@ public class QueryAnalyzer {
 
             View view = node.getView();
             List<Field> fields = Lists.newArrayList();
+            RelationFields queryOutputFields = queryOutputScope.getRelationFields();
             for (int i = 0; i < view.getBaseSchema().size(); ++i) {
                 Column column = view.getBaseSchema().get(i);
-                Field originField = queryOutputScope.getRelationFields().getFieldByIndex(i);
+                Field originField = resolveViewOutputField(queryOutputFields, column, i);
                 // A view can specify its column names optionally, if column names are absent,
                 // the output names of the queryRelation is used as the names of the view schema,
                 // so column names in view's schema are always correct. Using originField.getName
@@ -1480,6 +1481,23 @@ public class QueryAnalyzer {
             collector.process(node, viewScope);
 
             return viewScope;
+        }
+
+        /**
+         * Resolve the query output field for a view schema column. Prefer matching by column name so
+         * connector view metadata (e.g. Trino view JSON columns) stays aligned with the inner query
+         * even when column order differs. Fall back to positional mapping for native views whose
+         * schema uses explicit aliases different from the inner query output names.
+         */
+        private Field resolveViewOutputField(RelationFields queryOutputFields, Column column, int index) {
+            List<Field> resolved = queryOutputFields.resolveFields(new SlotRef(null, column.getName()));
+            if (resolved.size() == 1) {
+                return resolved.get(0);
+            }
+            if (resolved.size() > 1) {
+                throw new SemanticException("Column '%s' in view is ambiguous", column.getName());
+            }
+            return queryOutputFields.getFieldByIndex(index);
         }
 
         @Override
