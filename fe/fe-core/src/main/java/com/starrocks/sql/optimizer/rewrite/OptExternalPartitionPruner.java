@@ -400,7 +400,7 @@ public class OptExternalPartitionPruner {
     }
 
     private static String formatLiteralForHmsFilter(ConstantOperator constant, Type partitionColumnType) {
-        if (constant.isNull()) {
+        if (constant.isNull() || !constant.getType().matchesType(partitionColumnType)) {
             return null;
         }
         boolean quoted = partitionColumnType.isStringType() || partitionColumnType.isDateType()

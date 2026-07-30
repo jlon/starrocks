@@ -788,6 +788,12 @@ public class ListPartitionPrunerTest {
                 scanOperator, ImmutableList.of(daynoCol, hourCol), quoteLiteral);
         Assertions.assertTrue(filter.isPresent());
         Assertions.assertEquals("dayno = 'a''b'", filter.get());
+
+        ScalarOperator numericLiteral = new BinaryPredicateOperator(BinaryType.EQ, daynoRef,
+                ConstantOperator.createInt(20260726));
+        filter = OptExternalPartitionPruner.buildHmsPartitionFilter(
+                scanOperator, ImmutableList.of(daynoCol, hourCol), numericLiteral);
+        Assertions.assertFalse(filter.isPresent());
     }
 
     @Test
