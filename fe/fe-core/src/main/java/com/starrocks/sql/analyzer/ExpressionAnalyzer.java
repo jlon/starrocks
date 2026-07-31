@@ -40,6 +40,7 @@ import com.starrocks.cluster.ClusterNamespace;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
 import com.starrocks.connector.parser.trino.TrinoCastRewriter;
+import com.starrocks.connector.parser.trino.TrinoParserUtils;
 import com.starrocks.connector.parser.trino.TrinoSubscriptRewriter;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
@@ -429,9 +430,7 @@ public class ExpressionAnalyzer {
             String originalSQL = ExprToSql.toSql(expression);
             try {
                 analyzeHighOrderFunction(visitor, expression, scope);
-                Expr nodeToVisit = applyTrinoDialectRewrites(visitor, expression, scope);
-                visitor.visit(nodeToVisit, scope);
-                return nodeToVisit;
+                return analyzeTrinoDialectRewrittenNode(visitor, expression, scope);
             } catch (SemanticException e) {
                 throw e.appendOnlyOnceMsg(originalSQL, expression.getPos());
             }
@@ -439,10 +438,30 @@ public class ExpressionAnalyzer {
             for (int i = 0; i < expression.getChildren().size(); i++) {
                 expression.setChild(i, bottomUpAnalyze(visitor, expression.getChild(i), scope));
             }
-            Expr nodeToVisit = applyTrinoDialectRewrites(visitor, expression, scope);
-            visitor.visit(nodeToVisit, scope);
-            return nodeToVisit;
+            return analyzeTrinoDialectRewrittenNode(visitor, expression, scope);
         }
+    }
+
+    private Expr analyzeTrinoDialectRewrittenNode(Visitor visitor, Expr expression, Scope scope) {
+        Expr nodeToVisit = applyTrinoDialectRewrites(visitor, expression, scope);
+        boolean trinoDateOutput = shouldWrapTimestampArithmeticAsDate(nodeToVisit);
+        visitor.visit(nodeToVisit, scope);
+        if (trinoDateOutput) {
+            CastExpr castExpr = new CastExpr(DateType.DATE, nodeToVisit, nodeToVisit.getPos());
+            visitor.visit(castExpr, scope);
+            return castExpr;
+        }
+        return nodeToVisit;
+    }
+
+    private boolean shouldWrapTimestampArithmeticAsDate(Expr expr) {
+        if (!(expr instanceof TimestampArithmeticExpr)) {
+            return false;
+        }
+        if (!"trino".equalsIgnoreCase(session.getSessionVariable().getSqlDialect())) {
+            return false;
+        }
+        return TrinoParserUtils.isDateLikeInput(expr.getChild(0));
     }
 
     private Expr applyTrinoDialectRewrites(Visitor visitor, Expr expression, Scope scope) {
