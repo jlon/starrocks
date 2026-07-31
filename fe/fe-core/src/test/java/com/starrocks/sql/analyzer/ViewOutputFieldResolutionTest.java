@@ -84,4 +84,16 @@ public class ViewOutputFieldResolutionTest extends PlanTestBase {
         assertContains(plan, "c_phone");
         assertNotContains(plan, "c_nationkey");
     }
+
+    @Test
+    public void testHiveViewWithSchemaEvolvedSizeMismatch() throws Exception {
+        // customer_evolved_view declares 6 cols (c_nationkey missing in the middle of the
+        // base table's 7-col schema), so its inner `select * from tpch.customer` expands to
+        // 7 outputs while the view schema only has 6 -> view schema size != inner output size.
+        // Selecting the post-gap column c_phone must resolve to the real c_phone scan column,
+        // not the positionally-shifted c_nationkey.
+        String plan = getFragmentPlan("SELECT c_phone FROM hive0.tpch.customer_evolved_view");
+        assertContains(plan, "c_phone");
+        assertNotContains(plan, "c_nationkey");
+    }
 }
