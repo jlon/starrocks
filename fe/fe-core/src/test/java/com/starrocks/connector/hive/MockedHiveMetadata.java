@@ -402,6 +402,24 @@ public class MockedHiveMetadata implements ConnectorMetadata {
         HiveView view5 = HiveMetastoreApiConverter.toHiveView(hmsView5, MOCKED_HIVE_CATALOG_NAME);
         mockTables.put(hmsView5.getTableName(), new HiveTableInfo(view5));
 
+        // View whose stale HMS schema (6 cols, c_nationkey missing in the middle) lags the base
+        // table (7 cols) to simulate ALTER TABLE ADD COLUMNS after the view was created: the
+        // inner `select *` expands to 7 outputs while the view schema only declares 6.
+        cols = Lists.newArrayList();
+        cols.add(new FieldSchema("c_custkey", "int", null));
+        cols.add(new FieldSchema("c_name", "string", null));
+        cols.add(new FieldSchema("c_address", "string", null));
+        cols.add(new FieldSchema("c_phone", "string", null));
+        cols.add(new FieldSchema("c_mktsegment", "string", null));
+        cols.add(new FieldSchema("c_comment", "string", null));
+        sd = new StorageDescriptor(cols, "", "", "", false, -1, null, Lists.newArrayList(), Lists.newArrayList(),
+                Maps.newHashMap());
+        Table hmsView7 =
+                new Table("customer_evolved_view", "tpch", null, 0, 0, 0, sd, Lists.newArrayList(),
+                        Maps.newHashMap(), null, "select * from tpch.customer", "VIRTUAL_VIEW");
+        HiveView view7 = HiveMetastoreApiConverter.toHiveView(hmsView7, MOCKED_HIVE_CATALOG_NAME);
+        mockTables.put(hmsView7.getTableName(), new HiveTableInfo(view7));
+
         // Trino view whose JSON column order differs from inner query output order.
         String trinoReorderedColumnsViewText = "/* Presto View: "
                 + "eyJvcmlnaW5hbFNxbCI6IlNFTEVDVCBjX25hbWUsIGNfY3VzdGtleSBGUk9NIGN1c3RvbWVyIiwiY2F0YWxvZyI6ImhpdmUi"

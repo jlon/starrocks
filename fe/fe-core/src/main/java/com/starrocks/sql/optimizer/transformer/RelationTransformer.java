@@ -960,14 +960,13 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
     }
 
     /**
-     * Align view scope field indices with inner query output columns. Connector view metadata column
-     * order can differ from the inner SQL output order, but SELECT * uses FieldReference which
-     * resolves columns by index in this mapping.
+     * Align connector view fields with the inner query outputs. Connector metadata can reorder
+     * fields or lag schema evolution, so fields are resolved by their analyzed origin or name.
      */
     private List<ColumnRefOperator> buildViewFieldMappings(ViewRelation node, LogicalPlan logicalPlan) {
         List<Field> viewFields = node.getScope().getRelationFields().getAllFields();
         List<ColumnRefOperator> innerOutputs = logicalPlan.getOutputColumn();
-        if (!node.getView().isConnectorView() || viewFields.size() != innerOutputs.size()) {
+        if (!node.getView().isConnectorView()) {
             return innerOutputs;
         }
 
@@ -994,7 +993,12 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
                 mappedColumn = getUniqueOutputByName(innerOutputsByName, field.getName());
             }
             if (mappedColumn == null) {
-                mappedColumn = innerOutputs.get(i);
+                if (viewFields.size() == innerOutputs.size()) {
+                    mappedColumn = innerOutputs.get(i);
+                }
+            }
+            if (mappedColumn == null) {
+                throw new SemanticException("Cannot map connector view field '%s' to its query output", field.getName());
             }
             viewFieldMappings.add(mappedColumn);
         }

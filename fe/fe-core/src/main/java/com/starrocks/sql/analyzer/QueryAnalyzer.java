@@ -1456,7 +1456,7 @@ public class QueryAnalyzer {
             for (int i = 0; i < view.getBaseSchema().size(); ++i) {
                 Column column = view.getBaseSchema().get(i);
                 Field originField = node.getView().isConnectorView()
-                        ? resolveViewOutputField(queryOutputFields, column, i)
+                        ? resolveViewOutputField(queryOutputFields, column, i, view.getBaseSchema().size())
                         : queryOutputFields.getFieldByIndex(i);
                 // A view can specify its column names optionally, if column names are absent,
                 // the output names of the queryRelation is used as the names of the view schema,
@@ -1491,13 +1491,18 @@ public class QueryAnalyzer {
          * even when column order differs. Fall back to positional mapping only when the connector
          * schema and inner query have the same number of fields.
          */
-        private Field resolveViewOutputField(RelationFields queryOutputFields, Column column, int index) {
+        private Field resolveViewOutputField(RelationFields queryOutputFields, Column column, int index,
+                                             int viewFieldCount) {
             List<Field> resolved = queryOutputFields.resolveFields(new SlotRef(null, column.getName()));
             if (resolved.size() == 1) {
                 return resolved.get(0);
             }
             if (resolved.size() > 1) {
                 throw new SemanticException("Column '%s' in view is ambiguous", column.getName());
+            }
+            if (queryOutputFields.getAllFields().size() != viewFieldCount) {
+                throw new SemanticException("Column '%s' in connector view cannot be mapped to its query output",
+                        column.getName());
             }
             return queryOutputFields.getFieldByIndex(index);
         }
