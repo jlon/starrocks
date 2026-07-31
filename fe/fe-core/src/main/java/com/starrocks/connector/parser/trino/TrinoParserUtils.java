@@ -60,7 +60,7 @@ public class TrinoParserUtils {
      * @return the wrapped or original expr, after applying appropriate output type conversions
      */
     public static Expr alignWithInputDatetimeType(TimestampArithmeticExpr expr) {
-        if (isDateType(expr.getChild(0))) {
+        if (isDateLikeInput(expr.getChild(0))) {
             return new CastExpr(DateType.DATE, expr);
         }
         return expr;
@@ -84,7 +84,7 @@ public class TrinoParserUtils {
         DATE_RETURNING_FUNCTIONS.add(FunctionSet.FROM_DAYS);
         DATE_RETURNING_FUNCTIONS.add(FunctionSet.STR2DATE);
     }
-    private static boolean isDateType(Expr expr) {
+    public static boolean isDateLikeInput(Expr expr) {
         // type of expr could be Type.INVALID till now, hence we need to examine many other possible cases
         if (expr.getType().isDate()) {
             return true;
