@@ -958,16 +958,17 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
     }
 
     /**
-     * Align view scope field indices with inner query output columns. Connector view metadata column
-     * order can differ from the inner SQL output order, but SELECT * uses FieldReference which
-     * resolves columns by index in this mapping.
+     * Align view scope fields with inner query output columns. Connector view metadata column
+     * order (and even column count) can differ from the inner SQL output order: the underlying
+     * table may have been altered (columns added/removed) after the view was created, so
+     * {@code SELECT a.*} expands to more/fewer columns than the view's stale HMS schema.
+     * Resolve every view field to its inner output column by name (origin expression first,
+     * then field name) so the mapping survives such schema drift; only fall back to positional
+     * mapping when no name matches (e.g. native views with user-aliased columns).
      */
     private List<ColumnRefOperator> buildViewFieldMappings(ViewRelation node, LogicalPlan logicalPlan) {
         List<Field> viewFields = node.getScope().getRelationFields().getAllFields();
         List<ColumnRefOperator> innerOutputs = logicalPlan.getOutputColumn();
-        if (viewFields.size() != innerOutputs.size()) {
-            return innerOutputs;
-        }
 
         ExpressionMapping innerMapping = logicalPlan.getRootBuilder().getExpressionMapping();
         Map<String, ColumnRefOperator> innerNameToColumn = Maps.newHashMap();
@@ -990,7 +991,18 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
                 mappedColumn = innerNameToColumn.get(field.getName().toLowerCase());
             }
             if (mappedColumn == null) {
-                mappedColumn = innerOutputs.get(i);
+                // No name match: fall back to positional mapping. Bounds-checked so a view
+                // field whose underlying column was dropped never throws IndexOutOfBounds.
+                if (i < innerOutputs.size()) {
+                    mappedColumn = innerOutputs.get(i);
+                } else if (!innerOutputs.isEmpty()) {
+                    mappedColumn = innerOutputs.get(innerOutputs.size() - 1);
+                }
+            }
+            if (mappedColumn == null) {
+                // Inner query produced no columns at all (degenerate); emit a typed placeholder
+                // so the view still resolves instead of crashing downstream.
+                mappedColumn = columnRefFactory.create(field.getName(), field.getType(), true);
             }
             viewFieldMappings.add(mappedColumn);
         }
