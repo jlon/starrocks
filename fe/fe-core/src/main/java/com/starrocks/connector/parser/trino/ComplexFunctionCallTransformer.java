@@ -38,13 +38,23 @@ import java.util.Collections;
 
 public class ComplexFunctionCallTransformer {
     public static Expr transform(String functionName, Expr... args) {
-        if (functionName.equalsIgnoreCase("date_add")) {
+        if (functionName.equalsIgnoreCase("date_add") || functionName.equalsIgnoreCase("date_sub")) {
             if (args.length == 3 && args[0] instanceof StringLiteral) {
                 StringLiteral unit = (StringLiteral) args[0];
                 Expr interval = args[1];
                 Expr date = args[2];
                 return TrinoParserUtils.alignWithInputDatetimeType(new TimestampArithmeticExpr(functionName, date, interval,
                         unit.getStringValue()));
+            }
+            // Trino's date_add/date_sub is a 3-arg function (unit, value, timestamp), but Hive/Spark
+            // (and StarRocks) also accept the 2-arg form date_add(date, n) where n is in days. Rewrite
+            // that to a TimestampArithmeticExpr (DAY unit) so the analyzer's trino DATE-wrapping path
+            // turns date_add(current_date, -1) into a DATE, matching date_add(current_date(), -1).
+            // The wrap is left to the analyzer to avoid a redundant double CastExpr(DATE).
+            if (args.length == 2) {
+                Expr date = args[0];
+                Expr interval = args[1];
+                return new TimestampArithmeticExpr(functionName, date, interval, "day");
             }
         } else if (functionName.equalsIgnoreCase("json_format")) {
             return new CastExpr(VarcharType.VARCHAR, args[0]);
