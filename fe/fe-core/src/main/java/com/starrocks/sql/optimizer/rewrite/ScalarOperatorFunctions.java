@@ -83,7 +83,6 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.time.temporal.ChronoUnit;
@@ -529,9 +528,23 @@ public class ScalarOperatorFunctions {
         return ConstantOperator.createVarchar(result);
     }
 
+    /**
+     * Resolve a textual date format string to a parse {@link DateTimeFormatter}.
+     * The Hive/Spark Java SimpleDateFormat style ("yyyyMMdd", "yyyy-MM-dd",
+     * "yyyy-MM-dd HH:mm:ss") is accepted for the explicit whitelist shared with
+     * {@link #dateFormat}; everything else, including bare letters, stays the
+     * native unix/strptime style where unrecognised characters are literals.
+     */
+    private static DateTimeFormatter parseFormatter(String fmt) {
+        if (SUPPORT_JAVA_STYLE_DATETIME_FORMATTER.contains(fmt.trim())) {
+            return DateUtils.javaDatetimeFormatter(fmt);
+        }
+        return DateUtils.unixDatetimeFormatter(fmt, false);
+    }
+
     @ConstantFunction(name = "str_to_date", argTypes = {VARCHAR, VARCHAR}, returnType = DATETIME, isMonotonic = true)
     public static ConstantOperator dateParse(ConstantOperator date, ConstantOperator fmtLiteral) {
-        DateTimeFormatter builder = DateUtils.unixDatetimeFormatter(fmtLiteral.getVarchar(), false);
+        DateTimeFormatter builder = parseFormatter(fmtLiteral.getVarchar());
         String dateStr = StringUtils.strip(date.getVarchar(), "\r\n\t ");
         boolean allowThrowException = ConnectContext.get() != null
                 && SqlModeHelper.check(ConnectContext.get().getSessionVariable().getSqlMode(),
@@ -564,13 +577,13 @@ public class ScalarOperatorFunctions {
 
     @ConstantFunction(name = "str2date", argTypes = {VARCHAR, VARCHAR}, returnType = DATE, isMonotonic = true)
     public static ConstantOperator str2Date(ConstantOperator date, ConstantOperator fmtLiteral) {
-        DateTimeFormatterBuilder builder = DateUtils.unixDatetimeFormatBuilder(fmtLiteral.getVarchar(), false);
+        String fmt = fmtLiteral.getVarchar();
+        DateTimeFormatter builder = parseFormatter(fmt).withResolverStyle(ResolverStyle.STRICT);
         boolean allowThrowException = ConnectContext.get() != null
                 && SqlModeHelper.check(ConnectContext.get().getSessionVariable().getSqlMode(),
                 SqlModeHelper.MODE_ALLOW_THROW_EXCEPTION);
         try {
-            LocalDate ld = LocalDate.from(builder.toFormatter().withResolverStyle(ResolverStyle.STRICT).parse(
-                    StringUtils.strip(date.getVarchar(), "\r\n\t ")));
+            LocalDate ld = LocalDate.from(builder.parse(StringUtils.strip(date.getVarchar(), "\r\n\t ")));
             return ConstantOperator.createDatetime(ld.atTime(0, 0, 0), DateType.DATE);
         } catch (DateTimeParseException e) {
             if (allowThrowException) {
@@ -745,6 +758,46 @@ public class ScalarOperatorFunctions {
     public static ConstantOperator unixTimestamp(ConstantOperator arg) {
         LocalDateTime dt = arg.getDatetime();
         ZonedDateTime zdt = ZonedDateTime.of(dt, TimeUtils.getTimeZone().toZoneId());
+        long value = zdt.toEpochSecond();
+        if (value < 0 || value > TimeUtils.MAX_UNIX_TIMESTAMP) {
+            value = 0;
+        }
+        return ConstantOperator.createBigint(value);
+    }
+
+    @ConstantFunction(name = "unix_timestamp", argTypes = {VARCHAR, VARCHAR}, returnType = BIGINT, isMonotonic = true)
+    public static ConstantOperator unixTimestamp(ConstantOperator dateStr, ConstantOperator fmtLiteral) {
+        String fmt = fmtLiteral.getVarchar();
+        String date = StringUtils.strip(dateStr.getVarchar(), "\r\n\t ");
+        if (fmt.isEmpty() || date.isEmpty()) {
+            return ConstantOperator.createNull(Type.BIGINT);
+        }
+        // Parse the textual date with the format string, accepting both the
+        // unix/strptime style ("%Y%m%d") and the whitelisted Java/Hive style
+        // ("yyyyMMdd", "yyyy-MM-dd"), then convert to epoch seconds in the
+        // session time zone, matching the BE semantics of unix_timestamp(string,
+        // format).
+        DateTimeFormatter builder = parseFormatter(fmt);
+        LocalDateTime ldt;
+        try {
+            if (HAS_TIME_PART.matcher(fmt).matches()) {
+                ldt = LocalDateTime.from(builder.withResolverStyle(ResolverStyle.STRICT).parse(date));
+            } else {
+                ldt = LocalDate.from(builder.withResolverStyle(ResolverStyle.STRICT).parse(date)).atTime(0, 0, 0);
+            }
+        } catch (DateTimeParseException e) {
+            // Allow incomplete format strings, mirroring str_to_date, by re-parsing
+            // from the position of the last successfully matched prefix.
+            try {
+                ldt = LocalDateTime.from(builder.withResolverStyle(ResolverStyle.STRICT)
+                        .parse(date.substring(0, e.getErrorIndex())));
+            } catch (Exception ex) {
+                return ConstantOperator.createNull(Type.BIGINT);
+            }
+        } catch (Exception e) {
+            return ConstantOperator.createNull(Type.BIGINT);
+        }
+        ZonedDateTime zdt = ZonedDateTime.of(ldt, TimeUtils.getTimeZone().toZoneId());
         long value = zdt.toEpochSecond();
         if (value < 0 || value > TimeUtils.MAX_UNIX_TIMESTAMP) {
             value = 0;

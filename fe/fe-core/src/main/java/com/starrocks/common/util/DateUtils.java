@@ -350,4 +350,23 @@ public class DateUtils {
         }
         return builder;
     }
+
+    /**
+     * Build a strict {@link DateTimeFormatter} for a Java SimpleDateFormat style
+     * pattern (the Hive/Spark convention, e.g. "yyyyMMdd", "yyyy-MM-dd",
+     * "yyyy-MM-dd HH:mm:ss"), used by callers that accept such patterns in
+     * addition to the native unix/strptime style.
+     *
+     * <p>{@code DateTimeFormatter.ofPattern} maps the {@code y} letter to
+     * year-of-era, which under a STRICT resolver fails to parse without an
+     * explicit era field. Appending a default era (CE) avoids that footgun so
+     * four-digit years parse cleanly, matching the unix {@code %Y} behaviour.
+     */
+    public static DateTimeFormatter javaDatetimeFormatter(String pattern) {
+        return new DateTimeFormatterBuilder()
+                .appendPattern(pattern)
+                .parseDefaulting(ChronoField.ERA, 1)
+                .toFormatter()
+                .withResolverStyle(ResolverStyle.STRICT);
+    }
 }
