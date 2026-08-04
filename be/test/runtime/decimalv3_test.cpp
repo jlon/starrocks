@@ -609,4 +609,45 @@ TEST_F(TestDecimalV3, testDecimalToStringWithoutFraction) {
     }
 }
 
+// DECIMAL(38,18) division scales lhs by 10^18 before dividing. For large counts the
+// intermediate product a * 10^18 exceeds int128 even though the quotient fits.
+TEST_F(TestDecimalV3, testDecimalDivRoundScaledLargeCount) {
+    using Cases = std::vector<std::tuple<std::string, std::string, std::string>>;
+    Cases cases = {
+            {"5000000000000000000.000000000000000000", "3000000000000000000.000000000000000000",
+             "1.666666666666666667"},
+            {"1384931237.280000000000000000", "1382967695.280000000000000000", "1.001419803229461882"},
+            {"9999999999999999999.000000000000000000", "10000000000000000000.000000000000000000",
+             "1.000000000000000000"},
+            {"-5000000000000000000.000000000000000000", "3000000000000000000.000000000000000000",
+             "-1.666666666666666667"},
+            {"0.000000000000000001", "0.000000000000000002", "0.500000000000000000"},
+    };
+    constexpr int kPrecision = 38;
+    constexpr int kScale = 18;
+    const int128_t scale_factor = get_scale_factor<int128_t>(kScale);
+
+    for (auto& c : cases) {
+        int128_t a = 0;
+        int128_t b = 0;
+        ASSERT_FALSE(DecimalV3Cast::from_string<int128_t>(&a, kPrecision, kScale, std::get<0>(c).data(),
+                                                          std::get<0>(c).size()));
+        ASSERT_FALSE(DecimalV3Cast::from_string<int128_t>(&b, kPrecision, kScale, std::get<1>(c).data(),
+                                                          std::get<1>(c).size()));
+
+        // Old path: scale_up overflows whenever a * scale_factor exceeds int128.
+        int128_t scaled = 0;
+        int128_t mul_check = 0;
+        const bool scale_up_overflow =
+                DecimalV3Cast::scale_up<int128_t, int128_t, true>(a, scale_factor, &scaled);
+        const bool product_overflow = mul_overflow(a, scale_factor, &mul_check);
+        ASSERT_EQ(scale_up_overflow, product_overflow);
+
+        int128_t result = 0;
+        ASSERT_FALSE(decimal_div_round_scaled(a, b, scale_factor, &result));
+        ASSERT_EQ(std::get<2>(c),
+                  DecimalV3Cast::to_string<int128_t>(result, kPrecision, kScale));
+    }
+}
+
 } // namespace starrocks

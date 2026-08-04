@@ -431,12 +431,18 @@ T decimal_div_integer(const T& dividend, const T& adjusted_r, int dividend_scale
     // compute adjust_scale_factor
     auto [_1, _2, adjust_scale] = compute_decimal_result_type<T, DivOp>(dividend_scale, 0);
     T adjust_scale_factor = get_scale_factor<T>(adjust_scale);
-    // scale dividend up by adjust_scale
-    T scaled_dividend = 0;
-    DecimalV3Cast::to_decimal<T, T, T, true, false>(dividend, adjust_scale_factor, &scaled_dividend);
     // compute the quotient
     T quotient = 0;
-    DecimalV3Arithmetics<T, false>::div_round(scaled_dividend, adjusted_r, &quotient);
+    if constexpr (sizeof(T) == 16) {
+        // Use the 256-bit path so a large dividend * scale_factor does not overflow
+        // int128 before the division (the quotient itself fits int128).
+        (void)decimal_div_round_scaled(dividend, adjusted_r, adjust_scale_factor, &quotient);
+    } else {
+        // scale dividend up by adjust_scale
+        T scaled_dividend = 0;
+        DecimalV3Cast::to_decimal<T, T, T, true, false>(dividend, adjust_scale_factor, &scaled_dividend);
+        DecimalV3Arithmetics<T, false>::div_round(scaled_dividend, adjusted_r, &quotient);
+    }
     return quotient;
 }
 
@@ -577,15 +583,24 @@ struct ArithmeticBinaryOperator<Op, Type, DecimalOpGuard<Op>, DecimalLTGuard<Typ
         }
 
         if constexpr (adjust_left) {
-            LType ll;
-            [[maybe_unused]] auto overflow =
-                    DecimalV3Cast::scale_up<LType, LType, check_overflow>(l, scale_factor, &ll);
-            if constexpr (check_overflow) {
-                if (overflow) {
-                    return true;
+            if constexpr (is_div_op<Op> && sizeof(LType) == 16) {
+                // Decimal128 division: combine scale-up and divide into one 256-bit
+                // step so the scaled dividend need not fit in 128 bits. The result
+                // always fits in int128 (FE guarantees it), but a * scale_factor can
+                // overflow int128 for high-scale operands; without this path those
+                // rows would be folded to NULL on scale_up overflow.
+                return decimal_div_round_scaled(l, r, scale_factor, result);
+            } else {
+                LType ll;
+                [[maybe_unused]] auto overflow =
+                        DecimalV3Cast::scale_up<LType, LType, check_overflow>(l, scale_factor, &ll);
+                if constexpr (check_overflow) {
+                    if (overflow) {
+                        return true;
+                    }
                 }
+                return apply<check_overflow, LType, RType, ResultType>(ll, r, result);
             }
-            return apply<check_overflow, LType, RType, ResultType>(ll, r, result);
         } else {
             return apply<check_overflow, LType, RType, ResultType>(l, r, result);
         }

@@ -111,6 +111,107 @@ public:
     }
 };
 
+// Compute round(a * scale_factor / b) for 128-bit decimals using a 256-bit
+// intermediate so that the product a * scale_factor need not fit in 128 bits.
+// This is the correct general path for decimal division: the result always fits
+// in int128 (guaranteed by FE's result-type inference), but the scaled dividend
+// a * scale_factor can overflow int128 when both operands carry high scales
+// (e.g. DECIMAL(38,18) / DECIMAL(38,18) of large counts), which previously made
+// the per-row scale_up detect overflow and yield NULL.
+//
+// b must be non-zero (caller checks divide-by-zero). scale_factor is expected to
+// be a non-negative power of 10. Returns true only if the *mathematical result*
+// does not fit in int128_t (genuine overflow); otherwise writes the result and
+// returns false. Rounding matches DecimalV3Arithmetics::div_round (round half
+// away from zero).
+inline bool decimal_div_round_scaled(int128_t a, int128_t b, int128_t scale_factor,
+                                     int128_t* result) {
+    // Fast path: if a * scale_factor fits in 128 bits, reuse the narrow path.
+    int128_t scaled;
+    if (!mul_overflow(a, scale_factor, &scaled)) {
+        int128_t q = 0;
+        DecimalV3Arithmetics<int128_t, false>::div_round(scaled, b, &q);
+        *result = q;
+        return false;
+    }
+    // 256-bit fallback. Work in absolute values; sign of result = sign(a) ^ sign(b).
+    const bool negative = (a < 0) != (b < 0);
+    auto abs_u = [](int128_t v) -> uint128_t {
+        return v < 0 ? (uint128_t)(-(v + 1)) + 1 : (uint128_t)v;
+    };
+    uint128_t ua = abs_u(a);
+    uint128_t ub = abs_u(b);
+    uint128_t usf = abs_u(scale_factor);
+
+    // 128x128 -> 256 schoolbook multiply (4 limbs of 64 bits).
+    uint64_t a0 = (uint64_t)ua;
+    uint64_t a1 = (uint64_t)(ua >> 64);
+    uint64_t s0 = (uint64_t)usf;
+    uint64_t s1 = (uint64_t)(usf >> 64);
+
+    uint128_t ll = (uint128_t)a0 * s0;
+    uint128_t lh = (uint128_t)a0 * s1;
+    uint128_t hl = (uint128_t)a1 * s0;
+    uint128_t hh = (uint128_t)a1 * s1;
+    uint64_t ll0 = (uint64_t)ll;
+    uint64_t ll1 = (uint64_t)(ll >> 64);
+    uint64_t lh0 = (uint64_t)lh;
+    uint64_t lh1 = (uint64_t)(lh >> 64);
+    uint64_t hl0 = (uint64_t)hl;
+    uint64_t hl1 = (uint64_t)(hl >> 64);
+    uint64_t hh0 = (uint64_t)hh;
+    uint64_t hh1 = (uint64_t)(hh >> 64);
+
+    uint64_t n0 = ll0;
+    uint128_t t1 = (uint128_t)ll1 + lh0 + hl0;
+    uint64_t n1 = (uint64_t)t1;
+    uint64_t c1 = (uint64_t)(t1 >> 64);
+    uint128_t t2 = (uint128_t)hh0 + lh1 + hl1 + c1;
+    uint64_t n2 = (uint64_t)t2;
+    uint64_t c2 = (uint64_t)(t2 >> 64);
+    uint64_t n3 = hh1 + c2;
+
+    uint128_t N_lo = ((uint128_t)n1 << 64) | n0;
+    uint128_t N_hi = ((uint128_t)n3 << 64) | n2;
+
+    // 256 / 128 unsigned long division with 129-bit working register (carry:1, rem:128).
+    // Invariant at the start of each step: rem < ub, so carry is 0.
+    uint128_t rem = 0;
+    uint128_t quotient = 0;
+    for (int i = 255; i >= 0; --i) {
+        uint128_t bit = (i >= 128) ? ((N_hi >> (i - 128)) & 1) : ((N_lo >> i) & 1);
+        uint128_t top = (rem >> 127) & 1;
+        uint128_t low = (rem << 1) | bit;
+        if (top || low >= ub) {
+            rem = low - ub; // wraps correctly when top==1 (then low < ub holds)
+            if (i < 128) {
+                quotient |= ((uint128_t)1 << i);
+            }
+        } else {
+            rem = low;
+        }
+    }
+    // Round half away from zero (same predicate as DecimalV3Arithmetics::div_round).
+    bool need_carry = ((ub >> 1) + (ub & 1)) <= rem;
+    quotient += need_carry ? 1 : 0;
+
+    // Bound-check against int128 range.
+    constexpr uint128_t INT128_MAX_U = ((uint128_t)1 << 127) - 1;
+    constexpr uint128_t INT128_MIN_ABS = (uint128_t)1 << 127; // abs(INT128_MIN)
+    if (negative) {
+        if (quotient > INT128_MIN_ABS) {
+            return true;
+        }
+        *result = -(int128_t)quotient;
+    } else {
+        if (quotient > INT128_MAX_U) {
+            return true;
+        }
+        *result = (int128_t)quotient;
+    }
+    return false;
+}
+
 enum DecimalRoundRule {
     ROUND_HALF_UP,
     ROUND_HALF_EVEN,

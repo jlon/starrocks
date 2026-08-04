@@ -2964,6 +2964,25 @@ TEST_F(DecimalBinaryFunctionTest, test_decimal64p18s15_sub_decimal64p18s15_eq_de
 
 using DecimalOverflowTestCase = std::tuple<std::string, std::string, std::string, bool>;
 using DecimalOverflowTestCaseArray = std::vector<DecimalOverflowTestCase>;
+TEST_F(DecimalBinaryFunctionTest, test_decimal128p38s18_div_large_count_no_intermediate_overflow) {
+    // a * 10^18 overflows int128 for these operands, but the quotient fits DECIMAL(38,18).
+    // Before the 256-bit path, scale_up returned overflow -> NULL in OUTPUT_NULL mode.
+    DecimalTestCaseArray test_cases = {
+            {"5000000000000000000.000000000000000000", "3000000000000000000.000000000000000000",
+             "1.666666666666666667"},
+            {"1384931237.280000000000000000", "1382967695.280000000000000000", "1.001419803229461882"},
+            {"9999999999999999999.000000000000000000", "10000000000000000000.000000000000000000",
+             "1.000000000000000000"},
+            {"-5000000000000000000.000000000000000000", "3000000000000000000.000000000000000000",
+             "-1.666666666666666667"},
+    };
+    test_vector_vector<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 18, 38, 18, 38, 18);
+    // const lhs must not pre-scale; this is the regression path for large-count division.
+    test_const_vector<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 18, 38, 18, 38, 18);
+    test_vector_const<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 18, 38, 18, 38, 18);
+    test_const_const<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 18, 38, 18, 38, 18);
+}
+
 TEST_F(DecimalBinaryFunctionTest, test_decimal128p38s16_div_decimal128p38s16_eq_decimal128p38s16) {
     DecimalOverflowTestCaseArray test_cases = {{"1384931237.28", "1382967695.28", "0", true},
                                                {"384931237.28", "1382967695.28", "0", true},
