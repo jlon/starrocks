@@ -116,4 +116,42 @@ TEST(MapConverterTest, test_read_write_nest_map) {
             buff.as_string());
 }
 
+// NOLINTNEXTLINE
+TEST(MapConverterTest, test_read_hive_text_map) {
+    // map<string,string> stored in Hive LazySimpleSerDe text format:
+    // entries separated by \002 (^B), key/value by \003 (^C), no enclosing braces.
+    TypeDescriptor t(TYPE_MAP);
+    t.children.emplace_back(TYPE_VARCHAR);
+    t.children.back().len = 6000;
+    t.children.emplace_back(TYPE_VARCHAR);
+    t.children.back().len = 6000;
+
+    auto options = Converter::Options();
+    options.array_format_type = ArrayFormatType::kHive;
+    options.array_hive_collection_delimiter = '\002';
+    options.array_hive_mapkey_delimiter = '\003';
+    options.array_hive_nested_level = 1;
+
+    auto conv = csv::get_converter(t, false);
+    auto col = ColumnHelper::create_column(t, false);
+
+    // empty map
+    EXPECT_TRUE(conv->read_string(col.get(), "", options));
+    // single entry
+    EXPECT_TRUE(conv->read_string(col.get(), std::string("k1\003v1", 6), options));
+    // two entries
+    EXPECT_TRUE(conv->read_string(col.get(), std::string("k1\003v1\002k2\003v2", 12), options));
+
+    EXPECT_EQ(3, col->size());
+    // {}
+    EXPECT_EQ(0, col->get(0).get_map().size());
+    EXPECT_EQ("{}", col->debug_item(0));
+    // {'k1':'v1'}
+    EXPECT_EQ(1, col->get(1).get_map().size());
+    EXPECT_EQ("{'k1':'v1'}", col->debug_item(1));
+    // {'k1':'v1','k2':'v2'}
+    EXPECT_EQ(2, col->get(2).get_map().size());
+    EXPECT_EQ("{'k1':'v1','k2':'v2'}", col->debug_item(2));
+}
+
 } // namespace starrocks::csv
