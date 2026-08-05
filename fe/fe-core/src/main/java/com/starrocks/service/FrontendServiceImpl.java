@@ -1263,8 +1263,13 @@ public class FrontendServiceImpl implements FrontendService.Iface {
             context.setCurrentRoleIds(currentUser);
             Authorizer.checkTableAction(context, db, tbl, PrivilegeType.INSERT);
         } catch (AccessDeniedException e) {
-            throw new AuthenticationException(
-                    "Access denied; you need (at least one of) the INSERT privilege(s) for this operation");
+            // Surface the object (db.tbl) that was denied instead of a generic message.
+            String msg = e.getMessage();
+            if (msg == null || msg.isEmpty()) {
+                msg = "Access denied; you need (at least one of) the INSERT privilege(s) on TABLE "
+                        + db + "." + tbl + " for this operation";
+            }
+            throw new AuthenticationException(msg);
         }
         return currentUser;
     }
