@@ -57,6 +57,19 @@ import java.util.Map;
 import java.util.Set;
 
 public class ColumnPrivilege {
+    /**
+     * Qualified name (db.tbl) for use in access-denied messages, so the user can see
+     * which database the denied table belongs to (not just the bare table name).
+     */
+    private static String qualifiedTableObjectName(TableName tableName) {
+        String db = tableName.getDb();
+        String tbl = tableName.getTbl();
+        if (db == null || db.isEmpty()) {
+            return tbl == null ? "" : tbl;
+        }
+        return db + "." + tbl;
+    }
+
     public static void check(ConnectContext context, QueryStatement stmt, List<TableName> excludeTables) {
         if (stmt == null) {
             return;
@@ -139,7 +152,8 @@ public class ColumnPrivilege {
                         AccessDeniedException.reportAccessDenied(
                                 tableName.getCatalog(),
                                 context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                PrivilegeType.SELECT.name(), ObjectType.TABLE.name(), tableName.getTbl());
+                                PrivilegeType.SELECT.name(), ObjectType.TABLE.name(),
+                                qualifiedTableObjectName(tableName));
                     }
                 } else {
                     Set<String> columns = scanColumns.getOrDefault(tableName, new HashSet<>());
@@ -189,7 +203,8 @@ public class ColumnPrivilege {
                         AccessDeniedException.reportAccessDenied(
                                 InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
                                 context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                PrivilegeType.SELECT.name(), ObjectType.VIEW.name(), tableName.getTbl());
+                                PrivilegeType.SELECT.name(), ObjectType.VIEW.name(),
+                                qualifiedTableObjectName(tableName));
                     }
                 } else if (table.isMaterializedView()) {
                     try {
@@ -199,7 +214,8 @@ public class ColumnPrivilege {
                         AccessDeniedException.reportAccessDenied(
                                 InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
                                 context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                PrivilegeType.SELECT.name(), ObjectType.MATERIALIZED_VIEW.name(), tableName.getTbl());
+                                PrivilegeType.SELECT.name(), ObjectType.MATERIALIZED_VIEW.name(),
+                                qualifiedTableObjectName(tableName));
                     }
                 } else {
                     try {
@@ -209,7 +225,8 @@ public class ColumnPrivilege {
                         AccessDeniedException.reportAccessDenied(
                                 tableName.getCatalog(),
                                 context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                PrivilegeType.SELECT.name(), ObjectType.TABLE.name(), tableName.getTbl());
+                                PrivilegeType.SELECT.name(), ObjectType.TABLE.name(),
+                                qualifiedTableObjectName(tableName));
                     }
                 }
             }
