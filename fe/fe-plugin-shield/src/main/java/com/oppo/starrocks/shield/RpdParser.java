@@ -19,15 +19,48 @@ public class RpdParser {
         this.areaFilter = areaFilter;
     }
 
-    public List<DatabaseTable> parseRpdPaths(List<ResourcePermission> permissions) {
+    public List<ShieldPermission> parsePermissions(List<ResourcePermission> permissions) {
         return permissions.stream()
-                .map(ResourcePermission::getRpd)
+                .filter(permission -> permission.getRpd() != null)
+                .filter(permission -> permission.getRpd().contains(areaFilter))
+                .map(this::parsePermission)
                 .filter(Objects::nonNull)
-                .filter(rpd -> rpd.contains(areaFilter))
-                .map(this::parseDatabaseTable)
-                .filter(Objects::nonNull)
-                .map(this::normalizeDatabaseTable)
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * @deprecated use {@link #parsePermissions(List)} which preserves authority.
+     */
+    @Deprecated
+    public List<DatabaseTable> parseRpdPaths(List<ResourcePermission> permissions) {
+        return parsePermissions(permissions).stream()
+                .map(permission -> new DatabaseTable(permission.getDatabase(), permission.getTable()))
+                .collect(Collectors.toList());
+    }
+
+    private ShieldPermission parsePermission(ResourcePermission permission) {
+        DatabaseTable dbTable = parseDatabaseTable(permission.getRpd());
+        if (dbTable == null) {
+            return null;
+        }
+        DatabaseTable normalized = normalizeDatabaseTable(dbTable);
+        ShieldPermission.Authority authority = parseAuthority(permission.getAuthority(), permission.getRpd());
+        return new ShieldPermission(normalized.getDatabase(), normalized.getTable(), authority);
+    }
+
+    static ShieldPermission.Authority parseAuthority(String authority, String rpd) {
+        if (authority != null) {
+            if ("create".equalsIgnoreCase(authority)) {
+                return ShieldPermission.Authority.CREATE;
+            }
+            if ("admin".equalsIgnoreCase(authority)) {
+                return ShieldPermission.Authority.ADMIN;
+            }
+        }
+        if (rpd != null && rpd.contains("option=create")) {
+            return ShieldPermission.Authority.CREATE;
+        }
+        return ShieldPermission.Authority.SELECT;
     }
 
     private DatabaseTable normalizeDatabaseTable(DatabaseTable dbTable) {
