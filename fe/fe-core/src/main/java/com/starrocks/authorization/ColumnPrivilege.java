@@ -162,10 +162,14 @@ public class ColumnPrivilege {
                             Authorizer.checkColumnAction(context,
                                     tableName, column, PrivilegeType.SELECT);
                         } catch (AccessDeniedException e) {
+                            // External access controllers (e.g. Shield) authorize at table
+                            // granularity, so surface the offending table (db.tbl) rather
+                            // than the column, which is an internal check detail.
                             AccessDeniedException.reportAccessDenied(
                                     tableName.getCatalog(),
                                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                    PrivilegeType.SELECT.name(), ObjectType.COLUMN.name(), column);
+                                    PrivilegeType.SELECT.name(), ObjectType.TABLE.name(),
+                                    qualifiedTableObjectName(tableName));
                         }
                     }
                 }
