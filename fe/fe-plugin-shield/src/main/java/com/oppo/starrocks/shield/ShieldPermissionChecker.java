@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+import com.starrocks.authorization.PrivilegeType;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -19,7 +20,7 @@ public class ShieldPermissionChecker {
 
     private final ShieldConfig config;
     private final ShieldApiClient apiClient;
-    private final Cache<String, List<DatabaseTable>> permissionCache;
+    private final Cache<String, List<ShieldPermission>> permissionCache;
 
     public ShieldPermissionChecker(Map<String, String> properties) {
         this.config = new ShieldConfig(properties);
@@ -28,9 +29,9 @@ public class ShieldPermissionChecker {
                 .expireAfterWrite(config.getCacheTtlSeconds(), TimeUnit.SECONDS)
                 .maximumSize(10000)
                 .build();
-        LOG.info("Shield permission cache enabled, ttlSeconds={}, denyNotCached=true, slowThresholdMs={}, "
-                        + "connectTimeoutMs={}, readTimeoutMs={}, retryCount={}, retryDelayMs={}",
-                config.getCacheTtlSeconds(), config.getSlowThresholdMs(),
+        LOG.info("Shield permission cache enabled, ttlSeconds={}, requestAuthorities={}, denyNotCached=true, "
+                        + "slowThresholdMs={}, connectTimeoutMs={}, readTimeoutMs={}, retryCount={}, retryDelayMs={}",
+                config.getCacheTtlSeconds(), config.getRequestAuthorities(), config.getSlowThresholdMs(),
                 config.getConnectTimeoutMs(), config.getReadTimeoutMs(),
                 config.getRetryCount(), config.getRetryDelayMs());
     }
@@ -39,7 +40,8 @@ public class ShieldPermissionChecker {
         return config.getSuperAdminUsers().contains(starRocksUser);
     }
 
-    public boolean hasTablePermission(String starRocksUser, String database, String table) {
+    public boolean hasTablePermission(String starRocksUser, String database, String table,
+                                      PrivilegeType privilegeType) {
         long start = ShieldTimingLog.startNanos();
         if (isSuperAdmin(starRocksUser)) {
             ShieldTimingLog.logAuthCheck(LOG, config.getSlowThresholdMs(), "TABLE", starRocksUser,
@@ -55,14 +57,16 @@ public class ShieldPermissionChecker {
             return false;
         }
 
-        List<DatabaseTable> tables = loadPermissions(identity);
-        boolean allowed = tables.stream().anyMatch(item -> item.matches(database, table));
+        List<ShieldPermission> permissions = loadPermissions(identity);
+        boolean allowed = permissions.stream()
+                .anyMatch(permission -> permission.matches(database, table)
+                        && permission.satisfiesTable(privilegeType));
         ShieldTimingLog.logAuthCheck(LOG, config.getSlowThresholdMs(), "TABLE", starRocksUser,
                 database + "." + table, allowed, ShieldTimingLog.elapsedMs(start));
         return allowed;
     }
 
-    public boolean hasDatabasePermission(String starRocksUser, String database) {
+    public boolean hasDatabasePermission(String starRocksUser, String database, PrivilegeType privilegeType) {
         long start = ShieldTimingLog.startNanos();
         if (isSuperAdmin(starRocksUser)) {
             ShieldTimingLog.logAuthCheck(LOG, config.getSlowThresholdMs(), "DATABASE", starRocksUser,
@@ -77,17 +81,19 @@ public class ShieldPermissionChecker {
             return false;
         }
 
-        List<DatabaseTable> tables = loadPermissions(identity);
-        boolean allowed = tables.stream().anyMatch(item -> item.matchesDatabase(database));
+        List<ShieldPermission> permissions = loadPermissions(identity);
+        boolean allowed = permissions.stream()
+                .anyMatch(permission -> permission.matchesDatabase(database)
+                        && permission.satisfiesDatabase(privilegeType));
         ShieldTimingLog.logAuthCheck(LOG, config.getSlowThresholdMs(), "DATABASE", starRocksUser,
                 database, allowed, ShieldTimingLog.elapsedMs(start));
         return allowed;
     }
 
-    private List<DatabaseTable> loadPermissions(ShieldUserIdentity identity) {
+    private List<ShieldPermission> loadPermissions(ShieldUserIdentity identity) {
         String cacheKey = identity.toCacheKey();
         long start = ShieldTimingLog.startNanos();
-        List<DatabaseTable> cached = permissionCache.getIfPresent(cacheKey);
+        List<ShieldPermission> cached = permissionCache.getIfPresent(cacheKey);
         if (cached != null && !cached.isEmpty()) {
             long costMs = ShieldTimingLog.elapsedMs(start);
             ShieldTimingLog.logPermissionLoad(LOG, config.getSlowThresholdMs(), cacheKey,
@@ -95,7 +101,7 @@ public class ShieldPermissionChecker {
             return cached;
         }
 
-        List<DatabaseTable> result = apiClient.loadDatabaseTables(identity.getUsername(), identity.getPsaId());
+        List<ShieldPermission> result = apiClient.loadPermissions(identity.getUsername(), identity.getPsaId());
         long costMs = ShieldTimingLog.elapsedMs(start);
         if (!result.isEmpty()) {
             permissionCache.put(cacheKey, result);

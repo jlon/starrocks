@@ -17,6 +17,7 @@ public class ShieldConfigTest {
         Assert.assertEquals(10000, config.getReadTimeoutMs());
         Assert.assertEquals(3, config.getRetryCount());
         Assert.assertEquals(200, config.getRetryDelayMs());
+        Assert.assertEquals("select,create,admin", config.getRequestAuthorities());
     }
 
     @Test

@@ -18,6 +18,9 @@ import org.apache.logging.log4j.Logger;
  *
  * <p>Loaded via catalog property:
  * {@code access.controller.class = com.oppo.starrocks.shield.ShieldHiveAccessController}
+ *
+ * <p>Shield RPD {@code authority=create} at database level grants full access to all tables in the
+ * database; table-level {@code create} grants full access to that table; {@code select} is read-only.
  */
 public class ShieldHiveAccessController extends ExternalAccessController implements AutoCloseable {
     private static final Logger LOG = LogManager.getLogger(ShieldHiveAccessController.class);
@@ -64,19 +67,16 @@ public class ShieldHiveAccessController extends ExternalAccessController impleme
     @Override
     public void checkColumnAction(ConnectContext context, TableName tableName,
                                   String column, PrivilegeType privilegeType) throws AccessDeniedException {
-        // Shield sync only grants table-level SELECT; column access follows table access.
         checkTable(context, tableName.getDb(), tableName.getTbl(), privilegeType);
     }
 
     private void checkDatabase(ConnectContext context, String database, PrivilegeType privilegeType)
             throws AccessDeniedException {
-        if (!isReadablePrivilege(privilegeType)) {
-            throw new AccessDeniedException();
-        }
         String user = context.getQualifiedUser();
         try {
-            if (!permissionChecker.hasDatabasePermission(user, database)) {
-                LOG.info("Shield denied database access. user={}, database={}", user, database);
+            if (!permissionChecker.hasDatabasePermission(user, database, privilegeType)) {
+                LOG.info("Shield denied database access. user={}, database={}, privilege={}",
+                        user, database, privilegeType.name());
                 throw new AccessDeniedException();
             }
         } catch (ShieldApiException e) {
@@ -87,13 +87,11 @@ public class ShieldHiveAccessController extends ExternalAccessController impleme
 
     private void checkTable(ConnectContext context, String database, String table, PrivilegeType privilegeType)
             throws AccessDeniedException {
-        if (!isReadablePrivilege(privilegeType)) {
-            throw new AccessDeniedException();
-        }
         String user = context.getQualifiedUser();
         try {
-            if (!permissionChecker.hasTablePermission(user, database, table)) {
-                LOG.info("Shield denied table access. user={}, table={}.{}", user, database, table);
+            if (!permissionChecker.hasTablePermission(user, database, table, privilegeType)) {
+                LOG.info("Shield denied table access. user={}, table={}.{}, privilege={}",
+                        user, database, table, privilegeType.name());
                 throw new AccessDeniedException();
             }
         } catch (ShieldApiException e) {
@@ -101,11 +99,6 @@ public class ShieldHiveAccessController extends ExternalAccessController impleme
                     user, database, table, e);
             throw ErrorReportException.report(ErrorCode.ERR_SHIELD_API_UNAVAILABLE, e.toUserMessage());
         }
-    }
-
-    private boolean isReadablePrivilege(PrivilegeType privilegeType) {
-        return privilegeType == PrivilegeType.SELECT
-                || privilegeType == PrivilegeType.ANY;
     }
 
     @Override

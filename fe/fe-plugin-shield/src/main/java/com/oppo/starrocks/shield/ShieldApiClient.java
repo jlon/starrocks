@@ -102,7 +102,7 @@ public class ShieldApiClient {
         params.put("operator", operator);
         params.put("groupID", groupId);
         params.put("resType", "hive");
-        params.put("authority", "select,admin");
+        params.put("authority", config.getRequestAuthorities());
         params.put("signature", SignatureUtil.sign(params, config.getAppKey()));
         return params;
     }
@@ -245,33 +245,33 @@ public class ShieldApiClient {
         return element.getAsString();
     }
 
-    List<DatabaseTable> loadDatabaseTables(String username, String psaId) {
+    List<ShieldPermission> loadPermissions(String username, String psaId) {
         long start = ShieldTimingLog.startNanos();
         List<UserGroupInfo> groups = fetchUserGroups(username).stream()
                 .filter(group -> Objects.equals(psaId, group.getPsaId()))
                 .collect(Collectors.toList());
         if (groups.isEmpty()) {
             long costMs = ShieldTimingLog.elapsedMs(start);
-            LOG.info("Shield loadDatabaseTables, user={}, psaId={}, matchedGroupCount=0, tableCount=0, costMs={}",
+            LOG.info("Shield loadPermissions, user={}, psaId={}, matchedGroupCount=0, permissionCount=0, costMs={}",
                     username, psaId, costMs);
             return Collections.emptyList();
         }
 
         RpdParser parser = new RpdParser(config.getRpdAreaFilter());
-        List<DatabaseTable> tables = new ArrayList<>();
+        List<ShieldPermission> permissions = new ArrayList<>();
         for (UserGroupInfo group : groups) {
-            List<ResourcePermission> permissions = fetchGroupPermissions(username, group.getGroupId());
-            tables.addAll(parser.parseRpdPaths(permissions));
+            List<ResourcePermission> groupPermissions = fetchGroupPermissions(username, group.getGroupId());
+            permissions.addAll(parser.parsePermissions(groupPermissions));
         }
         long costMs = ShieldTimingLog.elapsedMs(start);
         if (costMs >= config.getSlowThresholdMs()) {
-            LOG.warn("Shield loadDatabaseTables slow, user={}, psaId={}, matchedGroupCount={}, tableCount={}, "
+            LOG.warn("Shield loadPermissions slow, user={}, psaId={}, matchedGroupCount={}, permissionCount={}, "
                             + "costMs={}, thresholdMs={}",
-                    username, psaId, groups.size(), tables.size(), costMs, config.getSlowThresholdMs());
+                    username, psaId, groups.size(), permissions.size(), costMs, config.getSlowThresholdMs());
         } else {
-            LOG.info("Shield loadDatabaseTables, user={}, psaId={}, matchedGroupCount={}, tableCount={}, costMs={}",
-                    username, psaId, groups.size(), tables.size(), costMs);
+            LOG.info("Shield loadPermissions, user={}, psaId={}, matchedGroupCount={}, permissionCount={}, costMs={}",
+                    username, psaId, groups.size(), permissions.size(), costMs);
         }
-        return tables;
+        return permissions;
     }
 }

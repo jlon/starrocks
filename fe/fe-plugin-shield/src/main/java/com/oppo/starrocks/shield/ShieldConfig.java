@@ -22,7 +22,9 @@ public class ShieldConfig {
     public static final String READ_TIMEOUT_MS = "shield.api.read.timeout.ms";
     public static final String RETRY_COUNT = "shield.api.retry.count";
     public static final String RETRY_DELAY_MS = "shield.api.retry.delay.ms";
+    public static final String REQUEST_AUTHORITIES = "shield.api.request_authorities";
 
+    private static final String DEFAULT_REQUEST_AUTHORITIES = "select,create,admin";
     private static final int DEFAULT_CONNECT_TIMEOUT_MS = 5000;
     private static final int DEFAULT_READ_TIMEOUT_MS = 10000;
     private static final int DEFAULT_RETRY_COUNT = 3;
@@ -43,6 +45,7 @@ public class ShieldConfig {
     private final int readTimeoutMs;
     private final int retryCount;
     private final int retryDelayMs;
+    private final String requestAuthorities;
 
     public ShieldConfig(Map<String, String> properties) {
         this.domain = getRequired(properties, DOMAIN);
@@ -62,6 +65,7 @@ public class ShieldConfig {
         this.readTimeoutMs = parseNonNegativeInt(properties, READ_TIMEOUT_MS, DEFAULT_READ_TIMEOUT_MS);
         this.retryCount = parseNonNegativeInt(properties, RETRY_COUNT, DEFAULT_RETRY_COUNT);
         this.retryDelayMs = parseNonNegativeInt(properties, RETRY_DELAY_MS, DEFAULT_RETRY_DELAY_MS);
+        this.requestAuthorities = properties.getOrDefault(REQUEST_AUTHORITIES, DEFAULT_REQUEST_AUTHORITIES);
     }
 
     private static int parseNonNegativeInt(Map<String, String> properties, String key, int defaultValue) {
@@ -154,5 +158,9 @@ public class ShieldConfig {
 
     public int getRetryDelayMs() {
         return retryDelayMs;
+    }
+
+    public String getRequestAuthorities() {
+        return requestAuthorities;
     }
 }
