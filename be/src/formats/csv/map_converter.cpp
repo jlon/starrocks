@@ -16,6 +16,7 @@
 
 #include "column/map_column.h"
 #include "common/logging.h"
+#include "formats/csv/array_reader.h"
 
 namespace starrocks::csv {
 
@@ -48,7 +49,12 @@ Status MapConverter::write_quoted_string(io::FormattedOutputStream* os, const Co
     return write_string(os, column, row_num, options);
 }
 
-bool MapConverter::validate(const Slice& s) const {
+bool MapConverter::validate(const Slice& s, const Options& options) const {
+    if (options.array_format_type == ArrayFormatType::kHive) {
+        // Hive text map has no enclosing braces; entries are separated by the collection
+        // delimiter and key/value by the mapkey delimiter. An empty slice is a valid empty map.
+        return true;
+    }
     if (s.size < 2) {
         return false;
     }
@@ -58,11 +64,26 @@ bool MapConverter::validate(const Slice& s) const {
     return true;
 }
 
-bool MapConverter::split_map_key_value(Slice s, std::vector<Slice>& keys, std::vector<Slice>& values) const {
-    s.remove_prefix(1);
-    s.remove_suffix(1);
+bool MapConverter::split_map_key_value(Slice s, std::vector<Slice>& keys, std::vector<Slice>& values,
+                                        const Options& options) const {
+    char map_delim;
+    char kv_delim;
+    if (options.array_format_type == ArrayFormatType::kHive) {
+        // Hive LazySimpleSerDe map: entries separated by the collection delimiter at this
+        // nesting level, key/value by the delimiter one level deeper. No braces to strip.
+        size_t level = options.array_hive_nested_level;
+        map_delim = HiveTextArrayReader::get_collection_delimiter(
+                options.array_hive_collection_delimiter, options.array_hive_mapkey_delimiter, level);
+        kv_delim = HiveTextArrayReader::get_collection_delimiter(
+                options.array_hive_collection_delimiter, options.array_hive_mapkey_delimiter, level + 1);
+    } else {
+        map_delim = _map_delimiter;
+        kv_delim = _kv_delimiter;
+        s.remove_prefix(1);
+        s.remove_suffix(1);
+    }
     if (s.empty()) {
-        // Consider empty map {}.
+        // Consider empty map.
         return true;
     }
 
@@ -78,13 +99,13 @@ bool MapConverter::split_map_key_value(Slice s, std::vector<Slice>& keys, std::v
             map_nest_level++;
         } else if (!in_quote && c == '}') {
             map_nest_level--;
-        } else if (!in_quote && map_nest_level == 0 && c == _kv_delimiter) {
+        } else if (!in_quote && map_nest_level == 0 && c == kv_delim) {
             if (i == last_index) { // size should not be 0
                 return false;
             }
             keys.emplace_back(s.data + last_index, i - last_index);
             last_index = i + 1;
-        } else if (!in_quote && map_nest_level == 0 && c == _map_delimiter) {
+        } else if (!in_quote && map_nest_level == 0 && c == map_delim) {
             if (i == last_index) {
                 return false;
             }
@@ -105,7 +126,7 @@ bool MapConverter::split_map_key_value(Slice s, std::vector<Slice>& keys, std::v
 }
 
 bool MapConverter::read_string(Column* column, const Slice& s, const Options& options) const {
-    if (!validate(s)) {
+    if (!validate(s, options)) {
         return false;
     }
     auto* map = down_cast<MapColumn*>(column);
@@ -113,7 +134,7 @@ bool MapConverter::read_string(Column* column, const Slice& s, const Options& op
     auto* keys = map->keys_column_raw_ptr();
     auto* values = map->values_column_raw_ptr();
     std::vector<Slice> key_fields, value_fields;
-    if (!s.empty() && !split_map_key_value(s, key_fields, value_fields)) {
+    if (!s.empty() && !split_map_key_value(s, key_fields, value_fields, options)) {
         return false;
     }
     size_t old_size = keys->size();
@@ -134,14 +155,26 @@ bool MapConverter::read_string(Column* column, const Slice& s, const Options& op
         unique_keys.emplace_back(unique);
     }
 
+    // In Hive text format, keys/values are not quoted, so use read_string (mirroring
+    // HiveTextArrayReader which calls elem_converter->read_string). A map consumes two
+    // separator levels (entry + key/value), so descend two levels for sub-converters.
+    const bool is_hive = options.array_format_type == ArrayFormatType::kHive;
+    Options sub_options = options;
+    if (is_hive) {
+        sub_options.array_hive_nested_level = options.array_hive_nested_level + 2;
+    }
     for (auto i = 0; i < key_fields.size(); ++i) {
-        if (unique_keys[i] && !_key_converter->read_quoted_string(keys, key_fields[i], options)) {
+        bool ok = is_hive ? _key_converter->read_string(keys, key_fields[i], sub_options)
+                          : _key_converter->read_quoted_string(keys, key_fields[i], options);
+        if (unique_keys[i] && !ok) {
             keys->resize(old_size);
             return false;
         }
     }
     for (auto i = 0; i < value_fields.size(); ++i) {
-        if (unique_keys[i] && !_value_converter->read_quoted_string(values, value_fields[i], options)) {
+        bool ok = is_hive ? _value_converter->read_string(values, value_fields[i], sub_options)
+                          : _value_converter->read_quoted_string(values, value_fields[i], options);
+        if (unique_keys[i] && !ok) {
             values->resize(old_size);
             return false;
         }
