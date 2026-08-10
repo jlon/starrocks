@@ -12,11 +12,27 @@ import org.apache.logging.log4j.Logger;
 public class RpdParser {
     private static final Logger LOG = LogManager.getLogger(RpdParser.class);
     private static final Pattern RPD_PATTERN = Pattern.compile("/([^/]+)\\.db(?:/([^/?]+))?\\??");
+    private static final Pattern APP_GROUP_PATTERN = Pattern.compile("hive://([^:@]+):group@");
 
     private final String areaFilter;
 
     public RpdParser(String areaFilter) {
         this.areaFilter = areaFilter;
+    }
+
+    /**
+     * Extracts app group from {@code hive://{group}:group@{area}/...}.
+     * Returns null for legacy {@code hive://group@{area}/...} RPDs.
+     */
+    public static String extractAppGroup(String rpd) {
+        if (rpd == null) {
+            return null;
+        }
+        Matcher matcher = APP_GROUP_PATTERN.matcher(rpd);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return null;
     }
 
     public List<ShieldPermission> parsePermissions(List<ResourcePermission> permissions) {

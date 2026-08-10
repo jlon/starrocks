@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import com.google.gson.Gson;
@@ -34,6 +35,54 @@ public class ShieldApiClient {
 
     public ShieldApiClient(ShieldConfig config) {
         this.config = config;
+    }
+
+    public List<ResourcePermission> fetchUserPermissions(String username) {
+        long start = ShieldTimingLog.startNanos();
+        try {
+            List<ResourcePermission> permissions = new ArrayList<>();
+            for (String authority : config.getRequestAuthorityList()) {
+                Map<String, Object> params = buildUserPermissionParams(username, authority);
+                String content = executePost(config.getUserPermissionsPath(), params);
+                permissions.addAll(parsePermissions(content));
+            }
+            List<ResourcePermission> merged = mergePermissionsByRpd(permissions);
+            long costMs = ShieldTimingLog.elapsedMs(start);
+            logApiResult("getResourcesByUser", config.getUserPermissionsPath(),
+                    "user=" + username + ", permissionCount=" + merged.size(), costMs);
+            return merged;
+        } catch (RuntimeException e) {
+            logApiFailure(config.getUserPermissionsPath(), ShieldTimingLog.elapsedMs(start), e);
+            throw e;
+        }
+    }
+
+    private List<ResourcePermission> mergePermissionsByRpd(List<ResourcePermission> permissions) {
+        Map<String, ResourcePermission> merged = new HashMap<>();
+        for (ResourcePermission permission : permissions) {
+            String rpd = permission.getRpd();
+            if (rpd == null) {
+                continue;
+            }
+            ResourcePermission existing = merged.get(rpd);
+            if (existing == null || authorityRank(permission.getAuthority()) > authorityRank(existing.getAuthority())) {
+                merged.put(rpd, permission);
+            }
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private static int authorityRank(String authority) {
+        if (authority == null) {
+            return 0;
+        }
+        if ("admin".equalsIgnoreCase(authority)) {
+            return 3;
+        }
+        if ("create".equalsIgnoreCase(authority)) {
+            return 2;
+        }
+        return 1;
     }
 
     public List<UserGroupInfo> fetchUserGroups(String username) {
@@ -93,6 +142,16 @@ public class ShieldApiClient {
     private Map<String, Object> buildUserGroupParams(String username) {
         Map<String, Object> params = buildBaseParams();
         params.put("user", username);
+        params.put("signature", SignatureUtil.sign(params, config.getAppKey()));
+        return params;
+    }
+
+    private Map<String, Object> buildUserPermissionParams(String username, String authority) {
+        Map<String, Object> params = buildBaseParams();
+        params.put("user", username);
+        params.put("areaCode", config.getAreaCode());
+        params.put("resType", "hive");
+        params.put("authority", authority);
         params.put("signature", SignatureUtil.sign(params, config.getAppKey()));
         return params;
     }
@@ -221,8 +280,9 @@ public class ShieldApiClient {
             JsonObject item = element.getAsJsonObject();
             String rpd = getAsString(item, "rpd");
             String authority = getAsString(item, "authority");
+            String expireTime = getAsString(item, "expireTime");
             if (rpd != null) {
-                permissions.add(new ResourcePermission(rpd, authority));
+                permissions.add(new ResourcePermission(rpd, authority, expireTime));
             }
         }
         return permissions;
@@ -247,30 +307,29 @@ public class ShieldApiClient {
 
     List<ShieldPermission> loadPermissions(String username, String psaId) {
         long start = ShieldTimingLog.startNanos();
-        List<UserGroupInfo> groups = fetchUserGroups(username).stream()
+        Set<String> allowedGroupIds = fetchUserGroups(username).stream()
                 .filter(group -> Objects.equals(psaId, group.getPsaId()))
-                .collect(Collectors.toList());
-        if (groups.isEmpty()) {
+                .map(UserGroupInfo::getGroupId)
+                .collect(Collectors.toSet());
+        if (allowedGroupIds.isEmpty()) {
             long costMs = ShieldTimingLog.elapsedMs(start);
             LOG.info("Shield loadPermissions, user={}, psaId={}, matchedGroupCount=0, permissionCount=0, costMs={}",
                     username, psaId, costMs);
             return Collections.emptyList();
         }
 
+        List<ResourcePermission> scopedPermissions = ShieldPermissionFilter.filterByAppGroups(
+                fetchUserPermissions(username), allowedGroupIds);
         RpdParser parser = new RpdParser(config.getRpdAreaFilter());
-        List<ShieldPermission> permissions = new ArrayList<>();
-        for (UserGroupInfo group : groups) {
-            List<ResourcePermission> groupPermissions = fetchGroupPermissions(username, group.getGroupId());
-            permissions.addAll(parser.parsePermissions(groupPermissions));
-        }
+        List<ShieldPermission> permissions = parser.parsePermissions(scopedPermissions);
         long costMs = ShieldTimingLog.elapsedMs(start);
         if (costMs >= config.getSlowThresholdMs()) {
             LOG.warn("Shield loadPermissions slow, user={}, psaId={}, matchedGroupCount={}, permissionCount={}, "
                             + "costMs={}, thresholdMs={}",
-                    username, psaId, groups.size(), permissions.size(), costMs, config.getSlowThresholdMs());
+                    username, psaId, allowedGroupIds.size(), permissions.size(), costMs, config.getSlowThresholdMs());
         } else {
             LOG.info("Shield loadPermissions, user={}, psaId={}, matchedGroupCount={}, permissionCount={}, costMs={}",
-                    username, psaId, groups.size(), permissions.size(), costMs);
+                    username, psaId, allowedGroupIds.size(), permissions.size(), costMs);
         }
         return permissions;
     }

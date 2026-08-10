@@ -18,6 +18,7 @@ public class ShieldConfigTest {
         Assert.assertEquals(3, config.getRetryCount());
         Assert.assertEquals(200, config.getRetryDelayMs());
         Assert.assertEquals("select,create,admin", config.getRequestAuthorities());
+        Assert.assertEquals("/oauthority/api/getResourcesByUser", config.getUserPermissionsPath());
     }
 
     @Test
@@ -35,5 +36,16 @@ public class ShieldConfigTest {
         Assert.assertEquals(15000, config.getReadTimeoutMs());
         Assert.assertEquals(5, config.getRetryCount());
         Assert.assertEquals(500, config.getRetryDelayMs());
+    }
+
+    @Test
+    public void splitsRequestAuthoritiesForSeparateApiCalls() {
+        ShieldConfig config = new ShieldConfig(Map.of(
+                ShieldConfig.DOMAIN, "http://shield.example",
+                ShieldConfig.APP_KEY, "test-key",
+                ShieldConfig.REQUEST_AUTHORITIES, "select, create ,admin"
+        ));
+
+        Assert.assertEquals(java.util.List.of("select", "create", "admin"), config.getRequestAuthorityList());
     }
 }
