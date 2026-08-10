@@ -28,6 +28,6 @@ final class ShieldPermissionFilter {
             // Legacy RPD without "{group}:group@" prefix cannot be scoped; keep when psaId has groups.
             return true;
         }
-        return allowedGroupIds.contains(appGroup);
+        return allowedGroupIds.stream().anyMatch(groupId -> groupId.equalsIgnoreCase(appGroup));
     }
 }

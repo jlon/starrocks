@@ -74,7 +74,7 @@ def load_permissions(domain: str, app_key: str, username: str, psa_id: str):
     for p in perms:
         rpd = p.get("rpd", "")
         app_group = extract_app_group(rpd)
-        if app_group is not None and app_group not in allowed_groups:
+        if app_group is not None and not any(g.lower() == app_group.lower() for g in allowed_groups):
             continue
         parsed = parse_rpd(rpd)
         if not parsed:

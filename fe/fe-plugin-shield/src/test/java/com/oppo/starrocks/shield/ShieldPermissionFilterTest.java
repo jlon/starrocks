@@ -41,4 +41,16 @@ public class ShieldPermissionFilterTest {
         );
         Assert.assertTrue(ShieldPermissionFilter.filterByAppGroups(permissions, Collections.emptySet()).isEmpty());
     }
+
+    @Test
+    public void matchesAppGroupIgnoreCase() {
+        List<ResourcePermission> permissions = Collections.singletonList(
+                new ResourcePermission(
+                        "hive://wearable-device-data-group:group@china1/hive/iot_ow.db?option=select",
+                        "select")
+        );
+        List<ResourcePermission> filtered = ShieldPermissionFilter.filterByAppGroups(
+                permissions, Set.of("Wearable-device-data-group"));
+        Assert.assertEquals(1, filtered.size());
+    }
 }
