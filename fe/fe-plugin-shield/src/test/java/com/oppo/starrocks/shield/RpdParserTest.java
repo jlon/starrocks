@@ -80,4 +80,12 @@ public class RpdParserTest {
         Assert.assertEquals(ShieldPermission.Authority.SELECT,
                 RpdParser.parseAuthority(null, "hive://group@china1/tmp.db/t?option=select"));
     }
+
+    @Test
+    public void testExtractAppGroup() {
+        Assert.assertEquals("advert", RpdParser.extractAppGroup(
+                "hive://advert:group@china1/hive/toutiao.db/c_desktop_search_d?option=select"));
+        Assert.assertNull(RpdParser.extractAppGroup(
+                "hive://group@china1/ad_model.db/ad_table?option=select"));
+    }
 }

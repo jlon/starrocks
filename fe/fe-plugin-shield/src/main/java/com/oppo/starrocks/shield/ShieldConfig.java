@@ -3,8 +3,10 @@ package com.oppo.starrocks.shield;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public class ShieldConfig {
     public static final String DOMAIN = "shield.api.domain";
@@ -14,6 +16,7 @@ public class ShieldConfig {
     public static final String AREA_CODE = "shield.api.area_code";
     public static final String USER_APP_GROUP_PATH = "shield.api.user_app_group_path";
     public static final String GROUP_PERMISSIONS_PATH = "shield.api.group_permissions_path";
+    public static final String USER_PERMISSIONS_PATH = "shield.api.user_permissions_path";
     public static final String SUPER_ADMIN_USERS = "shield.super_admin_users";
     public static final String CACHE_TTL_SECONDS = "shield.permission.cache.ttl.seconds";
     public static final String RPD_AREA_FILTER = "shield.rpd.area_filter";
@@ -37,6 +40,7 @@ public class ShieldConfig {
     private final String areaCode;
     private final String userAppGroupPath;
     private final String groupPermissionsPath;
+    private final String userPermissionsPath;
     private final Set<String> superAdminUsers;
     private final long cacheTtlSeconds;
     private final String rpdAreaFilter;
@@ -57,6 +61,8 @@ public class ShieldConfig {
                 USER_APP_GROUP_PATH, "/oauthority/api/getUserAppGroup");
         this.groupPermissionsPath = properties.getOrDefault(
                 GROUP_PERMISSIONS_PATH, "/oauthority/api/getResourcesByGroupID");
+        this.userPermissionsPath = properties.getOrDefault(
+                USER_PERMISSIONS_PATH, "/oauthority/api/getResourcesByUser");
         this.superAdminUsers = parseSuperAdminUsers(properties.get(SUPER_ADMIN_USERS));
         this.cacheTtlSeconds = Long.parseLong(properties.getOrDefault(CACHE_TTL_SECONDS, "60"));
         this.rpdAreaFilter = properties.getOrDefault(RPD_AREA_FILTER, areaCode + "/");
@@ -128,6 +134,10 @@ public class ShieldConfig {
         return groupPermissionsPath;
     }
 
+    public String getUserPermissionsPath() {
+        return userPermissionsPath;
+    }
+
     public Set<String> getSuperAdminUsers() {
         return superAdminUsers;
     }
@@ -162,5 +172,12 @@ public class ShieldConfig {
 
     public String getRequestAuthorities() {
         return requestAuthorities;
+    }
+
+    public List<String> getRequestAuthorityList() {
+        return Arrays.stream(requestAuthorities.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toList());
     }
 }
