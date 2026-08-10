@@ -14,6 +14,8 @@
 
 #include "storage/lake/transactions.h"
 
+#include <algorithm>
+
 #include "fs/fs_util.h"
 #include "gen_cpp/lake_types.pb.h"
 #include "gutil/strings/join.h"
@@ -40,6 +42,10 @@ ParallelSet<int64_t> tablet_txns;
 // and need to increase version number of the tablet,
 // the situation happens in create rollup.
 const int64_t EMPTY_TXNLOG_TXNID = -1;
+
+bool is_empty_txn(const starrocks::TxnInfoPB& txn_info) {
+    return txn_info.txn_id() == EMPTY_TXNLOG_TXNID;
+}
 
 } // namespace
 
@@ -173,7 +179,7 @@ StatusOr<std::vector<TxnLogVector>> load_txn_log(TabletManager* tablet_mgr, std:
 StatusOr<TabletMetadataPtr> publish_version(TabletManager* tablet_mgr, const PublishTabletInfo& tablet_info,
                                             int64_t base_version, int64_t new_version, std::span<const TxnInfoPB> txns,
                                             bool skip_write_tablet_metadata) {
-    if (txns.size() == 1 && (txns[0].txn_id() == EMPTY_TXNLOG_TXNID || txns[0].txn_type() == TXN_TABLET_RESHARD)) {
+    if (txns.size() == 1 && (is_empty_txn(txns[0]) || txns[0].txn_type() == TXN_TABLET_RESHARD)) {
         LOG(INFO) << "publish version tablet_info: " << tablet_info << ", txn: " << txns[0].DebugString()
                   << ", base_version: " << base_version << ", new_version: " << new_version;
         // means there is no txnlog and need to increase version number,
@@ -210,9 +216,14 @@ StatusOr<TabletMetadataPtr> publish_version(TabletManager* tablet_mgr, const Pub
     VLOG(2) << "publish version tablet_info: " << tablet_info << ", txns: " << txns
             << ", base_version: " << base_version << ", new_version: " << new_version;
 
+    bool has_empty_txn =
+            std::any_of(txns.begin(), txns.end(), [](const TxnInfoPB& txn_info) { return is_empty_txn(txn_info); });
     auto new_metadata_path = tablet_mgr->tablet_metadata_location(tablet_info.get_tablet_id_in_metadata(), new_version);
+    if (has_empty_txn) {
+        tablet_mgr->metacache()->erase(new_metadata_path);
+    }
     auto cached_new_metadata = tablet_mgr->metacache()->lookup_tablet_metadata(new_metadata_path);
-    if (cached_new_metadata != nullptr) {
+    if (cached_new_metadata != nullptr && !has_empty_txn) {
         // The retries may be caused by some tablets failing to publish in a partition
         // set the following log as debug log to prevent excessive logging
         VLOG(1) << "Skipped publish version because target metadata found in cache. tablet_info=" << tablet_info
@@ -286,9 +297,15 @@ StatusOr<TabletMetadataPtr> publish_version(TabletManager* tablet_mgr, const Pub
         VLOG(2) << "[publish_version] applying txn i=" << i << " txn_id=" << txns[i].txn_id()
                 << " force_publish=" << txns[i].force_publish() << " load_ids_size=" << txns[i].load_ids_size();
         bool ignore_txn_log = false;
-        auto txn_log_st = load_txn_log(tablet_mgr, tablet_info.get_tablet_ids_in_txn_logs(), txns[i]);
+        StatusOr<std::vector<TxnLogVector>> txn_log_st = Status::NotFound("not loaded");
 
-        if (txn_log_st.status().is_not_found()) {
+        if (is_empty_txn(txns[i])) {
+            ignore_txn_log = true;
+        } else {
+            txn_log_st = load_txn_log(tablet_mgr, tablet_info.get_tablet_ids_in_txn_logs(), txns[i]);
+        }
+
+        if (!ignore_txn_log && txn_log_st.status().is_not_found()) {
             if (i == 0) {
                 // this may happen in two situations, in every situation,
                 // needs take compaction(force_publish=true) into consideration
@@ -383,11 +400,12 @@ StatusOr<TabletMetadataPtr> publish_version(TabletManager* tablet_mgr, const Pub
             }
         }
 
-        // txn log not found and can be ignored, only compaction will reach here, do nothing
+        // txn log ignored: either an explicit empty transaction or a compaction force-publish fallback.
         if (ignore_txn_log) {
             LOG(INFO) << "txn_log of txn: " << txns[i].txn_id() << " for tablet: " << tablet_info
-                      << " not found, force publish is on, ignore txn log";
-            log_applier->observe_empty_compaction(); // record empty compaction
+                      << " ignored (txn_type=" << txns[i].txn_type() << " force_publish=" << txns[i].force_publish()
+                      << ")";
+            log_applier->observe_empty_compaction(); // Historical name: record any no-op apply.
             continue;
         }
 

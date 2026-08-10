@@ -178,6 +178,26 @@ TEST_F(FilenamesTest, try_parse_txn_log_filename) {
     EXPECT_FALSE(try_parse_txn_log_filename("0000000000000001_0000000000000002_bad_load_id.log").has_value());
 }
 
+TEST_F(FilenamesTest, try_parse_tablet_metadata_filename) {
+    const auto name = tablet_metadata_filename(0x445C0, 0xC02);
+    auto parsed = try_parse_tablet_metadata_filename(name);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(0x445C0, parsed->first);
+    EXPECT_EQ(0xC02, parsed->second);
+
+    const std::string listed_path = "/business/path/meta/" + name;
+    EXPECT_FALSE(try_parse_tablet_metadata_filename(listed_path).has_value());
+    parsed = try_parse_tablet_metadata_filename(basename(listed_path));
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(0x445C0, parsed->first);
+    EXPECT_EQ(0xC02, parsed->second);
+
+    EXPECT_FALSE(try_parse_tablet_metadata_filename("xxxx_xxxx.meta").has_value());
+    EXPECT_FALSE(try_parse_tablet_metadata_filename("00000000000445C0_xxxxxxxxxxxxxxxx.meta").has_value());
+    EXPECT_FALSE(try_parse_tablet_metadata_filename("00000000000445C0000000000000C02.meta").has_value());
+    EXPECT_FALSE(try_parse_tablet_metadata_filename("00000000000445C0_0000000000000C02.log").has_value());
+}
+
 TEST_F(FilenamesTest, try_parse_txn_slog_vlog_and_combined_log_filename) {
     {
         auto parsed = try_parse_txn_slog_filename(txn_slog_filename(0x445C0, 0xC02));

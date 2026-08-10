@@ -259,6 +259,44 @@ Build/replacement evidence:
   only `fe/lib/fe-core-4.1.1.jar` and `be/lib/starrocks_be` in a temporary
   container and committing it. Final image ID:
   `174df1ec7696186c1e0b3abd0f96f485e32fdeefca088843d8ccfa4174e5626b`.
+- 2026-07-10 later FE rebuild used the long-running
+  `starrocks/dev-env-centos7:4.1-latest` container `sr-dev-4.1.1-build` and
+  targeted only `fe-core`: `mvn --batch-mode -f fe/pom.xml -pl fe-core -am
+  package -DskipTests -Dmaven.test.skip=true -Dmaven.clean.skip=true
+  -Djacoco.skip=true -T 28`. `TabletStatMgrTest` passed 30/30 before packaging.
+  The targeted package build finished in `31.924 s`.
+- New 2026-07-10 targeted FE SHA-256:
+  `adf2c0030a3e410e7f4a8a61ae7e4989c3b23890f07f21905cd95fd78b6bb572`.
+  Docker material backup:
+  `/home/service/var/starrocks/docker/starrocks-4.1.1-centos/starrocks-4.1.1-centos-amd64/_backups_20260710154235/fe-lib`.
+- 2026-07-10 later BE Release build used
+  `starrocks/dev-env-centos7:4.1-latest` with
+  `BUILD_TYPE=Release ./build.sh --be --enable-shared-data -j 8`; the build
+  printed `Successfully build StarRocks √ Backend` with `TotalTime:6882s`.
+  `CMakeCache.txt` confirmed `USE_STAROS:BOOL=ON` and `WITH_STARCACHE:BOOL=ON`.
+- New 2026-07-10 later BE SHA-256:
+  `17c16cdcd687366f0fd567bc68362a0ace1c0c5d850b3b0203c3c9c3fb2e960e`.
+  Docker material backup:
+  `/home/service/var/starrocks/docker/starrocks-4.1.1-centos/starrocks-4.1.1-centos-amd64/_backups_20260710144356/be-lib`.
+
+2026-08-08 current worktree validation and material replacement:
+
+- FE `PublishVersionDaemonTest`, `StreamLoadMultiStmtTaskTest`, and
+  `OlapTableSinkTest` passed 70/70. BE `LakeTabletManagerTest.*` passed 53/53,
+  and `LakeServiceTest.*` passed 80/80. The BE test exercises the CN request
+  slot: a second `get_tablet_stats` RPC waits until the active request releases.
+- FE was packaged from `fe-core` with Python 3 in
+  `starrocks/dev-env-centos7:4.1-latest`; its SHA-256 is
+  `30865af16e1dd0dbb9905bfed02881a61b884804a392482e3b2332c6db067c5a`.
+- BE was built in the same image using
+  `BUILD_TYPE=Release ./build.sh --be --enable-shared-data -j 28`; final output
+  reported `Successfully build StarRocks Backend`, with SHA-256
+  `d032ffef9e1e2da53b57ecd7c28d32411904cec86b3f61d90d0a22a6f8253ac3`.
+  The final build, rather than its first link result, was copied to the material.
+- Only `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar` and
+  `StarRocks-4.1.1/be/lib/starrocks_be` were replaced. Backups are in
+  `_backups_20260808013454`; byte-for-byte comparisons against the two final
+  build artifacts passed.
 
 2026-07-10 `80172b74f22` 补齐 file-bundling 表 `version>1` 场景的 FileNotFound 风暴：
 

@@ -18,6 +18,7 @@
 5. 备份放在物料树外，避免被 Docker build 复制进镜像。
 6. 发现 CPU 空闲但进程处于 I/O wait 时，降低并发，不继续提高 `-j`。
 7. FE 物料禁止包含 `fe-*-main.jar` 或 `spark-dpp-main.jar`。2026-07-06 已证明旧 `fe-parser-main.jar` 会让 JVM 先加载错误的 `ShowStmt.class`，触发 `NoSuchMethodError`。
+8. FE 已确定 jar 边界时优先定向 Maven 构建，不跑 `./build.sh --fe` 全链路。
 
 ## 必备环境
 
@@ -62,6 +63,31 @@ readlink /home/oppo/.m2/repository
 - 无关未跟踪文件，不暂存、不删除。
 - 不使用 `git reset --hard` 或 `git checkout --` 清理用户改动。
 
+## 长期构建容器
+
+优先使用长期 dev-env 容器。后续编译通过 `docker exec` 进入容器执行，避免反复
+`docker run` 时重新处理挂载、名字冲突和日志 attach 问题。
+
+```bash
+rtk docker run -d --name sr-dev-4.1.1-build \
+  -v /home/oppo/.m2:/root/.m2 \
+  -v /mnt/data/maven-repo:/mnt/data/maven-repo \
+  -v /mnt/data/starrocks:/workspace \
+  -v /mnt/data/starrocks:/mnt/data/starrocks \
+  -w /mnt/data/starrocks \
+  starrocks/dev-env-centos7:4.1-latest \
+  bash -lc 'trap : TERM INT; while true; do sleep 3600; done'
+```
+
+`docker exec` 时显式设置 Java 和 Maven PATH。CentOS profile 会重写 PATH；
+只依赖镜像环境变量会出现 `java: command not found`。
+
+```bash
+rtk docker exec sr-dev-4.1.1-build bash -c \
+  'set -euo pipefail; export PATH="$JAVA_HOME/bin:$MAVEN_HOME/bin:$PATH"; \
+   java -version; mvn -version'
+```
+
 ## 产物映射规则
 
 按源码变更决定运行产物：
@@ -79,10 +105,34 @@ readlink /home/oppo/.m2/repository
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `fe/lib/fe-core-4.1.1.jar` | `d18b435dd47ae112b9f4ea673aeac7fb6db465ad1964ba0afcb088cf17276302` |
+| `fe/lib/fe-core-4.1.1.jar` | `30865af16e1dd0dbb9905bfed02881a61b884804a392482e3b2332c6db067c5a` |
 | `fe/lib/fe-spi-4.1.1.jar` | `588c33e9e5e6c7d18871574d862d3f5d885eb8f48aad5fdea9fa6cf723a29afc` |
 | `fe/lib/fe-plugin-shield-1.0.0.jar` | `e45de6de027a80376da382aa7e9766a917b9845b5c18f5f5b31e818d1d5ef107` |
-| `be/lib/starrocks_be` | `ff3a10d8272bc4167e43e87e52d1c6d8c7171da7e28eb0a01bee9f2dc7a0aff0` |
+| `be/lib/starrocks_be` | `d032ffef9e1e2da53b57ecd7c28d32411904cec86b3f61d90d0a22a6f8253ac3` |
+
+2026-08-08 更新记录：
+
+- 本轮 FE 源码只落在 `fe/fe-core/**`，BE 源码只落在 `be/src/**`，因此运行
+  物料仍严格限定为 `fe-core-4.1.1.jar` 和 `starrocks_be`。
+- 前置定向测试在长期容器 `sr-dev-4.1.1-build` 中完成：
+  `PublishVersionDaemonTest`、`StreamLoadMultiStmtTaskTest` 和 `OlapTableSinkTest`
+  共 70/70 通过；`LakeTabletManagerTest.*` 53/53 通过；
+  `LakeServiceTest.*` 80/80 通过。
+- FE 生产包命令必须显式使用 `PYTHON=/usr/bin/python3`，否则 CentOS 7 镜像中的
+  `python` 指向 Python 2.7，生成脚本会因 Python 3 语法失败。命令为
+  `mvn --batch-mode -f fe/pom.xml -pl fe-core -am package -DskipTests
+  -Dmaven.test.skip=true -Dmaven.clean.skip=true -Djacoco.skip=true -T 28`，结果
+  `BUILD SUCCESS`，产物为 `fe/fe-core/target/fe-core-4.1.1.jar`。
+- BE 使用 `BUILD_TYPE=Release ./build.sh --be --enable-shared-data -j 28`，结果
+  `Successfully build StarRocks Backend`，最终增量构建完成后产物 mtime 更新。构建日志确认
+  `USE_STAROS` 与 `WITH_STARCACHE` 均启用。
+- 不要在 `starrocks_be` 第一次链接完成时复制文件。`build.sh --be` 随后还会执行
+  install、Java extensions 和 debuginfo split；只能在最终成功标记输出后校验
+  `output/be/lib/starrocks_be`。
+- 替换前备份位于
+  `_backups_20260808013454/fe-lib/fe-core-4.1.1.jar` 和
+  `_backups_20260808013454/be-lib/starrocks_be`。最终用 `diff -q` 验证两个物料
+  分别与上述 FE jar、`output/be/lib/starrocks_be` 字节一致。
 
 2026-07-10 更新记录：
 
@@ -96,10 +146,11 @@ readlink /home/oppo/.m2/repository
   `be/src/connector/lake_connector.cpp`、`be/src/storage/lake/tablet_manager.*`：
   file-bundling scan 可优先读 bundle metadata，并增加 aggregate publish
   bundle metadata read-back 校验。运行产物为 `be/lib/starrocks_be`。
-- FE 编译命令使用 `starrocks/dev-env-centos7:4.1-latest`，并正确挂载
-  `/home/oppo/.m2:/root/.m2` 与 `/mnt/data/maven-repo:/mnt/data/maven-repo`：
-  `./build.sh --fe -j 28`。
-- FE 编译结果：
+- FE 编译优先使用定向 Maven 构建。`fe-core` 及其必要依赖用
+  `mvn --batch-mode -f fe/pom.xml -pl fe-core -am package -DskipTests
+  -Dmaven.test.skip=true -Dmaven.clean.skip=true -Djacoco.skip=true -T 28`。
+  2026-07-10 15:40 实测 `BUILD SUCCESS`，`Total time: 31.924 s`。
+- 历史全量 FE 编译结果：
   `Successfully build StarRocks √ Frontend`，`StartTime:2026-07-09 17:12:10,
   EndTime:2026-07-09 17:14:39, TotalTime:149s`。
 - FE 产物验证：
@@ -133,6 +184,27 @@ readlink /home/oppo/.m2/repository
   本轮改用临时容器精确替换 `fe-core-4.1.1.jar` 和 `starrocks_be` 后
   `podman commit`，最终 `4.1.1-centos-amd64` 与 `4.1.1` tag 指向 image ID
   `174df1ec7696186c1e0b3abd0f96f485e32fdeefca088843d8ccfa4174e5626b`。
+
+2026-07-10 15:40 精准 FE 编译补充：
+
+- 最近提交涉及 `fe/fe-core/**` 和 `gensrc/thrift/PlanNodes.thrift`，当前未提交
+  diff 只涉及 BE；FE 运行产物边界仍是 `fe-core-4.1.1.jar`。
+- `TabletStatMgrTest` 定向测试 30/30 通过。
+- 定向生产打包命令在长期容器 `sr-dev-4.1.1-build` 内执行：
+  `mvn --batch-mode -f fe/pom.xml -pl fe-core -am package -DskipTests
+  -Dmaven.test.skip=true -Dmaven.clean.skip=true -Djacoco.skip=true -T 28`。
+- 构建日志显示 `Skipping JaCoCo execution because property jacoco.skip is set`、
+  `Not copying test resources`、`Not compiling test sources`。
+- 新 jar 来自 `fe/fe-core/target/fe-core-4.1.1.jar`，SHA-256 为
+  `adf2c0030a3e410e7f4a8a61ae7e4989c3b23890f07f21905cd95fd78b6bb572`。
+  不使用旧的 `output/fe/lib/fe-core-4.1.1.jar`，因为全量 `build.sh --fe`
+  被中止后该文件没有刷新。
+- 物料替换只更新
+  `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar`。备份目录：
+  `_backups_20260710154235/fe-lib/fe-core-4.1.1.jar`。
+- 替换前后 SHA-256：
+  `d18b435dd47ae112b9f4ea673aeac7fb6db465ad1964ba0afcb088cf17276302`
+  -> `adf2c0030a3e410e7f4a8a61ae7e4989c3b23890f07f21905cd95fd78b6bb572`。
 
 2026-07-08 12:48 更新记录：
 
@@ -378,16 +450,12 @@ BE/CN `CONF_mBool` 参数（含上述两个 file-bundling 开关）支持运行�
 标准命令：
 
 ```bash
-rtk docker run --rm \
-  -v /home/oppo/.m2:/root/.m2 \
-  -v /mnt/data/maven-repo:/mnt/data/maven-repo \
-  -v /mnt/data/starrocks:/workspace \
-  -v /mnt/data/starrocks:/mnt/data/starrocks \
-  -w /mnt/data/starrocks \
-  starrocks/dev-env-centos7:4.1-latest \
-  bash -lc 'set -euo pipefail; \
-    export PYTHON=python3; \
-    mvn -f fe/pom.xml -pl fe-core -Dtest=LocalMetastoreShardCleanupTest,TabletStatMgrTest test'
+rtk docker exec sr-dev-4.1.1-build bash -c \
+  'set -euo pipefail; \
+   export PATH="$JAVA_HOME/bin:$MAVEN_HOME/bin:$PATH"; \
+   export PYTHON=python3; \
+   cd /mnt/data/starrocks; \
+   mvn -f fe/pom.xml -pl fe-core -Dtest=LocalMetastoreShardCleanupTest,TabletStatMgrTest test'
 ```
 
 `fe/fe-core/pom.xml` 默认使用 `python`，在 CentOS 7 dev-env 中对应 Python 2.7。
@@ -407,6 +475,54 @@ rtk docker run --rm \
   starrocks/dev-env-centos7:4.1-latest \
   bash -lc 'set -euo pipefail; mvn -pl fe/fe-plugin-shield test'
 ```
+
+## FE 精准编译
+
+先用源码路径确定 jar 边界。`fe/fe-core/**` 和 `gensrc/thrift/**` 中被 FE 使用的
+Thrift 变更，运行产物通常集中在 `fe-core-4.1.1.jar`。如果 diff 没有涉及
+`fe/fe-spi/**`、`fe/fe-plugin-shield/**` 或 `java-extensions/**`，不要跑
+`./build.sh --fe` 全链路，也不要替换这些 jar。
+
+确认范围：
+
+```bash
+rtk git diff --name-only HEAD
+rtk git log -5 --name-only --pretty=format:'commit %h %s'
+```
+
+生产打包命令：
+
+```bash
+rtk docker exec sr-dev-4.1.1-build bash -c \
+  'set -euo pipefail; \
+   export PATH="$JAVA_HOME/bin:$MAVEN_HOME/bin:$PATH"; \
+   export PYTHON=python3; \
+   cd /mnt/data/starrocks; \
+   mvn --batch-mode -f fe/pom.xml -pl fe-core -am package \
+     -DskipTests -Dmaven.test.skip=true -Dmaven.clean.skip=true \
+     -Djacoco.skip=true -T 28'
+```
+
+参数含义：
+
+- `-pl fe-core -am`：只构建 `fe-core` 和它的 Maven 依赖。
+- `-Djacoco.skip=true`：跳过 FE UT coverage instrumentation。`mvn help:describe`
+  证实 `jacoco.skip` 是 JaCoCo 插件的用户属性，作用是 suppress execution。
+- `-Dmaven.test.skip=true`：生产打包阶段跳过测试资源复制和测试类编译。测试必须在
+  前置定向测试阶段完成。
+
+2026-07-10 实测结果：
+
+```text
+Reactor Summary for starrocks-fe 4.1.1:
+fe-core ............................................ SUCCESS [ 28.720 s]
+BUILD SUCCESS
+Total time: 31.924 s (Wall Clock)
+```
+
+定向 Maven 构建只刷新模块 target jar。替换 FE 物料时使用
+`fe/fe-core/target/fe-core-4.1.1.jar`，不要使用未刷新的
+`output/fe/lib/fe-core-4.1.1.jar`。
 
 ## Maven 仓库映射规则
 
@@ -749,24 +865,22 @@ chown "$owner" "$dst"
 sha256sum "$src" "$dst"'
 ```
 
-替换 FE jar 时同样只复制白名单文件，不复制整个 `fe/lib`。
+替换 FE jar 时同样只复制白名单文件，不复制整个 `fe/lib`。如果本次只涉及
+`fe-core`，只替换 `fe-core-4.1.1.jar`：
 
 ```bash
 rtk bash -lc 'set -euo pipefail
-src_root=/mnt/data/starrocks/output/fe/lib
+src=/mnt/data/starrocks/fe/fe-core/target/fe-core-4.1.1.jar
 dst_root=/home/service/var/starrocks/docker/starrocks-4.1.1-centos/starrocks-4.1.1-centos-amd64/StarRocks-4.1.1/fe/lib
+dst="$dst_root/fe-core-4.1.1.jar"
 backup_dir=/home/service/var/starrocks/docker/starrocks-4.1.1-centos/starrocks-4.1.1-centos-amd64/_backups_$(date +%Y%m%d%H%M%S)/fe-lib
 mkdir -p "$backup_dir"
-for name in fe-core-4.1.1.jar fe-spi-4.1.1.jar fe-plugin-shield-1.0.0.jar; do
-  src="$src_root/$name"
-  dst="$dst_root/$name"
-  cp -a "$dst" "$backup_dir/"
-  mode=$(stat -c %a "$dst")
-  owner=$(stat -c %U:%G "$dst")
-  install -m "$mode" "$src" "$dst"
-  chown "$owner" "$dst"
-  sha256sum "$src" "$dst"
-done'
+cp -a "$dst" "$backup_dir/"
+mode=$(stat -c %a "$dst")
+owner=$(stat -c %U:%G "$dst")
+install -m "$mode" "$src" "$dst"
+chown "$owner" "$dst"
+sha256sum "$src" "$dst" "$backup_dir/fe-core-4.1.1.jar"'
 ```
 
 FE 物料中如果存在旧 `*-main.jar`，直接删除，不移动进镜像上下文：
@@ -832,6 +946,10 @@ find "$base/fe/lib" -maxdepth 1 \( -name "fe-*-main.jar" -o -name "spark-dpp-mai
 | 问题 | 证据 | 处理 |
 | --- | --- | --- |
 | FE Maven 编译慢 | Maven 配置在 `/home/oppo/.m2`，实际 localRepository 是 `/mnt/data/maven-repo`；只挂错 `.m2` 或漏挂 localRepository 都会导致依赖重新下载 | 所有手工 `docker run` 编译/测试命令同时加 `-v /home/oppo/.m2:/root/.m2` 和 `-v /mnt/data/maven-repo:/mnt/data/maven-repo`。 |
+| FE 已确定 jar 范围仍跑全量 `build.sh --fe` | `build.sh --fe` 会构建 `plugin/hive-udf,fe-testing,plugin/spark-dpp,fe-server`，还会继续构建 `fe-plugin-shield` 和 `java-extensions/hadoop-ext`；2026-07-10 定向 `fe-core` 构建耗时 31.924 秒 | 先按 diff 映射 jar。只涉及 `fe-core` 时运行 `mvn --batch-mode -f fe/pom.xml -pl fe-core -am package -DskipTests -Dmaven.test.skip=true -Dmaven.clean.skip=true -Djacoco.skip=true -T 28`。 |
+| `-DskipTests` 仍会编译测试类 | 2026-07-10 定向构建日志显示 `maven-compiler-plugin:testCompile` 仍执行；加入 `-Dmaven.test.skip=true` 后日志显示 `Not copying test resources` 和 `Not compiling test sources` | 前置定向测试通过后，生产打包同时使用 `-DskipTests` 和 `-Dmaven.test.skip=true`。 |
+| FE 生产包默认执行 Jacoco instrumentation | `fe/fe-core/pom.xml` 把 `jacoco-maven-plugin:instrument` 绑定在 `process-classes`；`mvn help:describe` 证实 `jacoco.skip` 的作用是 suppress execution | 生产打包加 `-Djacoco.skip=true`；测试覆盖在前置测试命令完成。 |
+| 长期 Docker 容器内 `java` 不在 PATH | `docker exec sr-dev-4.1.1-build bash -lc 'java -version'` 返回 `java: command not found`；镜像环境变量有 `JAVA_HOME=/opt/jdk17` 和 `MAVEN_HOME=/opt/maven`，但 CentOS profile 重写 PATH | `docker exec` 命令使用 `bash -c`，并显式 `export PATH="$JAVA_HOME/bin:$MAVEN_HOME/bin:$PATH"`。 |
 | FE 全量 `lib` 替换会污染运行闭包 | 无源码或 ABI 证据的 jar 版本大范围变化，会让 classpath 结果不可控；2026-07-06 的 thrift/netty 更新有 `pom.xml` 和 `javap` 证据，不属于机械全量替换 | 只替换白名单 jar；runtime 依赖必须逐项给出版本证据和 `javap`/日志证据。 |
 | FE 旧 `*-main.jar` 导致 Java ABI 冲突 | `test-01-fe-1` 日志出现 `ShowStmt.getPredicate()` 的 `NoSuchMethodError`；运行进程 `CLASSPATH` 中 `fe-parser-main.jar` 排在 `fe-parser-4.1.1.jar` 前；`javap` 证明旧 jar 返回 `Predicate getPredicate()`，当前版本化 jar 返回 `Expr getPredicate()` | 删除 `fe-*-main.jar` 和 `spark-dpp-main.jar`，同步物料前后都执行空扫描。 |
 | BE `-j 28` 编译慢 | 多个编译进程 `D` 状态，CPU 低，磁盘读量持续增长；2026-07-08 16:32 在原始 Docker 修复后同一镜像用 `-j 28` 编译成功，`TotalTime:1457s` | 先用 `ps`/`iostat` 判断是否仍在推进；只有长期无进展且存在空 archive 或坏中间产物时才降并发并清理中间产物。 |

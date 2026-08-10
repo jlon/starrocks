@@ -15,6 +15,7 @@
 #include "storage/lake/fixed_location_provider.h"
 #include "storage/lake/location_provider.h"
 #include "storage/lake/tablet_manager.h"
+#include "storage/lake/test_util.h"
 #include "storage/lake/txn_log.h"
 
 namespace starrocks::lake {
@@ -274,6 +275,48 @@ TEST(TransactionsLoadIdsTest, PreserveInputTabletIdsOrder_RealApiWithMockMgr) {
     ASSERT_EQ(st->size(), 2);
     ASSERT_EQ((*st)[0][0]->tablet_id(), tablet_id_2);
     ASSERT_EQ((*st)[1][0]->tablet_id(), tablet_id_1);
+}
+
+class EmptyTxnPublishTest : public TestBase {
+public:
+    EmptyTxnPublishTest() : TestBase(kTestDirectory) {}
+
+    void SetUp() override {
+        clear_and_init_test_dir();
+        _tablet_metadata = generate_simple_tablet_metadata(DUP_KEYS);
+        ASSERT_OK(_tablet_mgr->put_tablet_metadata(*_tablet_metadata));
+    }
+
+protected:
+    constexpr static const char* const kTestDirectory = "test_empty_txn_publish";
+    std::shared_ptr<TabletMetadataPB> _tablet_metadata;
+};
+
+TEST_F(EmptyTxnPublishTest, BatchEmptyTransactionsAdvanceVersionWithoutTxnLog) {
+    std::vector<TxnInfoPB> txns;
+    for (const auto& [commit_time, gtid] : std::vector<std::pair<int64_t, int64_t>>{{111, 1001}, {222, 1002}}) {
+        TxnInfoPB txn_info;
+        txn_info.set_txn_id(-1);
+        txn_info.set_txn_type(TXN_EMPTY);
+        txn_info.set_combined_txn_log(false);
+        txn_info.set_commit_time(commit_time);
+        txn_info.set_gtid(gtid);
+        txns.emplace_back(std::move(txn_info));
+    }
+
+    auto result = publish_version(_tablet_mgr.get(), PublishTabletInfo(_tablet_metadata->id()), 1, 3, txns,
+                                  /*skip_write_tablet_metadata=*/false);
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    auto new_metadata = result.value();
+    EXPECT_EQ(3, new_metadata->version());
+    EXPECT_EQ(222, new_metadata->commit_time());
+    EXPECT_EQ(1002, new_metadata->gtid());
+    EXPECT_EQ(_tablet_metadata->rowsets_size(), new_metadata->rowsets_size());
+
+    auto persisted = _tablet_mgr->get_tablet_metadata(_tablet_metadata->id(), 3);
+    ASSERT_TRUE(persisted.ok()) << persisted.status();
+    EXPECT_EQ(3, persisted.value()->version());
 }
 
 } // namespace starrocks::lake
