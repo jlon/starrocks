@@ -154,4 +154,36 @@ TEST(MapConverterTest, test_read_hive_text_map) {
     EXPECT_EQ("{'k1':'v1','k2':'v2'}", col->debug_item(2));
 }
 
+// NOLINTNEXTLINE
+TEST(MapConverterTest, test_read_hive_text_map_with_special_chars_in_value) {
+    TypeDescriptor t(TYPE_MAP);
+    t.children.emplace_back(TYPE_VARCHAR);
+    t.children.back().len = 65533;
+    t.children.emplace_back(TYPE_VARCHAR);
+    t.children.back().len = 65533;
+
+    auto options = Converter::Options();
+    options.array_format_type = ArrayFormatType::kHive;
+    options.array_hive_collection_delimiter = '\002';
+    options.array_hive_mapkey_delimiter = '\003';
+    options.array_hive_nested_level = 1;
+
+    auto conv = csv::get_converter(t, false);
+    auto col = ColumnHelper::create_column(t, false);
+
+    // Values containing braces/quotes/colons should not break Hive map parsing.
+    std::string map_with_braces = std::string("pltvFactor\0031.0\002ext_filed\003{a=1,b={c:d}}\002flag\003\"quoted\"");
+    EXPECT_TRUE(conv->read_string(col.get(), map_with_braces, options));
+
+    // Value containing extra mapkey delimiter bytes should stay in value (Hive behavior).
+    std::string map_with_extra_kv = std::string("k1\003v1\003extra\002k2\003v2");
+    EXPECT_TRUE(conv->read_string(col.get(), map_with_extra_kv, options));
+
+    EXPECT_EQ(2, col->size());
+    EXPECT_EQ(3, col->get(0).get_map().size());
+    EXPECT_EQ(2, col->get(1).get_map().size());
+    // Old parser treated braces/quotes as nesting and failed; Hive parser accepts them.
+    EXPECT_EQ("{'pltvFactor':'1.0','ext_filed':'{a=1,b={c:d}}','flag':'\"quoted\"'}", col->debug_item(0));
+}
+
 } // namespace starrocks::csv
