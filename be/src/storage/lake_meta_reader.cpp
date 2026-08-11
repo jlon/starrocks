@@ -14,6 +14,7 @@
 
 #include "storage/lake_meta_reader.h"
 
+#include <limits>
 #include <vector>
 
 #include "column/chunk.h"
@@ -78,6 +79,27 @@ Status LakeMetaReader::init(const LakeMetaReaderParams& read_params) {
     }
 
     RETURN_IF_ERROR(_build_collect_context(tablet_schema, read_params));
+
+    bool is_count_only_request = read_params.count_only && !_collect_context.result_slot_ids.empty();
+    if (is_count_only_request) {
+        for (const auto& field : _collect_context.seg_collecter_params.fields) {
+            if (field != META_COUNT_ROWS) {
+                is_count_only_request = false;
+                break;
+            }
+        }
+    }
+    if (is_count_only_request) {
+        auto count_only_num_rows = _get_count_only_num_rows(tablet);
+        if (count_only_num_rows.ok()) {
+            _count_only = true;
+            _count_only_num_rows = count_only_num_rows.value();
+            _is_init = true;
+            _has_more = true;
+            return Status::OK();
+        }
+    }
+
     RETURN_IF_ERROR(_init_seg_meta_collecters(tablet, read_params));
 
     _collect_context.cursor_idx = 0;
@@ -172,7 +194,38 @@ Status LakeMetaReader::_get_segments(const lake::VersionedTablet& tablet, std::v
     return Status::OK();
 }
 
+StatusOr<int64_t> LakeMetaReader::_get_count_only_num_rows(const lake::VersionedTablet& tablet) const {
+    const auto& metadata = tablet.metadata();
+    if (metadata->schema().keys_type() != KeysType::DUP_KEYS || tablet.has_delete_predicates() ||
+        !metadata->delvec_meta().delvecs().empty()) {
+        return Status::NotSupported("count-only metadata scan is not valid for this tablet");
+    }
+
+    int64_t num_rows = 0;
+    for (const auto& rowset : tablet.get_rowsets()) {
+        const int64_t rowset_num_rows = rowset->num_rows();
+        if (!rowset->metadata().has_num_rows() || rowset_num_rows < 0) {
+            return Status::NotSupported("count-only metadata scan requires rowset num_rows");
+        }
+        if (rowset_num_rows > std::numeric_limits<int64_t>::max() - num_rows) {
+            return Status::InternalError("count-only metadata row count overflow");
+        }
+        num_rows += rowset_num_rows;
+    }
+    return num_rows;
+}
+
 Status LakeMetaReader::do_get_next(ChunkPtr* result) {
+    if (_count_only) {
+        *result = std::make_shared<Chunk>();
+        RETURN_IF_ERROR(_fill_result_chunk(result->get()));
+        for (size_t i = 0; i < _collect_context.result_slot_ids.size(); ++i) {
+            result->get()->get_column_raw_ptr_by_index(i)->append_datum(_count_only_num_rows);
+        }
+        _has_more = false;
+        return Status::OK();
+    }
+
     const uint32_t chunk_capacity = _params.chunk_size;
     uint16_t chunk_start = 0;
 

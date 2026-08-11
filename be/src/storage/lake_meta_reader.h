@@ -29,6 +29,7 @@ struct LakeMetaReaderParams : MetaReaderParams {
     std::optional<TableSchemaKeyPB> schema_key;
     std::vector<ColumnAccessPathPtr>* column_access_paths = nullptr;
     size_t next_uniq_id;
+    bool count_only = false;
 };
 
 namespace lake {
@@ -53,6 +54,10 @@ public:
                              std::vector<SegmentMetaCollectOptions>* options_list) {
         return _get_segments(tablet, segments, options_list);
     }
+
+    StatusOr<int64_t> TEST_count_only_num_rows(const lake::VersionedTablet& tablet) {
+        return _get_count_only_num_rows(tablet);
+    }
 #endif
 
 private:
@@ -62,6 +67,11 @@ private:
 
     Status _get_segments(const lake::VersionedTablet& tablet, std::vector<SegmentSharedPtr>* segments,
                          std::vector<SegmentMetaCollectOptions>* options_list);
+
+    StatusOr<int64_t> _get_count_only_num_rows(const lake::VersionedTablet& tablet) const;
+
+    bool _count_only = false;
+    int64_t _count_only_num_rows = 0;
 };
 
 } // namespace starrocks

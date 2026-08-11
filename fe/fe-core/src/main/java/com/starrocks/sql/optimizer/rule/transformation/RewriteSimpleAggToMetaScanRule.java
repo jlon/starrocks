@@ -32,6 +32,7 @@ import com.starrocks.sql.ast.KeysType;
 import com.starrocks.sql.ast.expression.ExprUtils;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptimizerContext;
+import com.starrocks.sql.optimizer.OptimizerTraceUtil;
 import com.starrocks.sql.optimizer.base.ColumnIdentifier;
 import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
@@ -68,6 +69,8 @@ import java.util.Set;
 // 'select min(c1),max(c2),count(*),count(not-null column) from olap_table',
 // we can use MetaScan directly to avoid reading a large amount of data.
 public class RewriteSimpleAggToMetaScanRule extends TransformationRule {
+    private static final String COUNT_FAST_PATH_TRACE = "COUNT_FAST_PATH table=%s outcome=%s";
+
     public RewriteSimpleAggToMetaScanRule() {
         super(RuleType.TF_REWRITE_SIMPLE_AGG, Pattern.create(OperatorType.LOGICAL_AGGR)
                 .addChildren(Pattern.create(OperatorType.LOGICAL_PROJECT, OperatorType.LOGICAL_OLAP_SCAN)));
@@ -189,13 +192,14 @@ public class RewriteSimpleAggToMetaScanRule extends TransformationRule {
 
     @Override
     public boolean check(final OptExpression input, OptimizerContext context) {
-        if (!context.getSessionVariable().isEnableRewriteSimpleAggToMetaScan()) {
-            return false;
-        }
         LogicalAggregationOperator aggregationOperator = (LogicalAggregationOperator) input.getOp();
         LogicalOlapScanOperator scanOperator =
                 (LogicalOlapScanOperator) input.getInputs().get(0).getInputs().get(0).getOp();
         OlapTable table = (OlapTable) scanOperator.getTable();
+        if (!context.getSessionVariable().isEnableRewriteSimpleAggToMetaScan()) {
+            traceCountFastPath(table, "REJECTED_REWRITE_DISABLED");
+            return false;
+        }
         // we can only apply this rule to the queries met all the following conditions:
         // 1. query on DUPLICATE_KEY table
         // 2. no group by key
@@ -205,29 +209,45 @@ public class RewriteSimpleAggToMetaScanRule extends TransformationRule {
         // 6. all arguments to agg functions are primitive columns
         // 7. no expr in arguments to agg functions
         // 8. all agg columns have zonemap index and are not null
-        // 9. no deletion happens
+        // 9. no deletion happens, except cloud-native count()/count(*)/count(non-null constant) with
+        //    fresh CN metadata safety evidence
         // 10. no partition pruning happens
         // 11. for range distribution table, disable COUNT(*) fast path because row count statistics may be inaccurate
         if (table.getKeysType() != KeysType.DUP_KEYS) {
+            traceCountFastPath(table, "REJECTED_KEY_TYPE");
             return false;
         }
-        // no deletion
         if (table.hasDelete()) {
-            return false;
+            if (!table.isCloudNativeTableOrMaterializedView()) {
+                traceCountFastPath(table, "REJECTED_NOT_CLOUD_NATIVE");
+                return false;
+            }
+            if (!onlyCountStarOrCountNonNullConstant(aggregationOperator)) {
+                traceCountFastPath(table, "REJECTED_AGGREGATION_SHAPE");
+                return false;
+            }
+            if (!allVisibleBaseIndexesCountFastPathSafe(table)) {
+                traceCountFastPath(table, "REJECTED_UNSAFE_TABLET_METADATA");
+                return false;
+            }
         }
         // no limit
         if (scanOperator.getLimit() != -1) {
+            traceCountFastPath(table, "REJECTED_LIMIT");
             return false;
         }
         // no filter
         if (scanOperator.getPredicate() != null) {
+            traceCountFastPath(table, "REJECTED_SCAN_PREDICATE");
             return false;
         }
         List<ColumnRefOperator> groupingKeys = aggregationOperator.getGroupingKeys();
         if (groupingKeys != null && !groupingKeys.isEmpty()) {
+            traceCountFastPath(table, "REJECTED_GROUP_BY");
             return false;
         }
         if (aggregationOperator.getPredicate() != null) {
+            traceCountFastPath(table, "REJECTED_AGGREGATION_PREDICATE");
             return false;
         }
         if (table.isRangeDistribution()) {
@@ -237,6 +257,7 @@ public class RewriteSimpleAggToMetaScanRule extends TransformationRule {
             });
             // range distribution table may not have accurate row count statistics, which can lead to incorrect COUNT(*)
             if (hasCountStar) {
+                traceCountFastPath(table, "REJECTED_RANGE_DISTRIBUTION");
                 return false;
             }
         }
@@ -298,6 +319,9 @@ public class RewriteSimpleAggToMetaScanRule extends TransformationRule {
                     return false;
                 }
         );
+        if (!allValid) {
+            traceCountFastPath(table, "REJECTED_RULE_PRECONDITION");
+        }
         return allValid;
     }
 
@@ -309,15 +333,44 @@ public class RewriteSimpleAggToMetaScanRule extends TransformationRule {
         return partitionIds.size() == allPartitionNum;
     }
 
+    private boolean onlyCountStarOrCountNonNullConstant(LogicalAggregationOperator aggregationOperator) {
+        return aggregationOperator.getAggregations().values().stream()
+                .allMatch(this::isCountStarOrCountNonNullConstant);
+    }
+
+    private boolean isCountStarOrCountNonNullConstant(CallOperator aggregator) {
+        if (!aggregator.getFnName().equals(FunctionSet.COUNT) || aggregator.isDistinct()
+                || !aggregator.getUsedColumns().isEmpty()) {
+            return false;
+        }
+        List<ScalarOperator> arguments = aggregator.getArguments();
+        return arguments.isEmpty() || (arguments.size() == 1 && arguments.get(0).isConstant()
+                && !arguments.get(0).isConstantNull());
+    }
+
+    private boolean allVisibleBaseIndexesCountFastPathSafe(OlapTable table) {
+        return table.getVisiblePartitions().stream()
+                .flatMap(partition -> partition.getSubPartitions().stream())
+                .allMatch(partition -> partition.getLatestBaseIndex().isCountFastPathSafe());
+    }
+
+    private void traceCountFastPath(OlapTable table, String outcome) {
+        if (table.hasDelete()) {
+            OptimizerTraceUtil.log(COUNT_FAST_PATH_TRACE, table.getName(), outcome);
+        }
+    }
+
     public Optional<OptExpression> tryReplaceByMetaData(OptExpression input,
                                                         OptimizerContext context, ColumnRefFactory factory) {
-        if (context.getSessionVariable().getScanOlapPartitionNumLimit() != 0) {
-            return Optional.empty();
-        }
         LogicalAggregationOperator aggregationOperator = input.getOp().cast();
         LogicalOlapScanOperator scanOperator = input.inputAt(0).inputAt(0).getOp().cast();
         OlapTable table = (OlapTable) scanOperator.getTable();
+        if (context.getSessionVariable().getScanOlapPartitionNumLimit() != 0) {
+            traceCountFastPath(table, "REJECTED_SCAN_PARTITION_LIMIT");
+            return Optional.empty();
+        }
         if (!containsAllPartitions(table, scanOperator.getSelectedPartitionId())) {
+            traceCountFastPath(table, "REJECTED_PARTITION_PRUNING");
             return Optional.empty();
         }
 
@@ -325,9 +378,11 @@ public class RewriteSimpleAggToMetaScanRule extends TransformationRule {
         Long lastUpdateTimestamp = StatisticUtils.getTableLastUpdateTimestamp(table);
 
         if (lastUpdateTime == null || lastUpdateTimestamp == null) {
+            traceCountFastPath(table, "REJECTED_TABLE_UPDATE_TIME");
             return Optional.empty();
         }
         if (table.inputHasTempPartition(scanOperator.getSelectedPartitionId())) {
+            traceCountFastPath(table, "REJECTED_TEMP_PARTITION");
             return Optional.empty();
         }
 
@@ -369,6 +424,7 @@ public class RewriteSimpleAggToMetaScanRule extends TransformationRule {
                         .sum();
                 constantMap.put(entry.getKey(), ConstantOperator.createBigint(count));
             } else {
+                traceCountFastPath(table, "REJECTED_TABLET_STATS_STALE");
                 newAggCalls.put(entry.getKey(), entry.getValue());
             }
         }
@@ -400,7 +456,15 @@ public class RewriteSimpleAggToMetaScanRule extends TransformationRule {
 
     @Override
     public List<OptExpression> transform(OptExpression input, OptimizerContext context) {
+        LogicalOlapScanOperator scanOperator = input.inputAt(0).inputAt(0).getOp().cast();
+        OlapTable table = (OlapTable) scanOperator.getTable();
         Optional<OptExpression> plan = tryReplaceByMetaData(input, context, context.getColumnRefFactory());
+        if (table.hasDelete()) {
+            if (plan.isPresent()) {
+                traceCountFastPath(table, "ACCEPTED");
+            }
+            return plan.map(Lists::newArrayList).orElseGet(Lists::newArrayList);
+        }
         OptExpression result = plan.map(opt -> buildAggMetaScanOperator(opt, context))
                 .orElseGet(() -> buildAggMetaScanOperator(input, context));
         return Lists.newArrayList(result);

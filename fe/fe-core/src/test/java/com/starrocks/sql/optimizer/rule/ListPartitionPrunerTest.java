@@ -717,10 +717,10 @@ public class ListPartitionPrunerTest {
 
     @Test
     public void testGetEffectivePartitionPredicateWithIntEq() {
-        Column daynoCol = new Column("dayno", Type.INT);
-        Column hourCol = new Column("hour", Type.INT);
-        ColumnRefOperator daynoRef = new ColumnRefOperator(10, Type.INT, "dayno", true);
-        ColumnRefOperator hourRef = new ColumnRefOperator(11, Type.INT, "hour", true);
+        Column daynoCol = new Column("dayno", IntegerType.INT);
+        Column hourCol = new Column("hour", IntegerType.INT);
+        ColumnRefOperator daynoRef = new ColumnRefOperator(10, IntegerType.INT, "dayno", true);
+        ColumnRefOperator hourRef = new ColumnRefOperator(11, IntegerType.INT, "hour", true);
 
         Map<Column, ColumnRefOperator> columnMetaToColRefMap = Maps.newHashMap();
         columnMetaToColRefMap.put(daynoCol, daynoRef);
@@ -734,9 +734,9 @@ public class ListPartitionPrunerTest {
 
         List<Optional<ScalarOperator>> result = OptExternalPartitionPruner.getEffectivePartitionPredicate(scanOperator,
                 ImmutableList.of(daynoCol, hourCol), predicate);
-        Assert.assertTrue(result.get(0).isPresent());
-        Assert.assertFalse(result.get(1).isPresent());
-        Assert.assertEquals("20260704",
+        Assertions.assertTrue(result.get(0).isPresent());
+        Assertions.assertFalse(result.get(1).isPresent());
+        Assertions.assertEquals("20260704",
                 ((ConstantOperator) result.get(0).get().getChild(1)).toString());
     }
 

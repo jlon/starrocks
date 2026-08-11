@@ -95,7 +95,7 @@ std::optional<LakeTabletStatCache::Value> LakeTabletStatCache::lookup(int64_t ta
 }
 
 void LakeTabletStatCache::insert(int64_t tablet_id, int64_t version, bool accurate, int64_t num_rows,
-                                 int64_t data_size) {
+                                 int64_t data_size, bool count_fast_path_safe) {
     if (!enabled()) {
         return;
     }
@@ -104,12 +104,17 @@ void LakeTabletStatCache::insert(int64_t tablet_id, int64_t version, bool accura
     std::lock_guard<std::mutex> l(_mutex);
     auto it = _index.find(key);
     if (it != _index.end()) {
-        it->second->value = Value{.num_rows = num_rows, .data_size = data_size};
+        it->second->value = Value{.num_rows = num_rows,
+                                  .data_size = data_size,
+                                  .count_fast_path_safe = count_fast_path_safe};
         it->second->expire_ms = expire;
         _lru.splice(_lru.begin(), _lru, it->second);
         return;
     }
-    _lru.push_front(Entry{.key = key, .value = Value{.num_rows = num_rows, .data_size = data_size},
+    _lru.push_front(Entry{.key = key,
+                          .value = Value{.num_rows = num_rows,
+                                         .data_size = data_size,
+                                         .count_fast_path_safe = count_fast_path_safe},
                           .expire_ms = expire});
     _index.emplace(key, _lru.begin());
     evict_to_capacity_locked();

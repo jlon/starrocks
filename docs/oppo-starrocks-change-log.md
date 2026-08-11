@@ -73,6 +73,29 @@ from `git show --name-only <commit>` and the current source files listed below.
 
 ## Current Working Tree Update
 
+2026-08-11 count fast path 物料构建与替换：
+
+- 当前工作树的 FE/BE 修改已按源码边界映射为
+  `fe/lib/fe-core-4.1.1.jar` 和 `be/lib/starrocks_be`；没有源码或 ABI 证据的
+  `fe-spi`、Shield、Java extensions 和其他 `lib` 文件均未替换。
+- 使用 `starrocks/dev-env-centos7:4.1-latest` 的长期容器
+  `sr-dev-4.1.1-build` 构建。FE 使用 `fe-core` 定向 Maven reactor，BE 使用
+  `BUILD_TYPE=Release ./build.sh --be --enable-shared-data -j 28`，并确认
+  `CMAKE_BUILD_TYPE=Release`、`USE_STAROS=ON`、`WITH_STARCACHE=ON`。
+- 前置定向测试通过：FE `AggregateMetaTest#testAggregateCountMetaWithHasDeleteLakeTable`
+  与 `TabletStatMgrTest#testUpdateLakeTabletStat`；BE `LakeServiceTest` 的 tablet stat、
+  cache hit、delete predicate、PK approximate、PK accurate 五个用例。
+- 物料树外备份目录为
+  `/home/service/var/starrocks/docker/starrocks-4.1.1-centos/starrocks-4.1.1-centos-amd64/_backups_20260811092726`。
+  FE SHA-256 从
+  `30865af16e1dd0dbb9905bfed02881a61b884804a392482e3b2332c6db067c5a` 更新为
+  `516f472af26ad4ef6417ba4296ab669ce3e55b46e133a2ac54e2b659c1e92f7d`；BE SHA-256 从
+  `d032ffef9e1e2da53b57ecd7c28d32411904cec86b3f61d90d0a22a6f8253ac3` 更新为
+  `beb0d90fec1f05bd08a2f7c9732f70431b69f7a5f8670644ba4debde7a2668fc`。
+- 替换后构建产物与物料目标通过 `cmp` 和 SHA-256 校验，目标 owner/group/mode 保持不变，
+  FE 物料中没有 `fe-*-main.jar` 或 `spark-dpp-main.jar`。本次只更新本地 Docker 物料，
+  未重建、推送或部署 Docker 镜像。
+
 2026-07-09 `ebd-starrocks-crm-uat` 现场把 CN 高 CPU 与海量 `FileNotFoundException`
 定位到"后台 tablet 统计回填扫描空初始分区"这条链路。现场证据：全库 `765577`
 分区中 `648050` 个满足 `VISIBLE_VERSION=1 AND ROW_COUNT=0 AND DATA_SIZE=0`，CN 日志

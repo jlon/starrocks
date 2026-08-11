@@ -1385,8 +1385,10 @@ public class TabletStatMgrTest {
                                 List<TabletStat> stats = Lists.newArrayList();
                                 TabletStat stat1 = new TabletStat();
                                 stat1.tabletId = tablet1Id;
+                                stat1.version = request.tabletInfos.get(0).version;
                                 stat1.numRows = tablet1NumRows;
                                 stat1.dataSize = tablet1DataSize;
+                                stat1.countFastPathSafe = true;
                                 stats.add(stat1);
                                 TabletStat stat2 = new TabletStat();
                                 stat2.tabletId = tablet2Id;
@@ -1423,6 +1425,10 @@ public class TabletStatMgrTest {
         Assertions.assertEquals(tablet1.getDataSize(true), tablet1DataSize);
         Assertions.assertEquals(tablet2.getRowCount(-1), tablet2NumRows);
         Assertions.assertEquals(tablet2.getDataSize(true), tablet2DataSize);
+        Assertions.assertTrue(tablet1.isCountFastPathSafe(0));
+        // A pre-upgrade CN can still report ordinary tablet statistics, but it cannot establish
+        // the version-bound safety evidence required by the delete-table count fast path.
+        Assertions.assertFalse(tablet2.hasCountFastPathSafety(1));
         Assertions.assertTrue(tablet1.getDataSizeUpdateTime() >= t1 && tablet1.getDataSizeUpdateTime() <= t2);
         Assertions.assertTrue(tablet2.getDataSizeUpdateTime() >= t1 && tablet2.getDataSizeUpdateTime() <= t2);
     }

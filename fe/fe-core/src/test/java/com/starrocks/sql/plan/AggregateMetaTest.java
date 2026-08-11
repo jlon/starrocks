@@ -18,6 +18,7 @@ import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TabletStatMgr;
+import com.starrocks.common.profile.Tracers;
 import com.starrocks.sql.optimizer.base.ColumnIdentifier;
 import com.starrocks.sql.optimizer.statistics.ColumnMinMaxMgr;
 import com.starrocks.sql.optimizer.statistics.IMinMaxStatsMgr;
@@ -29,6 +30,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 
 public class AggregateMetaTest extends PlanTestBase {
@@ -164,6 +167,81 @@ public class AggregateMetaTest extends PlanTestBase {
         String descTbl = getDescTbl(sql);
         assertContains(descTbl, "TSlotDescriptor(id:6, parent:0, " +
                 "slotType:TTypeDesc(types:[TTypeNode(type:SCALAR, scalar_type:TScalarType(type:BIGINT))])");
+    }
+
+    @Test
+    public void testAggregateCountMetaWithHasDeleteLakeTable() throws Exception {
+        new MockUp<TabletStatMgr>() {
+            @Mock
+            public boolean workTimeIsMustAfter(LocalDateTime time) {
+                return true;
+            }
+        };
+        new MockUp<OlapTable>() {
+            @Mock
+            public boolean isCloudNativeTableOrMaterializedView() {
+                return true;
+            }
+        };
+
+        OlapTable table = getOlapTable("t0");
+        boolean oldHasDelete = table.hasDelete();
+        boolean oldEnableRewriteSimpleAggToMetaScan =
+                connectContext.getSessionVariable().isEnableRewriteSimpleAggToMetaScan();
+        Map<MaterializedIndex, Long> oldRowCounts = new HashMap<>();
+        Map<MaterializedIndex, Boolean> oldCountFastPathSafety = new HashMap<>();
+        table.getVisiblePartitions().forEach(partition -> partition.getSubPartitions().forEach(physicalPartition -> {
+            MaterializedIndex index = physicalPartition.getLatestBaseIndex();
+            oldRowCounts.put(index, index.getRowCount());
+            oldCountFastPathSafety.put(index, index.isCountFastPathSafe());
+            index.setRowCount(3);
+            index.setCountFastPathSafe(true);
+        }));
+        table.setHasDelete();
+        Assertions.assertTrue(table.hasDelete());
+        Assertions.assertTrue(table.getVisiblePartitions().stream()
+                .flatMap(partition -> partition.getSubPartitions().stream())
+                .allMatch(partition -> partition.getLatestBaseIndex().isCountFastPathSafe()));
+        connectContext.getSessionVariable().setEnableRewriteSimpleAggToMetaScan(true);
+        try {
+            Tracers.register(connectContext);
+            Tracers.init(connectContext, "LOGS", "OPTIMIZER");
+            String plan;
+            try {
+                plan = getFragmentPlan("SELECT COUNT(1) FROM t0");
+                assertContains(Tracers.printLogs(), "COUNT_FAST_PATH table=t0 outcome=ACCEPTED");
+            } finally {
+                Tracers.close();
+            }
+            assertContains(plan, "constant exprs", "<slot 4> : 3");
+            assertNotContains(plan, "MetaScan", "OlapScanNode");
+
+            table.getVisiblePartitions().forEach(partition -> partition.getSubPartitions().forEach(
+                    physicalPartition -> physicalPartition.getLatestBaseIndex().setCountFastPathSafe(false)));
+            Assertions.assertFalse(table.getVisiblePartitions().stream()
+                    .flatMap(partition -> partition.getSubPartitions().stream())
+                    .allMatch(partition -> partition.getLatestBaseIndex().isCountFastPathSafe()));
+            Tracers.register(connectContext);
+            Tracers.init(connectContext, "LOGS", "OPTIMIZER");
+            try {
+                plan = getFragmentPlan("SELECT COUNT(*) FROM t0");
+                assertContains(Tracers.printLogs(),
+                        "COUNT_FAST_PATH table=t0 outcome=REJECTED_UNSAFE_TABLET_METADATA");
+            } finally {
+                Tracers.close();
+            }
+            assertContains(plan, "OlapScanNode", "TABLE: t0");
+            assertNotContains(plan, "MetaScan", "constant exprs");
+
+            plan = getFragmentPlan("SELECT COUNT(v1) FROM t0");
+            assertContains(plan, "OlapScanNode", "TABLE: t0");
+            assertNotContains(plan, "MetaScan", "constant exprs");
+        } finally {
+            oldRowCounts.forEach(MaterializedIndex::setRowCount);
+            oldCountFastPathSafety.forEach(MaterializedIndex::setCountFastPathSafe);
+            table.getTableProperty().setHasDelete(oldHasDelete);
+            connectContext.getSessionVariable().setEnableRewriteSimpleAggToMetaScan(oldEnableRewriteSimpleAggToMetaScan);
+        }
     }
 
     @Test

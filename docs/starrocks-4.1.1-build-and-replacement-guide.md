@@ -88,6 +88,30 @@ rtk docker exec sr-dev-4.1.1-build bash -c \
    java -version; mvn -version'
 ```
 
+### BE 测试环境
+
+`be/build_Release_ut` 在当前 dev-env 镜像中必须带有 `STARROCKS_HOME`。bundled
+ORC 通过这个环境变量选择镜像内 thirdparty；仅设置同名 CMake cache 变量无效，会误触发
+protobuf、zlib、lz4 等外部下载。CMake 3.31 还要求 ORC 的链接调用统一使用 keyword
+signature，因此 4.1.1 源码中的 `orc` 依赖使用 `PUBLIC` keyword，保留静态库依赖的传递语义。
+
+独立 BE 测试还需要 JDK、jemalloc 动态库和 UDF 临时目录：
+
+```bash
+rtk docker exec -e STARROCKS_HOME=/mnt/data/starrocks sr-dev-4.1.1-build bash -lc '
+  set -euo pipefail
+  cd /mnt/data/starrocks/be/build_Release_ut
+  cmake -S /mnt/data/starrocks/be -B .
+  make -j28 lake_service_test
+  mkdir -p /tmp/starrocks-udf
+  export UDF_RUNTIME_DIR=/tmp/starrocks-udf
+  export LD_LIBRARY_PATH=/var/local/thirdparty/installed/open_jdk/lib/server:/var/local/thirdparty/installed/jemalloc/lib-shared:${LD_LIBRARY_PATH:-}
+  ./test/service/lake_service_test --gtest_filter="LakeServiceTest.test_get_tablet_stats*"
+'
+```
+
+不要用 `starrocks_dw_test` 替代 `lake_service_test`；前者是聚合目标，会编译和运行无关测试。
+
 ## 产物映射规则
 
 按源码变更决定运行产物：
@@ -184,6 +208,50 @@ rtk docker exec sr-dev-4.1.1-build bash -c \
   本轮改用临时容器精确替换 `fe-core-4.1.1.jar` 和 `starrocks_be` 后
   `podman commit`，最终 `4.1.1-centos-amd64` 与 `4.1.1` tag 指向 image ID
   `174df1ec7696186c1e0b3abd0f96f485e32fdeefca088843d8ccfa4174e5626b`。
+
+2026-08-10 delete-table count fast path 双端变更：
+
+- 本次 `gensrc/proto/lake_service.proto` 增加 `TabletStat.version` 和
+  `TabletStat.count_fast_path_safe`；CN 从当前 tablet metadata 产生安全事实，FE 仅在
+  所有可见 base index 的事实完整、版本匹配且统计新鲜时，才将
+  `count(*)`/`count()`/`count(非 NULL 常量)` 替换为常量。带 delete 的表不满足任一条件时
+  保留原始 `OlapScan`，绝不回退到 `MetaScan`。
+- 运行产物边界是
+  `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar` 和
+  `StarRocks-4.1.1/be/lib/starrocks_be`。不要替换整个 `fe/lib` 或 `be/lib` 目录。
+- 滚动升级顺序必须先替换并重启全部 CN/BE，再替换 FE。旧 CN 不携带 optional 安全字段时，
+  FE 仍回填普通 row/data 统计，但不会建立 count fast-path 证据，因此只会保守保留原始扫描。
+- 定向验证：FE `AggregateMetaTest#testAggregateCountMetaWithHasDeleteLakeTable` 与
+  `TabletStatMgrTest#testUpdateLakeTabletStat` 均通过；BE
+  `LakeServiceTest.test_get_tablet_stats*` 覆盖 DUP、delete predicate 与 PK 元数据判定。
+- 上线诊断使用 `TRACE LOGS OPTIMIZER SELECT COUNT(*) FROM <table>`。命中会输出
+  `COUNT_FAST_PATH ... outcome=ACCEPTED`，并产生常量 `UNION` 计划，而不是 `MetaScan`；
+  未命中会输出低基数 `REJECTED_*` 原因，例如
+  `REJECTED_UNSAFE_TABLET_METADATA` 或 `REJECTED_TABLET_STATS_STALE`。trace 未开启时
+  不写普通 FE 日志、不增加用户参数。
+
+2026-08-11 count fast path 物料替换记录：
+
+- 编译容器是长期运行的 `sr-dev-4.1.1-build`，镜像为
+  `starrocks/dev-env-centos7:4.1-latest`。FE 使用 `fe-core` 定向 Maven reactor，BE 使用
+  `BUILD_TYPE=Release ./build.sh --be --enable-shared-data -j 28`；最终 CMake cache 为
+  `CMAKE_BUILD_TYPE=Release`、`USE_STAROS=ON`、`WITH_STARCACHE=ON`。
+- 前置定向测试通过：FE
+  `AggregateMetaTest#testAggregateCountMetaWithHasDeleteLakeTable`、
+  `TabletStatMgrTest#testUpdateLakeTabletStat`；BE `LakeServiceTest` 的 tablet stat、
+  cache hit、delete predicate、PK approximate 和 PK accurate 五个用例。FE 生产打包只在
+  通过测试后使用 `-Dcheckstyle.skip=true`：checkstyle 报告了未修改的
+  `OptExternalPartitionPruner.java` 以及当前工作树已有的 `TrinoSubscriptRewriter.java`
+  import 顺序问题；该开关不替代前置测试。
+- 只替换 `fe/lib/fe-core-4.1.1.jar` 和 `be/lib/starrocks_be`。未替换 `fe-spi`、Shield、
+  Java extensions 或其他 `lib` 文件。替换前在物料树外完整备份到
+  `_backups_20260811092726`，并保留目标文件的 owner、group 和 mode。
+- SHA-256：FE `30865af16e1dd0dbb9905bfed02881a61b884804a392482e3b2332c6db067c5a`
+  -> `516f472af26ad4ef6417ba4296ab669ce3e55b46e133a2ac54e2b659c1e92f7d`；BE
+  `d032ffef9e1e2da53b57ecd7c28d32411904cec86b3f61d90d0a22a6f8253ac3`
+  -> `beb0d90fec1f05bd08a2f7c9732f70431b69f7a5f8670644ba4debde7a2668fc`。
+- 替换后，构建产物与两个物料目标均通过 `cmp` 和 SHA-256 一致性验证；`fe/lib` 中
+  `fe-*-main.jar` 和 `spark-dpp-main.jar` 扫描为空。尚未据此重建、推送或部署 Docker 镜像。
 
 2026-07-10 15:40 精准 FE 编译补充：
 

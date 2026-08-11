@@ -20,7 +20,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.starrocks.catalog.FunctionSet;
-import com.starrocks.catalog.FunctionName;
 import com.starrocks.catalog.TableName;
 import com.starrocks.common.util.DateUtils;
 import com.starrocks.qe.SqlModeHelper;
@@ -832,7 +831,7 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
                                 new FunctionParams(isDistinct, arguments, orderByElements));
             }
         } else {
-            callExpr = new FunctionCallExpr(FunctionName.createFnName(node.getName().toString()), arguments);
+            callExpr = new FunctionCallExpr(node.getName().toString(), arguments);
         }
         if (node.getWindow().isPresent()) {
             return visitWindow((FunctionCallExpr) callExpr, node.getWindow().get(), context);
