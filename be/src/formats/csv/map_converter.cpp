@@ -64,24 +64,61 @@ bool MapConverter::validate(const Slice& s, const Options& options) const {
     return true;
 }
 
+bool MapConverter::split_hive_lazy_map(Slice s, char item_separator, char key_value_separator,
+                                         std::vector<Slice>& keys, std::vector<Slice>& values) {
+    if (s.empty()) {
+        return true;
+    }
+
+    const size_t array_byte_end = s.size;
+    size_t element_byte_begin = 0;
+    ssize_t key_value_separator_position = -1;
+    size_t element_byte_end = 0;
+
+    // Mirror Hive LazyMap.parse(): scan bytes, split entries by item_separator, and use the
+    // first key_value_separator in each entry to split key and value. Values may contain
+    // arbitrary characters (including braces/quotes/extra key_value_separator bytes).
+    while (element_byte_end <= array_byte_end) {
+        if (element_byte_end == array_byte_end || s[element_byte_end] == item_separator) {
+            const size_t key_end =
+                    (key_value_separator_position == -1) ? element_byte_end : key_value_separator_position;
+            if (key_end > element_byte_begin) {
+                keys.emplace_back(s.data + element_byte_begin, key_end - element_byte_begin);
+                const size_t value_begin =
+                        (key_value_separator_position == -1) ? element_byte_end : key_value_separator_position + 1;
+                values.emplace_back(s.data + value_begin, element_byte_end - value_begin);
+            }
+
+            key_value_separator_position = -1;
+            element_byte_begin = element_byte_end + 1;
+            element_byte_end++;
+        } else {
+            if (key_value_separator_position == -1 && s[element_byte_end] == key_value_separator) {
+                key_value_separator_position = element_byte_end;
+            }
+            element_byte_end++;
+        }
+    }
+    return keys.size() == values.size();
+}
+
 bool MapConverter::split_map_key_value(Slice s, std::vector<Slice>& keys, std::vector<Slice>& values,
                                         const Options& options) const {
-    char map_delim;
-    char kv_delim;
     if (options.array_format_type == ArrayFormatType::kHive) {
         // Hive LazySimpleSerDe map: entries separated by the collection delimiter at this
         // nesting level, key/value by the delimiter one level deeper. No braces to strip.
         size_t level = options.array_hive_nested_level;
-        map_delim = HiveTextArrayReader::get_collection_delimiter(
+        char map_delim = HiveTextArrayReader::get_collection_delimiter(
                 options.array_hive_collection_delimiter, options.array_hive_mapkey_delimiter, level);
-        kv_delim = HiveTextArrayReader::get_collection_delimiter(
+        char kv_delim = HiveTextArrayReader::get_collection_delimiter(
                 options.array_hive_collection_delimiter, options.array_hive_mapkey_delimiter, level + 1);
-    } else {
-        map_delim = _map_delimiter;
-        kv_delim = _kv_delimiter;
-        s.remove_prefix(1);
-        s.remove_suffix(1);
+        return split_hive_lazy_map(s, map_delim, kv_delim, keys, values);
     }
+
+    char map_delim = _map_delimiter;
+    char kv_delim = _kv_delimiter;
+    s.remove_prefix(1);
+    s.remove_suffix(1);
     if (s.empty()) {
         // Consider empty map.
         return true;
