@@ -19,6 +19,41 @@ public class ShieldConfigTest {
         Assert.assertEquals(200, config.getRetryDelayMs());
         Assert.assertEquals("select,create,admin", config.getRequestAuthorities());
         Assert.assertEquals("/oauthority/api/getResourcesByUser", config.getUserPermissionsPath());
+        Assert.assertTrue(config.isAuthEnabled());
+    }
+
+    @Test
+    public void authEnabledByDefaultRequiresApiProperties() {
+        try {
+            new ShieldConfig(Map.of());
+            Assert.fail("expected missing domain/app_key");
+        } catch (IllegalArgumentException e) {
+            Assert.assertTrue(e.getMessage().contains(ShieldConfig.DOMAIN));
+        }
+    }
+
+    @Test
+    public void authDisabledDoesNotRequireApiProperties() {
+        ShieldConfig config = new ShieldConfig(Map.of(
+                ShieldConfig.AUTH_ENABLED, "false"
+        ));
+
+        Assert.assertFalse(config.isAuthEnabled());
+        Assert.assertEquals("", config.getDomain());
+        Assert.assertEquals("", config.getAppKey());
+    }
+
+    @Test
+    public void authDisabledAcceptsOptionalApiProperties() {
+        ShieldConfig config = new ShieldConfig(Map.of(
+                ShieldConfig.AUTH_ENABLED, "false",
+                ShieldConfig.DOMAIN, "http://shield.example",
+                ShieldConfig.APP_KEY, "test-key"
+        ));
+
+        Assert.assertFalse(config.isAuthEnabled());
+        Assert.assertEquals("http://shield.example", config.getDomain());
+        Assert.assertEquals("test-key", config.getAppKey());
     }
 
     @Test

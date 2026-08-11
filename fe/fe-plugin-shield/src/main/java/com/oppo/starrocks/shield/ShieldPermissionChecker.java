@@ -24,16 +24,22 @@ public class ShieldPermissionChecker {
 
     public ShieldPermissionChecker(Map<String, String> properties) {
         this.config = new ShieldConfig(properties);
-        this.apiClient = new ShieldApiClient(config);
-        this.permissionCache = CacheBuilder.newBuilder()
-                .expireAfterWrite(config.getCacheTtlSeconds(), TimeUnit.SECONDS)
-                .maximumSize(10000)
-                .build();
-        LOG.info("Shield permission cache enabled, ttlSeconds={}, requestAuthorities={}, denyNotCached=true, "
-                        + "slowThresholdMs={}, connectTimeoutMs={}, readTimeoutMs={}, retryCount={}, retryDelayMs={}",
-                config.getCacheTtlSeconds(), config.getRequestAuthorities(), config.getSlowThresholdMs(),
-                config.getConnectTimeoutMs(), config.getReadTimeoutMs(),
-                config.getRetryCount(), config.getRetryDelayMs());
+        if (config.isAuthEnabled()) {
+            this.apiClient = new ShieldApiClient(config);
+            this.permissionCache = CacheBuilder.newBuilder()
+                    .expireAfterWrite(config.getCacheTtlSeconds(), TimeUnit.SECONDS)
+                    .maximumSize(10000)
+                    .build();
+            LOG.info("Shield permission cache enabled, ttlSeconds={}, requestAuthorities={}, denyNotCached=true, "
+                            + "slowThresholdMs={}, connectTimeoutMs={}, readTimeoutMs={}, retryCount={}, retryDelayMs={}",
+                    config.getCacheTtlSeconds(), config.getRequestAuthorities(), config.getSlowThresholdMs(),
+                    config.getConnectTimeoutMs(), config.getReadTimeoutMs(),
+                    config.getRetryCount(), config.getRetryDelayMs());
+        } else {
+            this.apiClient = null;
+            this.permissionCache = null;
+            LOG.warn("Shield auth disabled for catalog; all database/table permission checks are bypassed");
+        }
     }
 
     public boolean isSuperAdmin(String starRocksUser) {
@@ -42,6 +48,10 @@ public class ShieldPermissionChecker {
 
     public boolean hasTablePermission(String starRocksUser, String database, String table,
                                       PrivilegeType privilegeType) {
+        if (!config.isAuthEnabled()) {
+            return true;
+        }
+
         long start = ShieldTimingLog.startNanos();
         if (isSuperAdmin(starRocksUser)) {
             ShieldTimingLog.logAuthCheck(LOG, config.getSlowThresholdMs(), "TABLE", starRocksUser,
@@ -67,6 +77,10 @@ public class ShieldPermissionChecker {
     }
 
     public boolean hasDatabasePermission(String starRocksUser, String database, PrivilegeType privilegeType) {
+        if (!config.isAuthEnabled()) {
+            return true;
+        }
+
         long start = ShieldTimingLog.startNanos();
         if (isSuperAdmin(starRocksUser)) {
             ShieldTimingLog.logAuthCheck(LOG, config.getSlowThresholdMs(), "DATABASE", starRocksUser,
@@ -114,6 +128,8 @@ public class ShieldPermissionChecker {
     }
 
     public void invalidateAll() {
-        permissionCache.invalidateAll();
+        if (permissionCache != null) {
+            permissionCache.invalidateAll();
+        }
     }
 }
