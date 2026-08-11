@@ -19,6 +19,9 @@ import org.apache.logging.log4j.Logger;
  * <p>Loaded via catalog property:
  * {@code access.controller.class = com.oppo.starrocks.shield.ShieldHiveAccessController}
  *
+ * <p>Set {@code shield.auth.enabled = false} to bypass all database/table permission checks without
+ * falling back to native GRANT checks. Catalog {@code USAGE} privilege is still enforced by StarRocks.
+ *
  * <p>Shield RPD {@code authority=create} at database level grants full access to all tables in the
  * database; table-level {@code create} grants full access to that table; {@code select} is read-only.
  */
@@ -29,8 +32,9 @@ public class ShieldHiveAccessController extends ExternalAccessController impleme
 
     public ShieldHiveAccessController(Map<String, String> properties) {
         this.permissionChecker = new ShieldPermissionChecker(properties);
-        LOG.info("ShieldHiveAccessController initialized, domain={}, cacheTtlSeconds={}, slowThresholdMs={}, "
-                        + "connectTimeoutMs={}, readTimeoutMs={}, retryCount={}, retryDelayMs={}",
+        LOG.info("ShieldHiveAccessController initialized, authEnabled={}, domain={}, cacheTtlSeconds={}, "
+                        + "slowThresholdMs={}, connectTimeoutMs={}, readTimeoutMs={}, retryCount={}, retryDelayMs={}",
+                properties.getOrDefault(ShieldConfig.AUTH_ENABLED, "true"),
                 properties.get(ShieldConfig.DOMAIN),
                 properties.getOrDefault(ShieldConfig.CACHE_TTL_SECONDS, "60"),
                 properties.getOrDefault(ShieldConfig.SLOW_THRESHOLD_MS, "500"),

@@ -26,6 +26,7 @@ public class ShieldConfig {
     public static final String RETRY_COUNT = "shield.api.retry.count";
     public static final String RETRY_DELAY_MS = "shield.api.retry.delay.ms";
     public static final String REQUEST_AUTHORITIES = "shield.api.request_authorities";
+    public static final String AUTH_ENABLED = "shield.auth.enabled";
 
     private static final String DEFAULT_REQUEST_AUTHORITIES = "select,create,admin";
     private static final int DEFAULT_CONNECT_TIMEOUT_MS = 5000;
@@ -50,10 +51,17 @@ public class ShieldConfig {
     private final int retryCount;
     private final int retryDelayMs;
     private final String requestAuthorities;
+    private final boolean authEnabled;
 
     public ShieldConfig(Map<String, String> properties) {
-        this.domain = getRequired(properties, DOMAIN);
-        this.appKey = getRequired(properties, APP_KEY);
+        this.authEnabled = Boolean.parseBoolean(properties.getOrDefault(AUTH_ENABLED, "true"));
+        if (authEnabled) {
+            this.domain = getRequired(properties, DOMAIN);
+            this.appKey = getRequired(properties, APP_KEY);
+        } else {
+            this.domain = trimOrEmpty(properties.get(DOMAIN));
+            this.appKey = trimOrEmpty(properties.get(APP_KEY));
+        }
         this.operator = properties.getOrDefault(OPERATOR, "");
         this.sysId = properties.getOrDefault(SYS_ID, "starrocks");
         this.areaCode = properties.getOrDefault(AREA_CODE, "china1");
@@ -90,6 +98,13 @@ public class ShieldConfig {
         String value = properties.get(key);
         if (value == null || value.trim().isEmpty()) {
             throw new IllegalArgumentException("Missing required catalog property: " + key);
+        }
+        return value.trim();
+    }
+
+    private static String trimOrEmpty(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return "";
         }
         return value.trim();
     }
@@ -179,5 +194,9 @@ public class ShieldConfig {
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toList());
+    }
+
+    public boolean isAuthEnabled() {
+        return authEnabled;
     }
 }
