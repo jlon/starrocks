@@ -84,6 +84,27 @@ public class TrinoParserUtils {
         DATE_RETURNING_FUNCTIONS.add(FunctionSet.FROM_DAYS);
         DATE_RETURNING_FUNCTIONS.add(FunctionSet.STR2DATE);
     }
+    /**
+     * Hive/Spark {@code from_unixtime(unixtime, format)} uses the 2nd argument as a datetime format string,
+     * while Trino uses it as a timezone. Detect common format literals so we can keep StarRocks semantics.
+     */
+    public static boolean isDatetimeFormatLiteral(Expr expr) {
+        if (!(expr instanceof StringLiteral)) {
+            return false;
+        }
+        String value = ((StringLiteral) expr).getStringValue();
+        if (value.contains("%")) {
+            return true;
+        }
+        String[] formatTokens = {"yyyy", "YYYY", "yy", "MM", "dd", "DD", "HH", "hh", "mm", "ss", "SSS", "SS"};
+        for (String token : formatTokens) {
+            if (value.contains(token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static boolean isDateLikeInput(Expr expr) {
         // type of expr could be Type.INVALID till now, hence we need to examine many other possible cases
         if (expr.getType().isDate()) {

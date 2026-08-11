@@ -148,6 +148,10 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
         sql = "select from_unixtime(1724049401, 'America/Bogota');";
         assertPlanContains(sql, "2024-08-19 01:36:41");
 
+        // Hive/Spark style: 2nd arg is format string, not timezone.
+        sql = "select from_unixtime(substr('1786230073414', 1, 10), 'yyyy-MM-dd HH:mm:ss');";
+        assertPlanContains(sql, "2026-08-09 07:01:13");
+
         sql = "select from_unixtime(1724049401, 1, 1);";
         assertPlanContains(sql, "2024-08-19 15:37:41");
 
