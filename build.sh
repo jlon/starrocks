@@ -726,10 +726,6 @@ if [ ${BUILD_BE} -eq 1 ]; then
         if [ -d "${STARROCKS_HOME}/deploy/thirdparty/jindo" ]; then
             rm -f ${STARROCKS_OUTPUT}/be/lib/hadoop/common/jindo-*.jar
             cp -f ${STARROCKS_HOME}/deploy/thirdparty/jindo/*.jar ${STARROCKS_OUTPUT}/be/lib/hadoop/common/
-            if [ -d "${STARROCKS_OUTPUT}/be/lib/hive-reader-lib" ]; then
-                rm -f ${STARROCKS_OUTPUT}/be/lib/hive-reader-lib/jindo-*.jar
-                cp -f ${STARROCKS_HOME}/deploy/thirdparty/jindo/*.jar ${STARROCKS_OUTPUT}/be/lib/hive-reader-lib/
-            fi
         fi
         cp -r -p ${STARROCKS_HOME}/java-extensions/jdbc-bridge/target/starrocks-jdbc-bridge-jar-with-dependencies.jar ${STARROCKS_OUTPUT}/be/lib/jni-packages
         cp -r -p ${STARROCKS_HOME}/java-extensions/udf-extensions/target/udf-extensions-jar-with-dependencies.jar ${STARROCKS_OUTPUT}/be/lib/jni-packages
@@ -755,6 +751,12 @@ if [ ${BUILD_BE} -eq 1 ]; then
         cp -r -p ${STARROCKS_HOME}/java-extensions/hive-reader/target/hive-reader-lib ${STARROCKS_OUTPUT}/be/lib/
         cp -r -p ${STARROCKS_HOME}/java-extensions/hive-reader/target/starrocks-hive-reader.jar ${STARROCKS_OUTPUT}/be/lib/jni-packages
         cp -r -p ${STARROCKS_HOME}/java-extensions/hive-reader/target/starrocks-hive-reader.jar ${STARROCKS_OUTPUT}/be/lib/hive-reader-lib
+        # RCFile/Avro/SequenceFile use HiveScanner (ChildFirstClassLoader from hive-reader-lib).
+        # Jindo must live here (not only hadoop/common) to avoid JindoOssFileSystem ClassCastException.
+        if [ -d "${STARROCKS_HOME}/deploy/thirdparty/jindo" ]; then
+            rm -f ${STARROCKS_OUTPUT}/be/lib/hive-reader-lib/jindo-*.jar
+            cp -f ${STARROCKS_HOME}/deploy/thirdparty/jindo/*.jar ${STARROCKS_OUTPUT}/be/lib/hive-reader-lib/
+        fi
     fi
 
     cp -r -p ${STARROCKS_HOME}/be/extension/python-udf/src/flight_server.py ${STARROCKS_OUTPUT}/be/lib/py-packages

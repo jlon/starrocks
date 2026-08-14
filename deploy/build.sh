@@ -289,6 +289,9 @@ build_runtime_from_local() {
             exit 1
         fi
     fi
+    if [ -d "${PROJECT_ROOT}/output/be/lib/hive-reader-lib" ]; then
+        install_jindo_for_be_output_optional
+    fi
     docker build \
         -f "${runtime_dockerfile}" \
         --build-arg ARTIFACT_SOURCE=local \
@@ -344,7 +347,12 @@ copy_hadoop_native_libs() {
 copy_jindo_to_hive_reader() {
     local jindo_dir="${SCRIPT_DIR}/thirdparty/jindo"
     local target="${PROJECT_ROOT}/output/be/lib/hive-reader-lib"
-    if [ ! -d "${jindo_dir}" ] || [ ! -d "${target}" ]; then
+    if [ ! -d "${jindo_dir}" ] || ! ls "${jindo_dir}"/jindo-*.jar &>/dev/null; then
+        echo "Warning: Jindo OSS jars missing in ${jindo_dir}/, skip hive-reader-lib install"
+        return 0
+    fi
+    if [ ! -d "${target}" ]; then
+        echo "Warning: ${target} not found, skip Jindo hive-reader-lib install"
         return 0
     fi
     echo "Installing Jindo OSS libs into output/be/lib/hive-reader-lib ..."
@@ -353,6 +361,23 @@ copy_jindo_to_hive_reader() {
         sudo rm -f "${target}"/jindo-*.jar
         sudo cp -f "${jindo_dir}"/*.jar "${target}/"
     fi
+}
+
+install_jindo_for_be_output() {
+    if [ ! -d "${PROJECT_ROOT}/output/be" ]; then
+        return 0
+    fi
+    copy_jindo_libs
+    copy_jindo_to_hive_reader
+}
+
+install_jindo_for_be_output_optional() {
+    local jindo_dir="${SCRIPT_DIR}/thirdparty/jindo"
+    if [ ! -d "${jindo_dir}" ] || ! ls "${jindo_dir}"/jindo-*.jar &>/dev/null; then
+        echo "Warning: Jindo OSS jars missing in ${jindo_dir}/, skip Jindo install for BE output"
+        return 0
+    fi
+    install_jindo_for_be_output
 }
 
 sync_fe_hadoop_libs() {
@@ -391,8 +416,7 @@ sync_startup_scripts() {
 prepare_k8s_hadoop_runtime() {
     ensure_jindo_libs
     ensure_hadoop_native
-    copy_jindo_libs
-    copy_jindo_to_hive_reader
+    install_jindo_for_be_output
     copy_hadoop_native_libs
     sync_fe_hadoop_libs
     remove_stub_hadoop_xml
