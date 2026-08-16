@@ -49,8 +49,13 @@ public class ScalarOperatorRewriter {
             new ImplicitCastRule(),
             // optional
             new ReduceCastRule(),
-            new NormalizePredicateRule(),
+            // Fold constants before normalizing predicates so that foldable constant expressions
+            // (e.g. concat('a','b')) become literals before the InPredicate split decision. This lets
+            // NormalizePredicateRule distinguish true literals from non-foldable constant expressions
+            // (e.g. deterministic UDFs that report isConstant()==true but have no FE evaluator and thus
+            // can never become literals). See NormalizePredicateRule.visitInPredicate.
             new FoldConstantsRule(),
+            new NormalizePredicateRule(),
             new SimplifiedPredicateRule(),
             new SimplifiedDateColumnPredicateRule(),
             new ExtractCommonPredicateRule(),
@@ -78,8 +83,8 @@ public class ScalarOperatorRewriter {
             new ImplicitCastRule(),
             // optional
             new ReduceCastRule(),
-            new NormalizePredicateRule(),
             new FoldConstantsRule(),
+            new NormalizePredicateRule(),
             new SimplifiedScanColumnRule(),
             new SimplifiedPredicateRule(),
             new SimplifiedDateColumnPredicateRule(),
