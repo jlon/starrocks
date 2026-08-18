@@ -1231,6 +1231,26 @@ TEST_F(TimeFunctionsTest, toUnixFromDatetimeWithFormat) {
         ASSERT_EQ(1565080737, v->get_data()[0]);
         ASSERT_EQ(1565080738, v->get_data()[1]);
     }
+    {
+        Columns columns;
+        BinaryColumn::Ptr tc1 = BinaryColumn::create();
+        tc1->append("2019-08-06 01:38:57");
+        tc1->append("20190806");
+        BinaryColumn::Ptr tc2 = BinaryColumn::create();
+        tc2->append("yyyy-MM-dd HH:mm:ss");
+        tc2->append("yyyyMMdd");
+
+        columns.emplace_back(tc1);
+        columns.emplace_back(tc2);
+
+        ColumnPtr result = TimeFunctions::to_unix_from_datetime_with_format_64(_utils->get_fn_ctx(), columns).value();
+
+        ASSERT_TRUE(result->is_numeric());
+
+        auto v = ColumnHelper::cast_to<TYPE_BIGINT>(result);
+        ASSERT_EQ(1565080737, v->get_data()[0]);
+        ASSERT_EQ(1565074800, v->get_data()[1]);
+    }
 }
 
 TEST_F(TimeFunctionsTest, fromUnixToDatetime) {
