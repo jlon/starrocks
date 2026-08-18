@@ -38,6 +38,7 @@ typedef unsigned long ulong;
 #include "runtime/datetime_value.h"
 #include "runtime/runtime_state.h"
 #include "types/date_value.h"
+#include "types/timestamp_value.h"
 
 namespace starrocks {
 // index as day of week(1: Sunday, 2: Monday....), value as distance of this day and first day(Monday) of this week.
@@ -1543,15 +1544,22 @@ StatusOr<ColumnPtr> TimeFunctions::_t_to_unix_from_datetime_with_format(Function
             result.append_null();
             continue;
         }
+
+        int64_t timestamp = 0;
         DateTimeValue tv;
-        if (!tv.from_date_format_str(format.data, format.size, date.data, date.size)) {
-            result.append_null();
-            continue;
-        }
-        int64_t timestamp;
-        if (!tv.unix_timestamp(&timestamp, context->state()->timezone_obj())) {
-            result.append_null();
-            continue;
+        std::string converted_format = convert_format(format);
+        if (tv.from_date_format_str(converted_format.data(), converted_format.size(), date.data, date.size)) {
+            if (!tv.unix_timestamp(&timestamp, context->state()->timezone_obj())) {
+                result.append_null();
+                continue;
+            }
+        } else {
+            TimestampValue ts;
+            if (!ts.from_uncommon_format_str(format.data, format.size, date.data, date.size)) {
+                result.append_null();
+                continue;
+            }
+            timestamp = ts.to_unixtime(context->state()->timezone_obj());
         }
 
         timestamp = timestamp < 0 ? 0 : timestamp;
