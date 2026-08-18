@@ -193,7 +193,7 @@ void MysqlRowBuffer::push_number(T data, bool is_binary_protocol) {
 }
 
 void MysqlRowBuffer::push_string(const char* str, size_t length, char escape_char) {
-    if (_nesting_level == 0) {
+    if (_nesting_level == 0 || (_map_value_raw_output && _map_value_depth > 0)) {
         _push_string_normal(str, length);
     } else {
         // Surround the string with two double-quotas.
