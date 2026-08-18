@@ -171,6 +171,11 @@ Status MysqlResultWriter::init(RuntimeState* state) {
         return Status::InternalError("no memory to alloc.");
     }
 
+    if (state->query_options().__isset.enable_map_value_raw_output &&
+        state->query_options().enable_map_value_raw_output) {
+        _row_buffer->set_map_value_raw_output(true);
+    }
+
     return Status::OK();
 }
 

@@ -411,4 +411,35 @@ TEST_F(MysqlRowBufferTest, test_array) {
     }
 }
 
+// NOLINTNEXTLINE
+TEST_F(MysqlRowBufferTest, test_map_raw_string_value) {
+    {
+        MysqlRowBuffer row_buffer;
+        row_buffer.set_map_value_raw_output(true);
+        row_buffer.begin_push_bracket();
+        row_buffer.push_string("dcsEvents");
+        row_buffer.separator(':');
+        row_buffer.begin_map_value();
+        row_buffer.push_string(R"({"mark_":"0-7","eventId_":"54505"})");
+        row_buffer.end_map_value();
+        row_buffer.finish_push_bracket();
+
+        Slice slice(row_buffer.data());
+        auto data = decode_mysql_row(&slice);
+        ASSERT_EQ(R"({"dcsEvents":{"mark_":"0-7","eventId_":"54505"}})", data.value());
+    }
+    {
+        MysqlRowBuffer row_buffer;
+        row_buffer.begin_push_bracket();
+        row_buffer.push_string("dcsEvents");
+        row_buffer.separator(':');
+        row_buffer.push_string(R"({"mark_":"0-7"})");
+        row_buffer.finish_push_bracket();
+
+        Slice slice(row_buffer.data());
+        auto data = decode_mysql_row(&slice);
+        ASSERT_EQ(R"({"dcsEvents":"{\"mark_\":\"0-7\"}"})", data.value());
+    }
+}
+
 } // namespace starrocks

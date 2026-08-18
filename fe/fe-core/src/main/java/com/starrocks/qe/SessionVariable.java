@@ -918,6 +918,8 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public static final String SQL_DIALECT = "sql_dialect";
 
+    public static final String ENABLE_MAP_VALUE_RAW_OUTPUT = "enable_map_value_raw_output";
+
     // Rewrite array[n] and split()[n] with 0-based index for Spark/Hive SQL migration under Trino dialect.
     public static final String TRINO_ZERO_BASED_SUBSCRIPT = "trino_zero_based_subscript";
 
@@ -2935,6 +2937,9 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     @VarAttr(name = SQL_DIALECT)
     private String sqlDialect = "StarRocks";
+
+    @VarAttr(name = ENABLE_MAP_VALUE_RAW_OUTPUT)
+    private boolean enableMapValueRawOutput = false;
 
     @VarAttr(name = TRINO_ZERO_BASED_SUBSCRIPT)
     private boolean trinoZeroBasedSubscript = false;
@@ -5416,6 +5421,14 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
         this.sqlDialect = dialect;
     }
 
+    public boolean isEnableMapValueRawOutput() {
+        return enableMapValueRawOutput;
+    }
+
+    public void setEnableMapValueRawOutput(boolean enableMapValueRawOutput) {
+        this.enableMapValueRawOutput = enableMapValueRawOutput;
+    }
+
     public boolean isTrinoZeroBasedSubscript() {
         return trinoZeroBasedSubscript;
     }
@@ -6409,7 +6422,7 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
         tResult.setEnable_hash_join_range_direct_mapping_opt(enableHashJoinRangeDirectMappingOpt);
         tResult.setEnable_hash_join_linear_chained_opt(enableHashJoinLinearChainedOpt);
         tResult.setEnable_hash_join_serialize_fixed_size_string(enableHashJoinSerializeFixedSizeString);
-
+        tResult.setEnable_map_value_raw_output(enableMapValueRawOutput);
         return tResult;
     }
 

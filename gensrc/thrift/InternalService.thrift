@@ -368,6 +368,9 @@ struct TQueryOptions {
   190: optional i64 column_view_concat_rows_limit;
   191: optional i64 column_view_concat_bytes_limit;
 
+  // When true, MAP varchar values are written without quote escaping in MySQL result rows.
+  192: optional bool enable_map_value_raw_output = false;
+
   200: optional bool enable_full_sort_use_german_string;
 
   // Hash function version for exchange shuffle
