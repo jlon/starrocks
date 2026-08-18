@@ -17,6 +17,8 @@ package com.starrocks.connector.parser.trino;
 import org.junit.Assert;
 import org.junit.Test;
 
+import java.util.Locale;
+
 public class TrinoSqlNormalizerTest {
     @Test
     public void testConvertBacktickQuotedIdentifiers() {
@@ -108,5 +110,57 @@ public class TrinoSqlNormalizerTest {
         Assert.assertTrue(normalized.contains("ARRAY['42260']"));
         Assert.assertFalse(normalized.contains("RLIKE"));
         Assert.assertFalse(normalized.contains("ARRAY('42260')"));
+    }
+
+    @Test
+    public void testRewriteLateralViewExplode() {
+        Assert.assertEquals(
+                "SELECT recall_name, COUNT(*) AS pv\n"
+                        + "FROM t\n"
+                        + "CROSS JOIN UNNEST(recall_names) AS t(recall_name)\n"
+                        + "GROUP BY 1",
+                TrinoSqlNormalizer.rewriteLateralViewExplode(
+                        "SELECT recall_name, COUNT(*) AS pv\n"
+                                + "FROM t\n"
+                                + "LATERAL VIEW explode(recall_names) t AS recall_name\n"
+                                + "GROUP BY 1"));
+
+        Assert.assertEquals(
+                "select * from db.tbl cross join unnest(arr) as u(col)",
+                TrinoSqlNormalizer.rewriteLateralViewExplode(
+                        "select * from db.tbl lateral view explode(arr) u as col"));
+
+        Assert.assertEquals(
+                "select * from db.tbl cross join unnest(split(a, ',')) as t(x)",
+                TrinoSqlNormalizer.rewriteLateralViewExplode(
+                        "select * from db.tbl lateral view explode(split(a, ',')) t as x"));
+
+        // Do not rewrite map explode (multi-column)
+        Assert.assertEquals(
+                "select * from t lateral view explode(m) t as k, v",
+                TrinoSqlNormalizer.rewriteLateralViewExplode(
+                        "select * from t lateral view explode(m) t as k, v"));
+
+        // Do not rewrite OUTER explode in this phase
+        Assert.assertEquals(
+                "select * from t lateral view outer explode(arr) t as col",
+                TrinoSqlNormalizer.rewriteLateralViewExplode(
+                        "select * from t lateral view outer explode(arr) t as col"));
+
+        // Do not rewrite inside string literals / comments
+        Assert.assertEquals("select 'lateral view explode(x) t as y'",
+                TrinoSqlNormalizer.rewriteLateralViewExplode("select 'lateral view explode(x) t as y'"));
+        Assert.assertEquals("select 1 -- lateral view explode(x) t as y\n",
+                TrinoSqlNormalizer.rewriteLateralViewExplode("select 1 -- lateral view explode(x) t as y\n"));
+    }
+
+    @Test
+    public void testNormalizeLateralViewExplode() {
+        String sql = "WITH t AS (SELECT recall_names FROM db.tbl)\n"
+                + "SELECT recall_name FROM t\n"
+                + "LATERAL VIEW explode(recall_names) t AS recall_name";
+        String normalized = TrinoSqlNormalizer.normalize(sql);
+        Assert.assertTrue(normalized.contains("CROSS JOIN UNNEST(recall_names) AS t(recall_name)"));
+        Assert.assertFalse(normalized.toLowerCase(Locale.ROOT).contains("lateral view"));
     }
 }
