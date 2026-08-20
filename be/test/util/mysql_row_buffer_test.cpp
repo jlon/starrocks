@@ -429,6 +429,28 @@ TEST_F(MysqlRowBufferTest, test_map_raw_string_value) {
         ASSERT_EQ(R"({"dcsEvents":{"mark_":"0-7","eventId_":"54505"}})", data.value());
     }
     {
+        // Long JSON (>251 bytes) must not leak MySQL vlen length prefix bytes.
+        std::string long_json = R"({"mark_":"0-7","eventId_":"54505","payload_":")";
+        long_json.append(300, 'x');
+        long_json.append(R"("})");
+        ASSERT_GT(long_json.size(), 251U);
+
+        MysqlRowBuffer row_buffer;
+        row_buffer.set_map_value_raw_output(true);
+        row_buffer.begin_push_bracket();
+        row_buffer.push_string("dcsEvents");
+        row_buffer.separator(':');
+        row_buffer.begin_map_value();
+        row_buffer.push_string(long_json);
+        row_buffer.end_map_value();
+        row_buffer.finish_push_bracket();
+
+        Slice slice(row_buffer.data());
+        auto data = decode_mysql_row(&slice);
+        const std::string expected = "{\"dcsEvents\":" + long_json + "}";
+        ASSERT_EQ(expected, std::string(data.value().data, data.value().size));
+    }
+    {
         MysqlRowBuffer row_buffer;
         row_buffer.begin_push_bracket();
         row_buffer.push_string("dcsEvents");
