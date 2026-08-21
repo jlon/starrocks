@@ -1530,6 +1530,21 @@ public class AnalyzerUtils {
         return parseLiteralExprToDateString(expr, type, offset);
     }
 
+    /**
+     * Resolve ORDER BY position (e.g. ORDER BY 2) to the corresponding SELECT output expression.
+     * Returns the original expression when it is not a valid ordinal reference.
+     */
+    public static Expr resolveOrderByOrdinal(Expr expr, List<Expr> outputExpressions) {
+        if (!(expr instanceof IntLiteral) || outputExpressions == null || outputExpressions.isEmpty()) {
+            return expr;
+        }
+        long ordinal = ((IntLiteral) expr).getLongValue();
+        if (ordinal < 1 || ordinal > outputExpressions.size()) {
+            return expr;
+        }
+        return outputExpressions.get((int) ordinal - 1);
+    }
+
     public static String parseLiteralExprToDateString(LiteralExpr expr, PrimitiveType type, int offset) {
         if (expr instanceof DateLiteral) {
             DateLiteral lowerDate = (DateLiteral) expr;

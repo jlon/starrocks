@@ -485,11 +485,13 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
         if (relation.hasOrderByClause()) {
             List<Ordering> orderings = new ArrayList<>();
             List<ColumnRefOperator> orderByColumns = Lists.newArrayList();
+            List<Expr> outputExpressions = relation.getOutputExpression();
             for (OrderByElement item : orderBy) {
-                if (ExprUtils.isLiteral(item.getExpr())) {
+                Expr orderByExpr = AnalyzerUtils.resolveOrderByOrdinal(item.getExpr(), outputExpressions);
+                if (ExprUtils.isLiteral(orderByExpr)) {
                     continue;
                 }
-                ColumnRefOperator column = (ColumnRefOperator) SqlToScalarOperatorTranslator.translate(item.getExpr(),
+                ColumnRefOperator column = (ColumnRefOperator) SqlToScalarOperatorTranslator.translate(orderByExpr,
                         root.getExpressionMapping(), columnRefFactory);
                 Ordering ordering = new Ordering(column, item.getIsAsc(),
                         OrderByElement.nullsFirst(item.getNullsFirstParam()));

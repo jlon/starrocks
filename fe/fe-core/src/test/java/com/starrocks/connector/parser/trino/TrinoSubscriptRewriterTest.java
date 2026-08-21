@@ -154,6 +154,24 @@ public class TrinoSubscriptRewriterTest extends TrinoTestBase {
     }
 
     @Test
+    public void testGroupByOrderByOrdinalWithAggregateSubscript() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "select tb, cast(sum(coalesce(split(ta, '-')[7], 0)) as double) "
+                + "from tall group by 1 order by 2 desc";
+        assertPlanContains(sql, "order by:");
+        assertPlanContains(sql, "DESC");
+    }
+
+    @Test
+    public void testGroupByOrderByOrdinalWithMapAggregate() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "select c0, cast(sum(coalesce(c1[150], 0)) as double) "
+                + "from test_map group by 1 order by 2 desc";
+        assertPlanContains(sql, "order by:");
+        assertPlanContains(sql, "DESC");
+    }
+
+    @Test
     public void testHavingAndOrderByAggregateSubscript() throws Exception {
         connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
         String sql = "select tb from tall group by tb "
