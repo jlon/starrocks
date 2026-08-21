@@ -22,6 +22,7 @@ import com.google.common.collect.Maps;
 import com.starrocks.catalog.TableName;
 import com.starrocks.common.Pair;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.sql.analyzer.AnalyzerUtils;
 import com.starrocks.sql.analyzer.RelationFields;
 import com.starrocks.sql.analyzer.RelationId;
 import com.starrocks.sql.analyzer.Scope;
@@ -140,7 +141,7 @@ public class QueryTransformer {
         // add project to express order by expression
         builder = project(builder, Iterables.concat(queryBlock.getOrderByExpressions(), queryBlock.getOutputExpression()));
         List<ColumnRefOperator> orderByColumns = Lists.newArrayList();
-        builder = sort(builder, queryBlock.getOrderBy(), orderByColumns);
+        builder = sort(builder, queryBlock.getOrderBy(), queryBlock.getOutputExpression(), orderByColumns);
         builder = limit(builder, queryBlock.getLimit());
 
         List<ColumnRefOperator> outputColumns = computeOutputs(builder, queryBlock.getOutputExpression(), columnRefFactory);
@@ -624,18 +625,19 @@ public class QueryTransformer {
     }
 
     private OptExprBuilder sort(OptExprBuilder subOpt, List<OrderByElement> orderByExpressions,
-                                List<ColumnRefOperator> orderByColumns) {
+                                List<Expr> outputExpressions, List<ColumnRefOperator> orderByColumns) {
         if (orderByExpressions.isEmpty()) {
             return subOpt;
         }
 
         List<Ordering> orderings = new ArrayList<>();
         for (OrderByElement item : orderByExpressions) {
-            if (ExprUtils.isLiteral(item.getExpr())) {
+            Expr orderByExpr = AnalyzerUtils.resolveOrderByOrdinal(item.getExpr(), outputExpressions);
+            if (ExprUtils.isLiteral(orderByExpr)) {
                 continue;
             }
             ColumnRefOperator column =
-                    (ColumnRefOperator) SqlToScalarOperatorTranslator.translate(item.getExpr(),
+                    (ColumnRefOperator) SqlToScalarOperatorTranslator.translate(orderByExpr,
                             subOpt.getExpressionMapping(), columnRefFactory);
             Ordering ordering = new Ordering(column, item.getIsAsc(),
                     OrderByElement.nullsFirst(item.getNullsFirstParam()));
