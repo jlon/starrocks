@@ -770,7 +770,7 @@ public class ScalarOperatorFunctions {
         String fmt = fmtLiteral.getVarchar();
         String date = StringUtils.strip(dateStr.getVarchar(), "\r\n\t ");
         if (fmt.isEmpty() || date.isEmpty()) {
-            return ConstantOperator.createNull(Type.BIGINT);
+            return ConstantOperator.createNull(IntegerType.BIGINT);
         }
         // Parse the textual date with the format string, accepting both the
         // unix/strptime style ("%Y%m%d") and the whitelisted Java/Hive style
@@ -792,10 +792,10 @@ public class ScalarOperatorFunctions {
                 ldt = LocalDateTime.from(builder.withResolverStyle(ResolverStyle.STRICT)
                         .parse(date.substring(0, e.getErrorIndex())));
             } catch (Exception ex) {
-                return ConstantOperator.createNull(Type.BIGINT);
+                return ConstantOperator.createNull(IntegerType.BIGINT);
             }
         } catch (Exception e) {
-            return ConstantOperator.createNull(Type.BIGINT);
+            return ConstantOperator.createNull(IntegerType.BIGINT);
         }
         ZonedDateTime zdt = ZonedDateTime.of(ldt, TimeUtils.getTimeZone().toZoneId());
         long value = zdt.toEpochSecond();
