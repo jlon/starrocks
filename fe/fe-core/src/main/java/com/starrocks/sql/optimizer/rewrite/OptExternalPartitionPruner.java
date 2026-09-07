@@ -44,6 +44,7 @@ import com.starrocks.sql.ast.expression.BinaryType;
 import com.starrocks.sql.ast.expression.ExprUtils;
 import com.starrocks.type.Type;
 import com.starrocks.sql.ast.expression.LiteralExpr;
+import com.starrocks.sql.ast.expression.LiteralExprFactory;
 import com.starrocks.sql.common.ErrorType;
 import com.starrocks.sql.common.StarRocksPlannerException;
 import com.starrocks.sql.optimizer.OptimizerContext;
@@ -60,6 +61,7 @@ import com.starrocks.sql.optimizer.operator.scalar.InPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.LikePredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rule.transformation.ListPartitionPruner;
+import com.starrocks.type.Type;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.paimon.data.BinaryRow;
@@ -452,7 +454,7 @@ public class OptExternalPartitionPruner {
             }
         } else {
             try {
-                LiteralExpr literal = LiteralExpr.create(constant.toString(), partitionColumnType);
+                LiteralExpr literal = LiteralExprFactory.create(constant.toString(), partitionColumnType);
                 raw = literal.getStringValue();
             } catch (AnalysisException e) {
                 return null;
