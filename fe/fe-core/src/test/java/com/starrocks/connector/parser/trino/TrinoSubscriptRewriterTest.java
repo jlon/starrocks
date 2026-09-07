@@ -14,25 +14,25 @@
 
 package com.starrocks.connector.parser.trino;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TrinoSubscriptRewriterTest extends TrinoTestBase {
     private boolean originZeroBasedSubscript;
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         TrinoTestBase.beforeClass();
     }
 
-    @Before
+    @BeforeEach
     public void setUp() {
         originZeroBasedSubscript = connectContext.getSessionVariable().isTrinoZeroBasedSubscript();
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         connectContext.getSessionVariable().setTrinoZeroBasedSubscript(originZeroBasedSubscript);
     }

@@ -14,20 +14,20 @@
 
 package com.starrocks.sql.analyzer;
 
-import com.starrocks.analysis.SlotRef;
 import com.starrocks.sql.ast.QueryStatement;
 import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.sql.ast.ViewRelation;
+import com.starrocks.sql.ast.expression.SlotRef;
 import com.starrocks.sql.plan.ConnectorPlanTestBase;
 import com.starrocks.sql.plan.PlanTestBase;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 public class ViewOutputFieldResolutionTest extends PlanTestBase {
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         PlanTestBase.beforeClass();
         ConnectorPlanTestBase.mockHiveCatalog(connectContext);
@@ -41,7 +41,7 @@ public class ViewOutputFieldResolutionTest extends PlanTestBase {
             return (QueryStatement) statement;
         } catch (Exception ex) {
             ex.printStackTrace();
-            Assert.fail(ex.getMessage());
+            Assertions.fail(ex.getMessage());
             return null;
         }
     }
@@ -54,23 +54,23 @@ public class ViewOutputFieldResolutionTest extends PlanTestBase {
 
         Field colA = viewRelation.getScope().getRelationFields().resolveFields(new SlotRef(null, "col_a")).get(0);
         Field colB = viewRelation.getScope().getRelationFields().resolveFields(new SlotRef(null, "col_b")).get(0);
-        Assert.assertEquals("v1", ((SlotRef) colA.getOriginExpression()).getColumnName());
-        Assert.assertEquals("v2", ((SlotRef) colB.getOriginExpression()).getColumnName());
+        Assertions.assertEquals("v1", ((SlotRef) colA.getOriginExpression()).getColumnName());
+        Assertions.assertEquals("v2", ((SlotRef) colB.getOriginExpression()).getColumnName());
     }
 
     @Test
     public void testTrinoViewWithReorderedMetadataColumns() throws Exception {
         QueryStatement stmt = analyzeQuery("SELECT * FROM hive0.tpch.trino_reordered_columns_view");
         List<ViewRelation> viewRelations = AnalyzerUtils.collectViewRelations(stmt);
-        Assert.assertEquals(1, viewRelations.size());
+        Assertions.assertEquals(1, viewRelations.size());
 
         ViewRelation viewRelation = viewRelations.get(0);
         Field custkeyField = viewRelation.getScope().getRelationFields()
                 .resolveFields(new SlotRef(null, "c_custkey")).get(0);
         Field nameField = viewRelation.getScope().getRelationFields()
                 .resolveFields(new SlotRef(null, "c_name")).get(0);
-        Assert.assertEquals("c_custkey", ((SlotRef) custkeyField.getOriginExpression()).getColumnName());
-        Assert.assertEquals("c_name", ((SlotRef) nameField.getOriginExpression()).getColumnName());
+        Assertions.assertEquals("c_custkey", ((SlotRef) custkeyField.getOriginExpression()).getColumnName());
+        Assertions.assertEquals("c_name", ((SlotRef) nameField.getOriginExpression()).getColumnName());
     }
 
     @Test

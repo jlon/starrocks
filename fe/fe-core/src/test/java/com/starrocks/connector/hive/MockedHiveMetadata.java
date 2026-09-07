@@ -433,7 +433,7 @@ public class MockedHiveMetadata implements ConnectorMetadata {
                 trinoReorderedColumnsViewText.length() - HiveView.PRESTO_VIEW_SUFFIX.length());
         TrinoViewDefinition trinoViewDefinition = GsonUtils.GSON.fromJson(
                 new String(Base64.getDecoder().decode(trinoViewPayload)), TrinoViewDefinition.class);
-        HiveView view6 = new HiveView(ConnectorTableId.CONNECTOR_ID_GENERATOR.getNextId().asInt(),
+        HiveView view6 = new HiveView(ConnectorTableId.CONNECTOR_ID_GENERATOR.getNextId().asLong(),
                 MOCKED_HIVE_CATALOG_NAME, hmsView6.getDbName(), hmsView6.getTableName(),
                 HiveMetastoreApiConverter.toFullSchemasForTrinoView(hmsView6, trinoViewDefinition),
                 trinoViewDefinition.getOriginalSql(), HiveView.Type.Trino);

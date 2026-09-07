@@ -140,7 +140,7 @@ public class NormalizePredicateRuleTest {
         NormalizePredicateRule rule = new NormalizePredicateRule();
         ScalarOperatorRewriteContext context = new ScalarOperatorRewriteContext();
 
-        ColumnRefOperator col = new ColumnRefOperator(1, Type.INT, "c", true);
+        ColumnRefOperator col = new ColumnRefOperator(1, IntegerType.INT, "c", true);
         InPredicateOperator inOp = new InPredicateOperator(col,
                 ConstantOperator.createInt(1), ConstantOperator.createInt(2));
 

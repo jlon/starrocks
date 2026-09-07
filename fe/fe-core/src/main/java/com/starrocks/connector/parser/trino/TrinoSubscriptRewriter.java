@@ -15,13 +15,13 @@
 package com.starrocks.connector.parser.trino;
 
 import com.starrocks.catalog.FunctionSet;
-import com.starrocks.type.Type;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.expression.ArithmeticExpr;
 import com.starrocks.sql.ast.expression.CollectionElementExpr;
 import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.ast.expression.FunctionCallExpr;
 import com.starrocks.sql.ast.expression.IntLiteral;
+import com.starrocks.type.Type;
 
 public class TrinoSubscriptRewriter {
     private TrinoSubscriptRewriter() {

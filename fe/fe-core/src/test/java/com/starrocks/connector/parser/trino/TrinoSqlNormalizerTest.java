@@ -14,87 +14,87 @@
 
 package com.starrocks.connector.parser.trino;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.Locale;
 
 public class TrinoSqlNormalizerTest {
     @Test
     public void testConvertBacktickQuotedIdentifiers() {
-        Assert.assertEquals("select nvl(\"ota_version\", 'ALL')",
+        Assertions.assertEquals("select nvl(\"ota_version\", 'ALL')",
                 TrinoSqlNormalizer.convertBacktickQuotedIdentifiers(
                         "select nvl(`ota_version`, 'ALL')"));
 
-        Assert.assertEquals("select \"a\".\"b\" from \"db\".\"tbl\"",
+        Assertions.assertEquals("select \"a\".\"b\" from \"db\".\"tbl\"",
                 TrinoSqlNormalizer.convertBacktickQuotedIdentifiers(
                         "select `a`.`b` from `db`.`tbl`"));
 
-        Assert.assertEquals("select 'a`b', \"col\"",
+        Assertions.assertEquals("select 'a`b', \"col\"",
                 TrinoSqlNormalizer.convertBacktickQuotedIdentifiers(
                         "select 'a`b', `col`"));
 
-        Assert.assertEquals("select \"id\"\"x\" from t",
+        Assertions.assertEquals("select \"id\"\"x\" from t",
                 TrinoSqlNormalizer.convertBacktickQuotedIdentifiers(
                         "select `id\"x` from t"));
 
-        Assert.assertEquals("select 1 -- `comment`",
+        Assertions.assertEquals("select 1 -- `comment`",
                 TrinoSqlNormalizer.convertBacktickQuotedIdentifiers(
                         "select 1 -- `comment`"));
 
-        Assert.assertEquals("select 1 /* `comment` */",
+        Assertions.assertEquals("select 1 /* `comment` */",
                 TrinoSqlNormalizer.convertBacktickQuotedIdentifiers(
                         "select 1 /* `comment` */"));
     }
 
     @Test
     public void testRewriteRlike() {
-        Assert.assertEquals("select regexp_like(labid, 'STD|SAD')",
+        Assertions.assertEquals("select regexp_like(labid, 'STD|SAD')",
                 TrinoSqlNormalizer.rewriteRlike("select labid RLIKE 'STD|SAD'"));
 
-        Assert.assertEquals("select NOT regexp_like(labid, 'STD')",
+        Assertions.assertEquals("select NOT regexp_like(labid, 'STD')",
                 TrinoSqlNormalizer.rewriteRlike("select labid NOT RLIKE 'STD'"));
 
-        Assert.assertEquals("select regexp_like(a, b)",
+        Assertions.assertEquals("select regexp_like(a, b)",
                 TrinoSqlNormalizer.rewriteRlike("select RLIKE(a, b)"));
 
-        Assert.assertEquals(
+        Assertions.assertEquals(
                 "CASE WHEN regexp_like(labid, 'STD|STDMIXT') THEN 'toutiao' END",
                 TrinoSqlNormalizer.rewriteRlike(
                         "CASE WHEN labid RLIKE 'STD|STDMIXT' THEN 'toutiao' END"));
 
         // Do not rewrite inside string literals / comments
-        Assert.assertEquals("select 'labid RLIKE x'",
+        Assertions.assertEquals("select 'labid RLIKE x'",
                 TrinoSqlNormalizer.rewriteRlike("select 'labid RLIKE x'"));
-        Assert.assertEquals("select 1 -- labid RLIKE x\n",
+        Assertions.assertEquals("select 1 -- labid RLIKE x\n",
                 TrinoSqlNormalizer.rewriteRlike("select 1 -- labid RLIKE x\n"));
     }
 
     @Test
     public void testRewriteArrayConstructor() {
-        Assert.assertEquals("select ARRAY['42260']",
+        Assertions.assertEquals("select ARRAY['42260']",
                 TrinoSqlNormalizer.rewriteArrayConstructor("select ARRAY('42260')"));
 
-        Assert.assertEquals("select array[1, 2, 3]",
+        Assertions.assertEquals("select array[1, 2, 3]",
                 TrinoSqlNormalizer.rewriteArrayConstructor("select array(1, 2, 3)"));
 
-        Assert.assertEquals("select ARRAY[]",
+        Assertions.assertEquals("select ARRAY[]",
                 TrinoSqlNormalizer.rewriteArrayConstructor("select ARRAY()"));
 
         // Keep type specs
-        Assert.assertEquals("select cast(x as ARRAY(INTEGER))",
+        Assertions.assertEquals("select cast(x as ARRAY(INTEGER))",
                 TrinoSqlNormalizer.rewriteArrayConstructor("select cast(x as ARRAY(INTEGER))"));
-        Assert.assertEquals("select cast(x as array(varchar(10)))",
+        Assertions.assertEquals("select cast(x as array(varchar(10)))",
                 TrinoSqlNormalizer.rewriteArrayConstructor("select cast(x as array(varchar(10)))"));
 
         // Do not touch array_intersect / already-bracket constructors
-        Assert.assertEquals("select array_intersect(a, ARRAY['42260'])",
+        Assertions.assertEquals("select array_intersect(a, ARRAY['42260'])",
                 TrinoSqlNormalizer.rewriteArrayConstructor(
                         "select array_intersect(a, ARRAY('42260'))"));
-        Assert.assertEquals("select ARRAY[1,2]",
+        Assertions.assertEquals("select ARRAY[1,2]",
                 TrinoSqlNormalizer.rewriteArrayConstructor("select ARRAY[1,2]"));
 
-        Assert.assertEquals("select 'ARRAY(1)'",
+        Assertions.assertEquals("select 'ARRAY(1)'",
                 TrinoSqlNormalizer.rewriteArrayConstructor("select 'ARRAY(1)'"));
     }
 
@@ -106,15 +106,15 @@ public class TrinoSqlNormalizerTest {
                 + "IS NOT NULL THEN '42260-guanxing'\n"
                 + "    END";
         String normalized = TrinoSqlNormalizer.normalize(sql);
-        Assert.assertTrue(normalized.contains("regexp_like(labid, 'STD|STDMIXT')"));
-        Assert.assertTrue(normalized.contains("ARRAY['42260']"));
-        Assert.assertFalse(normalized.contains("RLIKE"));
-        Assert.assertFalse(normalized.contains("ARRAY('42260')"));
+        Assertions.assertTrue(normalized.contains("regexp_like(labid, 'STD|STDMIXT')"));
+        Assertions.assertTrue(normalized.contains("ARRAY['42260']"));
+        Assertions.assertFalse(normalized.contains("RLIKE"));
+        Assertions.assertFalse(normalized.contains("ARRAY('42260')"));
     }
 
     @Test
     public void testRewriteLateralViewExplode() {
-        Assert.assertEquals(
+        Assertions.assertEquals(
                 "SELECT recall_name, COUNT(*) AS pv\n"
                         + "FROM t\n"
                         + "CROSS JOIN UNNEST(recall_names) AS t(recall_name)\n"
@@ -125,32 +125,32 @@ public class TrinoSqlNormalizerTest {
                                 + "LATERAL VIEW explode(recall_names) t AS recall_name\n"
                                 + "GROUP BY 1"));
 
-        Assert.assertEquals(
+        Assertions.assertEquals(
                 "select * from db.tbl cross join unnest(arr) as u(col)",
                 TrinoSqlNormalizer.rewriteLateralViewExplode(
                         "select * from db.tbl lateral view explode(arr) u as col"));
 
-        Assert.assertEquals(
+        Assertions.assertEquals(
                 "select * from db.tbl cross join unnest(split(a, ',')) as t(x)",
                 TrinoSqlNormalizer.rewriteLateralViewExplode(
                         "select * from db.tbl lateral view explode(split(a, ',')) t as x"));
 
         // Do not rewrite map explode (multi-column)
-        Assert.assertEquals(
+        Assertions.assertEquals(
                 "select * from t lateral view explode(m) t as k, v",
                 TrinoSqlNormalizer.rewriteLateralViewExplode(
                         "select * from t lateral view explode(m) t as k, v"));
 
         // Do not rewrite OUTER explode in this phase
-        Assert.assertEquals(
+        Assertions.assertEquals(
                 "select * from t lateral view outer explode(arr) t as col",
                 TrinoSqlNormalizer.rewriteLateralViewExplode(
                         "select * from t lateral view outer explode(arr) t as col"));
 
         // Do not rewrite inside string literals / comments
-        Assert.assertEquals("select 'lateral view explode(x) t as y'",
+        Assertions.assertEquals("select 'lateral view explode(x) t as y'",
                 TrinoSqlNormalizer.rewriteLateralViewExplode("select 'lateral view explode(x) t as y'"));
-        Assert.assertEquals("select 1 -- lateral view explode(x) t as y\n",
+        Assertions.assertEquals("select 1 -- lateral view explode(x) t as y\n",
                 TrinoSqlNormalizer.rewriteLateralViewExplode("select 1 -- lateral view explode(x) t as y\n"));
     }
 
@@ -160,7 +160,7 @@ public class TrinoSqlNormalizerTest {
                 + "SELECT recall_name FROM t\n"
                 + "LATERAL VIEW explode(recall_names) t AS recall_name";
         String normalized = TrinoSqlNormalizer.normalize(sql);
-        Assert.assertTrue(normalized.contains("CROSS JOIN UNNEST(recall_names) AS t(recall_name)"));
-        Assert.assertFalse(normalized.toLowerCase(Locale.ROOT).contains("lateral view"));
+        Assertions.assertTrue(normalized.contains("CROSS JOIN UNNEST(recall_names) AS t(recall_name)"));
+        Assertions.assertFalse(normalized.toLowerCase(Locale.ROOT).contains("lateral view"));
     }
 }
