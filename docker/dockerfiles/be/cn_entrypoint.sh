@@ -18,6 +18,31 @@ log_stderr()
     echo "[`date`] $@" >&2
 }
 
+# start_backend.sh expects libjemalloc under lib/jemalloc and lib/jemalloc-dbg.
+# Some K8s images ship libjemalloc*.so in lib/ only; create the layout at startup.
+ensure_jemalloc_layout()
+{
+    local libdir="${STARROCKS_HOME}/lib"
+    local jemalloc_dir="${libdir}/jemalloc"
+    local jemalloc_dbg_dir="${libdir}/jemalloc-dbg"
+
+    mkdir -p "${jemalloc_dir}" "${jemalloc_dbg_dir}"
+
+    if [[ ! -e "${jemalloc_dir}/libjemalloc.so.2" ]]; then
+        if [[ -e "${libdir}/libjemalloc.so.2" ]]; then
+            ln -sf "../libjemalloc.so.2" "${jemalloc_dir}/libjemalloc.so.2"
+        elif [[ -L "${libdir}/libjemalloc.so" || -e "${libdir}/libjemalloc.so" ]]; then
+            ln -sf "../libjemalloc.so" "${jemalloc_dir}/libjemalloc.so.2"
+        fi
+    fi
+
+    if [[ ! -e "${jemalloc_dbg_dir}/libjemalloc.so.2" ]]; then
+        if [[ -e "${libdir}/libjemalloc-dbg.so.2" ]]; then
+            ln -sf "../libjemalloc-dbg.so.2" "${jemalloc_dbg_dir}/libjemalloc.so.2"
+        fi
+    fi
+}
+
 update_conf_from_configmap()
 {
     if [[ "x$CONFIGMAP_MOUNT_PATH" == "x" ]] ; then
@@ -56,18 +81,61 @@ parse_confval_from_cn_conf()
 
 collect_env_info()
 {
+    # Align with fe_entrypoint: POD_IP/POD_FQDN override hostname probes.
+    if [[ "x$POD_IP" != "x" ]] ; then
+        MY_IP=$POD_IP
+    else
+        MY_IP=`hostname -i | awk '{print $1}'`
+    fi
+
+    if [[ "x$POD_FQDN" != "x" ]] ; then
+        MY_HOSTNAME=$POD_FQDN
+    else
+        MY_HOSTNAME=`hostname -f`
+    fi
+
     # heartbeat_port from conf file
     local heartbeat_port=`parse_confval_from_cn_conf "heartbeat_service_port"`
     if [[ "x$heartbeat_port" != "x" ]] ; then
         HEARTBEAT_PORT=$heartbeat_port
     fi
 
-    if [[ "x$HOST_TYPE" == "xIP" ]] ; then
-        MY_SELF=$MY_IP
-    else
+    if [[ "x$HOST_TYPE" == "xFQDN" ]] ; then
         MY_SELF=$MY_HOSTNAME
+    else
+        MY_SELF=$MY_IP
     fi
 
+}
+
+# 4.1.1 CN may heartbeat/register with IP while HOST_TYPE=FQDN adds FQDN.
+# Accept either address in SHOW COMPUTE NODES to avoid startup timeout.
+is_self_in_compute_nodes()
+{
+    local memlist="$1"
+    local candidate
+    for candidate in "$MY_SELF" "$MY_IP" "$MY_HOSTNAME"; do
+        if [[ "x$candidate" != "x" ]] && echo "$memlist" | grep -q -w "$candidate" &>/dev/null ; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+find_self_in_compute_nodes()
+{
+    local memlist="$1"
+    local candidate
+    for candidate in "$MY_SELF" "$MY_IP" "$MY_HOSTNAME"; do
+        if [[ "x$candidate" != "x" ]] ; then
+            local selfinfo=`echo "$memlist" | grep -w "\<$candidate\>" | awk '{printf("%s:%s\n", $2, $3);}' | head -1`
+            if [[ "x$selfinfo" != "x" ]] ; then
+                echo "$selfinfo"
+                return 0
+            fi
+        fi
+    done
+    return 1
 }
 
 add_self()
@@ -78,6 +146,12 @@ add_self()
 
     while true
     do
+        memlist=`show_compute_nodes $svc`
+        if is_self_in_compute_nodes "$memlist" ; then
+            log_stderr "Already registered in FE (self=$MY_SELF ip=$MY_IP fqdn=$MY_HOSTNAME)"
+            break;
+        fi
+
         log_stderr "Add myself ($MY_SELF:$HEARTBEAT_PORT) into FE ..."
         # if KUBE_STARROCKS_MULTI_WAREHOUSE environment variable is set, add compute node to the specified warehouse
         if  [[ "x$KUBE_STARROCKS_MULTI_WAREHOUSE" != "x" ]] ; then
@@ -91,7 +165,7 @@ add_self()
         fi
 
         memlist=`show_compute_nodes $svc`
-        if echo "$memlist" | grep -q -w "$MY_SELF" &>/dev/null ; then
+        if is_self_in_compute_nodes "$memlist" ; then
             break;
         fi
 
@@ -121,7 +195,7 @@ drop_my_self()
         ret=$?
         if [[ $ret -eq 0 ]] ; then
             # return code 0: no error
-            selfinfo=`echo "$memlist" | grep -w "\<$MY_SELF\>" | awk '{printf("%s:%s\n", $2, $3);}'`
+            selfinfo=`find_self_in_compute_nodes "$memlist" || true`
             if [[ "x$selfinfo" == "x" ]] ; then
                 log_stderr "myself is not in fe cluster"
                 return 0
@@ -155,6 +229,7 @@ collect_env_info
 add_self $svc_name || exit $?
 trap exit_clean SIGTERM
 
+ensure_jemalloc_layout
 log_stderr "run start_cn.sh"
 
 addition_args=

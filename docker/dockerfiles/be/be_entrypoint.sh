@@ -23,6 +23,29 @@ log_stderr()
     echo "[`date`] $@" >&2
 }
 
+ensure_jemalloc_layout()
+{
+    local libdir="${STARROCKS_HOME}/lib"
+    local jemalloc_dir="${libdir}/jemalloc"
+    local jemalloc_dbg_dir="${libdir}/jemalloc-dbg"
+
+    mkdir -p "${jemalloc_dir}" "${jemalloc_dbg_dir}"
+
+    if [[ ! -e "${jemalloc_dir}/libjemalloc.so.2" ]]; then
+        if [[ -e "${libdir}/libjemalloc.so.2" ]]; then
+            ln -sf "../libjemalloc.so.2" "${jemalloc_dir}/libjemalloc.so.2"
+        elif [[ -L "${libdir}/libjemalloc.so" || -e "${libdir}/libjemalloc.so" ]]; then
+            ln -sf "../libjemalloc.so" "${jemalloc_dir}/libjemalloc.so.2"
+        fi
+    fi
+
+    if [[ ! -e "${jemalloc_dbg_dir}/libjemalloc.so.2" ]]; then
+        if [[ -e "${libdir}/libjemalloc-dbg.so.2" ]]; then
+            ln -sf "../libjemalloc-dbg.so.2" "${jemalloc_dbg_dir}/libjemalloc.so.2"
+        fi
+    fi
+}
+
 update_conf_from_configmap()
 {
     if [[ "x$CONFIGMAP_MOUNT_PATH" == "x" ]] ; then
@@ -61,18 +84,42 @@ parse_confval_from_cn_conf()
 
 collect_env_info()
 {
+    if [[ "x$POD_IP" != "x" ]] ; then
+        MY_IP=$POD_IP
+    else
+        MY_IP=`hostname -i | awk '{print $1}'`
+    fi
+
+    if [[ "x$POD_FQDN" != "x" ]] ; then
+        MY_HOSTNAME=$POD_FQDN
+    else
+        MY_HOSTNAME=`hostname -f`
+    fi
+
     # heartbeat_port from conf file
     local heartbeat_port=`parse_confval_from_cn_conf "heartbeat_service_port"`
     if [[ "x$heartbeat_port" != "x" ]] ; then
         HEARTBEAT_PORT=$heartbeat_port
     fi
 
-    if [[ "x$HOST_TYPE" == "xIP" ]] ; then
-        MY_SELF=$MY_IP
-    else
+    if [[ "x$HOST_TYPE" == "xFQDN" ]] ; then
         MY_SELF=$MY_HOSTNAME
+    else
+        MY_SELF=$MY_IP
     fi
 
+}
+
+is_self_in_backends()
+{
+    local memlist="$1"
+    local candidate
+    for candidate in "$MY_SELF" "$MY_IP" "$MY_HOSTNAME"; do
+        if [[ "x$candidate" != "x" ]] && echo "$memlist" | grep -q -w "$candidate" &>/dev/null ; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 add_self()
@@ -83,10 +130,16 @@ add_self()
 
     while true
     do
+        memlist=`show_backends $svc`
+        if is_self_in_backends "$memlist" ; then
+            log_stderr "Already registered in FE (self=$MY_SELF ip=$MY_IP fqdn=$MY_HOSTNAME)"
+            break;
+        fi
+
         log_stderr "Add myself ($MY_SELF:$HEARTBEAT_PORT) into FE ..."
         timeout 15 mysql --connect-timeout 2 -h $svc -P $FE_QUERY_PORT -u root --skip-column-names --batch -e "ALTER SYSTEM ADD BACKEND \"$MY_SELF:$HEARTBEAT_PORT\";"
         memlist=`show_backends $svc`
-        if echo "$memlist" | grep -q -w "$MY_SELF" &>/dev/null ; then
+        if is_self_in_backends "$memlist" ; then
             break;
         fi
 
@@ -112,6 +165,7 @@ fi
 update_conf_from_configmap
 collect_env_info
 add_self $svc_name || exit $?
+ensure_jemalloc_layout
 log_stderr "run start_be.sh"
 
 if [[ "$COREDUMP_ENABLED" == "true" ]]; then

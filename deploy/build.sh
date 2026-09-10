@@ -39,7 +39,7 @@ Options:
   -a, --artifact-id ID        Artifact ID label (default: starrocks-fe)
   -i, --image-name NAME       Docker image repository (default: devhub.baymax.oppoer.me/starrocks/starrocks-allin1)
   -t, --tag TAG               Docker image tag (default: same as version)
-      --target TARGET         Image type: allin1-ubi | k8s | k8s-ubi | fe | allin1 | artifacts | be (default: allin1-ubi)
+      --target TARGET         Image type: allin1-ubi | k8s | k8s-india | k8s-ubi | fe | allin1 | artifacts | be (default: allin1-ubi)
       --artifact-source SRC   For allin1/be/k8s: local | docker (default: docker)
       --dev-env-image IMAGE   Builder image for artifacts (default: centos7 for ubi, ubuntu otherwise)
   -f, --dockerfile FILE       Custom Dockerfile path
@@ -52,6 +52,7 @@ Examples:
   ./deploy/build.sh --target allin1-ubi --artifact-source local
   ./deploy/build.sh --target fe --version 3.4.0
   ./deploy/build.sh --target k8s --artifact-source local --image-name <registry>/starrocks/starrocks --tag 3.4.0-ubuntu-amd64-20260629
+  ./deploy/build.sh --target k8s-india --artifact-source local   # India image + ChubaoFS mount
   ./deploy/build.sh --target k8s-ubi --artifact-source local   # requires centos7-built BE
 EOF
 }
@@ -129,6 +130,23 @@ case "${TARGET}" in
         fi
         ARTIFACT_SOURCE="${ARTIFACT_SOURCE:-local}"
         ;;
+    k8s-india)
+        [ -z "${DOCKERFILE}" ] && DOCKERFILE="${SCRIPT_DIR}/Dockerfile.starrocks-k8s-india"
+        if [ "${IMAGE_NAME}" = "${DEFAULT_IMAGE_NAME}" ]; then
+            IMAGE_NAME="devhub.baymax.oppoer.me/starrocks/starrocks"
+        fi
+        if [ "${IMAGE_TAG}" = "${VERSION}" ]; then
+            ARCH="$(uname -m)"
+            GIT_SHA="$(git -C "${PROJECT_ROOT}" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+            BUILD_TS="$(date +%Y%m%d-%H%M)"
+            case "${ARCH}" in
+                x86_64) IMAGE_TAG="${VERSION}-ubuntu-amd64-india-${BUILD_TS}-${GIT_SHA}" ;;
+                aarch64) IMAGE_TAG="${VERSION}-ubuntu-arm64-india-${BUILD_TS}-${GIT_SHA}" ;;
+                *) IMAGE_TAG="${VERSION}-ubuntu-${ARCH}-india-${BUILD_TS}-${GIT_SHA}" ;;
+            esac
+        fi
+        ARTIFACT_SOURCE="${ARTIFACT_SOURCE:-local}"
+        ;;
     k8s-ubi)
         [ -z "${DOCKERFILE}" ] && DOCKERFILE="${SCRIPT_DIR}/Dockerfile.starrocks-k8s-ubi"
         if [ "${IMAGE_NAME}" = "${DEFAULT_IMAGE_NAME}" ]; then
@@ -151,7 +169,7 @@ case "${TARGET}" in
         fi
         ;;
     *)
-        echo "Error: unsupported target '${TARGET}', expected allin1-ubi|k8s|k8s-ubi|fe|allin1|artifacts|be"
+        echo "Error: unsupported target '${TARGET}', expected allin1-ubi|k8s|k8s-india|k8s-ubi|fe|allin1|artifacts|be"
         exit 1
         ;;
 esac
@@ -467,9 +485,18 @@ build_k8s_image() {
         exit 1
     fi
     prepare_k8s_hadoop_runtime
+    local extra_args=()
+    if [ "${TARGET}" = "k8s-india" ]; then
+        extra_args+=(
+            --build-arg "GIT_COMMIT=$(git -C "${PROJECT_ROOT}" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+            --build-arg "BUILD_TIME=$(date +%Y%m%d-%H%M)"
+            --build-arg "REGION=india"
+        )
+    fi
     DOCKER_BUILDKIT=0 docker build \
         -f "${DOCKERFILE}" \
         --build-arg LOCAL_REPO_PATH=. \
+        "${extra_args[@]}" \
         -t "${IMAGE_NAME}:${IMAGE_TAG}" \
         .
 }
@@ -484,7 +511,7 @@ case "${TARGET}" in
     allin1|allin1-ubi)
         build_allin1_image
         ;;
-    k8s|starrocks|k8s-ubi)
+    k8s|starrocks|k8s-ubi|k8s-india)
         build_k8s_image
         ;;
     be)
@@ -549,7 +576,7 @@ Run:
     ${IMAGE_NAME}:${IMAGE_TAG}
 EOF
         ;;
-    k8s|starrocks|k8s-ubi)
+    k8s|starrocks|k8s-ubi|k8s-india)
         cat <<EOF
 StarRocks unified K8s image (FE/CN share one image)
 

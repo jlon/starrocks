@@ -110,6 +110,20 @@ show_frontends()
     timeout 15 mysql --connect-timeout 2 -h $svc -P $QUERY_PORT -u root --skip-column-names --batch -e 'show frontends;'
 }
 
+# FE may register as IP while HOST_TYPE=FQDN adds FQDN (or vice versa).
+# Accept either address in SHOW FRONTENDS to avoid bootstrap timeout.
+is_self_in_frontends()
+{
+    local memlist="$1"
+    local candidate
+    for candidate in "$MYSELF" "$POD_IP" "$POD_FQDN"; do
+        if [[ "x$candidate" != "x" ]] && echo "$memlist" | grep -q -w "$candidate" &>/dev/null ; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 probe_leader_for_pod0()
 {
     # possible to have no result at all, because myself is the first FE instance in the cluster
@@ -257,8 +271,9 @@ start_fe_no_meta()
                 log_stderr "Add myself($MYSELF:$EDIT_LOG_PORT) to leader as follower ..."
                 mysql --connect-timeout 2 -h $FE_LEADER -P $QUERY_PORT -u root --skip-column-names --batch -e "ALTER SYSTEM ADD FOLLOWER \"$MYSELF:$EDIT_LOG_PORT\";"
             fi
-            # check if added successful
-            if show_frontends $svc | grep -q -w "$MYSELF" &>/dev/null ; then
+            # check if added successful (match FQDN or IP)
+            if is_self_in_frontends "$(show_frontends $svc)" ; then
+                log_stderr "Already registered in FE (self=$MYSELF ip=$POD_IP fqdn=$POD_FQDN)"
                 break;
             fi
 
