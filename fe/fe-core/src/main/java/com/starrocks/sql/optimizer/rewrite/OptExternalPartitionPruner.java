@@ -159,8 +159,10 @@ public class OptExternalPartitionPruner {
                 ScalarOperator leftChild = scalarOperator.getChild(0);
                 ScalarOperator rightChild = scalarOperator.getChild(1);
                 BinaryType binaryType = binary.getBinaryType();
-                if (binaryType.isEqual() && extractPartitionColumnRef(leftChild) != null
-                        && extractConstantOperand(rightChild) != null) {
+                // Skip cast(col) / cast(const): listPartitionNamesByValue matches the raw partition value string,
+                // so a constant whose type differs from the partition column would prune valid partitions away.
+                // buildHmsPartitionFilter handles the cast cases with proper literal coercion.
+                if (binaryType.isEqual() && leftChild.isColumnRef() && rightChild.isConstantRef()) {
                     equalPredicates.add(scalarOperator);
                 }
             }
@@ -279,9 +281,13 @@ public class OptExternalPartitionPruner {
         }
 
         List<ScalarOperator> equalPredicates = getColumnEQConstantPredicates(predicate);
-        Map<ColumnRefOperator, ScalarOperator> equalPredicateMap = equalPredicates.stream().collect(
-                Collectors.toMap(rangePredicate -> rangePredicate.getChild(0).cast(),
-                        rangePredicate -> rangePredicate));
+        Map<ColumnRefOperator, ScalarOperator> equalPredicateMap = Maps.newHashMap();
+        for (ScalarOperator pred : equalPredicates) {
+            ColumnRefOperator columnRef = extractPartitionColumnRef(pred.getChild(0));
+            if (columnRef != null) {
+                equalPredicateMap.put(columnRef, pred);
+            }
+        }
 
         List<Optional<ScalarOperator>> effectivePartitionPredicate = Lists.newArrayList();
         for (Column partitionColumn : partitionColumns) {
@@ -471,7 +477,11 @@ public class OptExternalPartitionPruner {
         for (Optional<ScalarOperator> predicate : predicates) {
             if (predicate.isPresent()) {
                 Preconditions.checkState(predicate.get() instanceof BinaryPredicateOperator);
-                ConstantOperator constantOperator = predicate.get().getChild(1).cast();
+                ConstantOperator constantOperator = extractConstantOperand(predicate.get().getChild(1));
+                if (constantOperator == null) {
+                    partitionValues.add(Optional.empty());
+                    continue;
+                }
                 partitionValues.add(Optional.of(formatConstantForHivePartition(constantOperator)));
             } else {
                 partitionValues.add(Optional.empty());
@@ -736,6 +746,7 @@ public class OptExternalPartitionPruner {
         if (operator instanceof BinaryPredicateOperator) {
             ScalarOperator leftChild = operator.getChild(0);
             ScalarOperator rightChild = operator.getChild(1);
+            // Skip cast(col) / cast(const): min/max file pruning requires a raw column vs constant.
             if (!(leftChild.isColumnRef()) || !(rightChild.isConstantRef())) {
                 return false;
             }

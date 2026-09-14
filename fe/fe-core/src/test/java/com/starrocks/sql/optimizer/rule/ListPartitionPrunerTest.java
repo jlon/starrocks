@@ -741,6 +741,33 @@ public class ListPartitionPrunerTest {
     }
 
     @Test
+    public void testGetEffectivePartitionPredicateWithCastIntColumn() {
+        Column daynoCol = new Column("dayno", IntegerType.INT);
+        Column hourCol = new Column("hour", IntegerType.INT);
+        ColumnRefOperator daynoRef = new ColumnRefOperator(12, IntegerType.INT, "dayno", true);
+        ColumnRefOperator hourRef = new ColumnRefOperator(13, IntegerType.INT, "hour", true);
+
+        Map<Column, ColumnRefOperator> columnMetaToColRefMap = Maps.newHashMap();
+        columnMetaToColRefMap.put(daynoCol, daynoRef);
+        columnMetaToColRefMap.put(hourCol, hourRef);
+
+        LogicalHiveScanOperator scanOperator = new LogicalHiveScanOperator(new HiveTable(), Maps.newHashMap(),
+                columnMetaToColRefMap, Operator.DEFAULT_LIMIT, null);
+
+        ScalarOperator predicate = new BinaryPredicateOperator(BinaryType.EQ,
+                new CastOperator(VarcharType.VARCHAR, daynoRef),
+                ConstantOperator.createVarchar("20260913"));
+
+        // A cast-wrapped partition column must be ignored here instead of crashing: the by-value fallback
+        // would otherwise look up a partition value formatted from a mismatched constant type.
+        List<Optional<ScalarOperator>> result = OptExternalPartitionPruner.getEffectivePartitionPredicate(scanOperator,
+                ImmutableList.of(daynoCol, hourCol), predicate);
+        Assertions.assertEquals(2, result.size());
+        Assertions.assertFalse(result.get(0).isPresent());
+        Assertions.assertFalse(result.get(1).isPresent());
+    }
+
+    @Test
     public void testBuildHmsPartitionFilterRangeAndIn() {
         Column daynoCol = new Column("dayno", VarcharType.VARCHAR);
         Column hourCol = new Column("hour", IntegerType.INT);
