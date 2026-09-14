@@ -435,6 +435,12 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
     public void testMathFnTransform() throws Exception {
         String sql = "select truncate(19.25)";
         assertPlanContains(sql, "truncate(19.25, 0)");
+
+        sql = "select from_base('ff', 16)";
+        assertPlanContains(sql, "255");
+
+        sql = "select from_base(ta, 16) from tall";
+        assertPlanContains(sql, "CAST(conv(1: ta, 16, 10) AS BIGINT)");
     }
 
     @Test
