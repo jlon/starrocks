@@ -387,6 +387,10 @@ These properties are read by `fe-plugin-shield/src/main/java/com/oppo/starrocks/
 | `shield.rpd.area_filter` | `<area_code>/` | no | RPD area prefix filter. |
 | `shield.api.slow.threshold.ms` | `500` | no | Shield API slow-call log threshold. |
 
+After connecting, clients can run `SET shield_app_group = 'bdp'`. If the user's direct permission does not
+match, Shield verifies that the user belongs to `bdp` under the login PSA and checks only that group's
+permissions. If the variable is empty, only the user's direct permissions are checked.
+
 ### Shield Shared-Password Security Integration Properties
 
 These properties are read by `ShieldSharedAuthConfig` and

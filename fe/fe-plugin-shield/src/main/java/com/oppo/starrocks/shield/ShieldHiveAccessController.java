@@ -78,7 +78,8 @@ public class ShieldHiveAccessController extends ExternalAccessController impleme
             throws AccessDeniedException {
         String user = context.getQualifiedUser();
         try {
-            if (!permissionChecker.hasDatabasePermission(user, database, privilegeType)) {
+            if (!permissionChecker.hasDatabasePermission(
+                    user, database, privilegeType, context.getSessionVariable().getShieldAppGroup())) {
                 LOG.info("Shield denied database access. user={}, database={}, privilege={}",
                         user, database, privilegeType.name());
                 throw new AccessDeniedException();
@@ -93,7 +94,8 @@ public class ShieldHiveAccessController extends ExternalAccessController impleme
             throws AccessDeniedException {
         String user = context.getQualifiedUser();
         try {
-            if (!permissionChecker.hasTablePermission(user, database, table, privilegeType)) {
+            if (!permissionChecker.hasTablePermission(
+                    user, database, table, privilegeType, context.getSessionVariable().getShieldAppGroup())) {
                 LOG.info("Shield denied table access. user={}, table={}.{}, privilege={}",
                         user, database, table, privilegeType.name());
                 throw new AccessDeniedException();

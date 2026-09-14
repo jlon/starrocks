@@ -31,6 +31,16 @@ MOCK_USER_PERMISSIONS = {
     "deny_user": [],
 }
 
+MOCK_GROUP_PERMISSIONS = {
+    "group-demo-001": [
+        {
+            "rpd": "hive://group-demo-001:group@china1/hive/ad_model.db?option=select",
+            "authority": "select",
+            "expireTime": None,
+        },
+    ],
+}
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
@@ -51,6 +61,10 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.endswith("/oauthority/api/getResourcesByUser"):
             user = payload.get("user", "")
             data = MOCK_USER_PERMISSIONS.get(user, [])
+            resp = {"success": True, "desc": "ok", "data": data}
+        elif self.path.endswith("/oauthority/api/getResourcesByGroupID"):
+            group_id = payload.get("groupID", "")
+            data = MOCK_GROUP_PERMISSIONS.get(group_id, [])
             resp = {"success": True, "desc": "ok", "data": data}
         else:
             self.send_response(404)
