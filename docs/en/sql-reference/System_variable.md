@@ -1681,6 +1681,13 @@ Used for compatibility with JDBC connection pool C3P0. No practical use.
 * **Data Type**: boolean
 * **Introduced in**: v3.3.9, v3.4.0, v3.5.0
 
+### shield_app_group (session)
+
+* **Description**: Specifies the Shield application group used as a permission fallback for the current session. StarRocks first checks the user's direct Shield permissions. If they do not match, the specified group is checked only after confirming that the user belongs to the group under the login PSA. If this variable is empty, only the user's direct permissions are checked.
+* **Default**: ""
+* **Data type**: String
+* **Introduced in**: v4.1.1
+
 ### spill_encode_level
 
 * **Scope**: Session

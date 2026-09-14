@@ -835,6 +835,7 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public static final String CUSTOM_SESSION_NAME = "custom_session_name";
     public static final int CUSTOM_SESSION_NAME_MAX_LENGTH = 64;
+    public static final String SHIELD_APP_GROUP = "shield_app_group";
 
     // Flag to control whether to proxy follower's query statement to leader/follower.
     public enum FollowerQueryForwardMode {
@@ -3488,6 +3489,9 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
     @VarAttr(name = CUSTOM_SESSION_NAME, flag = VariableMgr.SESSION_ONLY)
     private String customSessionName = "";
 
+    @VarAttr(name = SHIELD_APP_GROUP, flag = VariableMgr.SESSION_ONLY)
+    private String shieldAppGroup = "";
+
     @VarAttr(name = ENABLE_REWRITE_UNNEST_BITMAP_TO_ARRAY)
     private boolean enableRewriteUnnestBitmapToArray = true;
 
@@ -5914,6 +5918,14 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public void setCustomSessionName(String customSessionName) {
         this.customSessionName = customSessionName;
+    }
+
+    public String getShieldAppGroup() {
+        return shieldAppGroup;
+    }
+
+    public void setShieldAppGroup(String shieldAppGroup) {
+        this.shieldAppGroup = shieldAppGroup;
     }
 
     public int getConnectorRemoteFileAsyncQueueSize() {

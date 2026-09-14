@@ -1432,6 +1432,13 @@ ALTER USER 'jack' SET PROPERTIES ('session.query_timeout' = '600');
 * **数据类型**: boolean
 * **引入版本**: v3.3.9, v3.4.0, v3.5.0
 
+### shield_app_group (session)
+
+* **描述**：指定当前会话用于神盾权限兜底的应用组。StarRocks 首先检查用户个人的神盾权限；个人权限未命中时，确认用户属于登录 PSA 下的指定应用组后，仅检查该组权限。如果该变量为空，则只检查用户个人权限。
+* **默认值**：""
+* **类型**：String
+* **引入版本**：v4.1.1
+
 ### spill_encode_level
 
 * **范围**: Session
