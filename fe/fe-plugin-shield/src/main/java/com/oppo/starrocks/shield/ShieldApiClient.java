@@ -288,32 +288,18 @@ public class ShieldApiClient {
         return permissions;
     }
 
-    List<ShieldPermission> loadSelectedGroupPermissions(String username, String psaId, String requestedGroupId) {
+    List<ShieldPermission> loadSelectedGroupPermissions(String requestedGroupId) {
         long start = ShieldTimingLog.startNanos();
-        String groupId = fetchUserGroups(username).stream()
-                .filter(group -> Objects.equals(psaId, group.getPsaId()))
-                .map(UserGroupInfo::getGroupId)
-                .filter(candidate -> candidate.equalsIgnoreCase(requestedGroupId))
-                .findFirst()
-                .orElse(null);
-        if (groupId == null) {
-            LOG.info("Shield loadSelectedGroupPermissions, user={}, psaId={}, requestedGroupId={}, "
-                            + "userInGroup=false, permissionCount=0, costMs={}",
-                    username, psaId, requestedGroupId, ShieldTimingLog.elapsedMs(start));
-            return Collections.emptyList();
-        }
-
         List<ShieldPermission> permissions = new RpdParser(config.getRpdAreaFilter())
-                .parsePermissions(fetchGroupPermissions(username, groupId));
+                .parsePermissions(fetchGroupPermissions(config.getOperator(), requestedGroupId));
         long costMs = ShieldTimingLog.elapsedMs(start);
         if (costMs >= config.getSlowThresholdMs()) {
-            LOG.warn("Shield loadSelectedGroupPermissions slow, user={}, psaId={}, groupId={}, permissionCount={}, "
+            LOG.warn("Shield loadSelectedGroupPermissions slow, groupId={}, permissionCount={}, "
                             + "costMs={}, thresholdMs={}",
-                    username, psaId, groupId, permissions.size(), costMs, config.getSlowThresholdMs());
+                    requestedGroupId, permissions.size(), costMs, config.getSlowThresholdMs());
         } else {
-            LOG.info("Shield loadSelectedGroupPermissions, user={}, psaId={}, groupId={}, permissionCount={}, "
-                            + "costMs={}",
-                    username, psaId, groupId, permissions.size(), costMs);
+            LOG.info("Shield loadSelectedGroupPermissions, groupId={}, permissionCount={}, costMs={}",
+                    requestedGroupId, permissions.size(), costMs);
         }
         return permissions;
     }
