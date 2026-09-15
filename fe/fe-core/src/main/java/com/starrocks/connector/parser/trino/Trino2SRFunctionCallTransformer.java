@@ -15,6 +15,7 @@
 package com.starrocks.connector.parser.trino;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.starrocks.sql.ast.expression.CaseExpr;
@@ -36,6 +37,25 @@ import java.util.Map;
  */
 
 public class Trino2SRFunctionCallTransformer {
+    private static final Map<String, String> HIVE_TO_SR_DATETIME_FORMAT =
+            ImmutableMap.<String, String>builder()
+                    .put("yyyyMMdd", "%Y%m%d")
+                    .put("yyyyMMddHH", "%Y%m%d%H")
+                    .put("yyyyMMddHHmm", "%Y%m%d%H%i")
+                    .put("yyyyMMddHHmmss", "%Y%m%d%H%i%s")
+                    .put("yyyyMMddHHmmssSSS", "%Y%m%d%H%i%s%f")
+                    .put("yyyy-MM-dd", "%Y-%m-%d")
+                    .put("yyyy-MM-dd HH", "%Y-%m-%d %H")
+                    .put("yyyy-MM-dd HH:mm", "%Y-%m-%d %H:%i")
+                    .put("yyyy-MM-dd HH:mm:ss", "%Y-%m-%d %H:%i:%s")
+                    .put("yyyy-MM-dd HH:mm:ss.SSS", "%Y-%m-%d %H:%i:%s.%f")
+                    .put("yyyy/MM/dd", "%Y/%m/%d")
+                    .put("yyyy/MM/dd HH", "%Y/%m/%d %H")
+                    .put("yyyy/MM/dd HH:mm", "%Y/%m/%d %H:%i")
+                    .put("yyyy/MM/dd HH:mm:ss", "%Y/%m/%d %H:%i:%s")
+                    .put("yyyy/MM/dd HH:mm:ss.SSS", "%Y/%m/%d %H:%i:%s.%f")
+                    .build();
+
     // function name -> list of function transformer
     public static Map<String, List<FunctionCallTransformer>> TRANSFORMER_MAP = Maps.newHashMap();
 
@@ -47,6 +67,15 @@ public class Trino2SRFunctionCallTransformer {
         if ("from_unixtime".equalsIgnoreCase(fnName) && children.size() == 2
                 && TrinoParserUtils.isDatetimeFormatLiteral(children.get(1))) {
             return new FunctionCallExpr("from_unixtime", children);
+        }
+        if ("unix_timestamp".equalsIgnoreCase(fnName) && children.size() == 2
+                && children.get(1) instanceof StringLiteral) {
+            String format = ((StringLiteral) children.get(1)).getStringValue();
+            String convertedFormat = HIVE_TO_SR_DATETIME_FORMAT.get(format);
+            if (convertedFormat != null) {
+                return new FunctionCallExpr("unix_timestamp",
+                        Lists.newArrayList(children.get(0), new StringLiteral(convertedFormat)));
+            }
         }
         Expr result = convertRegisterFn(fnName, children);
         if (result == null) {
