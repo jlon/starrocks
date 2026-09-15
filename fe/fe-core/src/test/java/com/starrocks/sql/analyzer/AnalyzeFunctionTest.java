@@ -257,9 +257,38 @@ public class AnalyzeFunctionTest {
             outputExpr = selectRelation.getOutputExpression().get(0);
             Assertions.assertInstanceOf(com.starrocks.sql.ast.expression.CastExpr.class, outputExpr);
             Assertions.assertTrue(outputExpr.getType().isDate());
+
+            // Hive/Spark 2-arg date_sub/date_add return DATE even when the input is DATETIME.
+            queryStatement = (QueryStatement) analyzeSuccess(
+                    "select date_sub(from_unixtime(unix_timestamp()), 1)");
+            selectRelation =
+                    (com.starrocks.sql.ast.SelectRelation) queryStatement.getQueryRelation();
+            outputExpr = selectRelation.getOutputExpression().get(0);
+            Assertions.assertTrue(outputExpr.getType().isDate());
+
+            queryStatement = (QueryStatement) analyzeSuccess("select date_add(now(), 1)");
+            selectRelation =
+                    (com.starrocks.sql.ast.SelectRelation) queryStatement.getQueryRelation();
+            outputExpr = selectRelation.getOutputExpression().get(0);
+            Assertions.assertTrue(outputExpr.getType().isDate());
+
+            // 3-arg Trino date_add(unit, value, timestamp) must keep DATETIME.
+            queryStatement = (QueryStatement) analyzeSuccess(
+                    "select date_add('day', 1, timestamp '2014-03-08 09:00:00')");
+            selectRelation =
+                    (com.starrocks.sql.ast.SelectRelation) queryStatement.getQueryRelation();
+            outputExpr = selectRelation.getOutputExpression().get(0);
+            Assertions.assertTrue(outputExpr.getType().isDatetime());
         } finally {
             getConnectContext().getSessionVariable().setSqlDialect(originDialect);
         }
+
+        queryStatement = (QueryStatement) analyzeSuccess(
+                "select date_sub(from_unixtime(unix_timestamp()), 1)");
+        com.starrocks.sql.ast.SelectRelation defaultSelectRelation =
+                (com.starrocks.sql.ast.SelectRelation) queryStatement.getQueryRelation();
+        com.starrocks.sql.ast.expression.Expr defaultOutputExpr = defaultSelectRelation.getOutputExpression().get(0);
+        Assertions.assertTrue(defaultOutputExpr.getType().isDatetime());
     }
 
     @Test
