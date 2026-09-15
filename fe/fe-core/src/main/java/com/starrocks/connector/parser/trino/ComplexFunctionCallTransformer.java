@@ -32,6 +32,7 @@ import com.starrocks.sql.ast.expression.NullLiteral;
 import com.starrocks.sql.ast.expression.StringLiteral;
 import com.starrocks.sql.ast.expression.TimestampArithmeticExpr;
 import com.starrocks.type.AnyMapType;
+import com.starrocks.type.DateType;
 import com.starrocks.type.IntegerType;
 import com.starrocks.type.VarcharType;
 
@@ -48,14 +49,14 @@ public class ComplexFunctionCallTransformer {
                         unit.getStringValue()));
             }
             // Trino's date_add/date_sub is a 3-arg function (unit, value, timestamp), but Hive/Spark
-            // (and StarRocks) also accept the 2-arg form date_add(date, n) where n is in days. Rewrite
-            // that to a TimestampArithmeticExpr (DAY unit) so the analyzer's trino DATE-wrapping path
-            // turns date_add(current_date, -1) into a DATE, matching date_add(current_date(), -1).
-            // The wrap is left to the analyzer to avoid a redundant double CastExpr(DATE).
+            // (and StarRocks) also accept the 2-arg form date_add(date, n) where n is in days.
+            // Hive 2-arg date_add/date_sub always return DATE, even when the input is TIMESTAMP.
+            // Cast here so date_sub(from_unixtime(...), 1) stringifies as yyyy-MM-dd rather than
+            // datetime. 3-arg Trino date_add(unit, value, ts) still preserves timestamp above.
             if (args.length == 2) {
                 Expr date = args[0];
                 Expr interval = args[1];
-                return new TimestampArithmeticExpr(functionName, date, interval, "day");
+                return new CastExpr(DateType.DATE, new TimestampArithmeticExpr(functionName, date, interval, "day"));
             }
         } else if (functionName.equalsIgnoreCase("json_format")) {
             return new CastExpr(VarcharType.VARCHAR, args[0]);
