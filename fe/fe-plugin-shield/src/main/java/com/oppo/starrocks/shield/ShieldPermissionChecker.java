@@ -132,8 +132,7 @@ public class ShieldPermissionChecker {
 
         String normalizedGroupId = normalizeGroupId(selectedGroupId);
         if (normalizedGroupId != null) {
-            List<ShieldPermission> groupPermissions =
-                    loadSelectedGroupPermissions(identity, normalizedGroupId);
+            List<ShieldPermission> groupPermissions = loadSelectedGroupPermissions(normalizedGroupId);
             boolean allowed = groupPermissions.stream().anyMatch(matcher);
             LOG.info("Shield selected group fallback, user={}, psaId={}, groupId={}, permissionCount={}, allowed={}",
                     identity.getUsername(), identity.getPsaId(), normalizedGroupId, groupPermissions.size(), allowed);
@@ -175,16 +174,14 @@ public class ShieldPermissionChecker {
         return result;
     }
 
-    private List<ShieldPermission> loadSelectedGroupPermissions(
-            ShieldUserIdentity identity, String selectedGroupId) {
-        String cacheKey = identity.toCacheKey() + ":" + selectedGroupId.toLowerCase(Locale.ROOT);
+    private List<ShieldPermission> loadSelectedGroupPermissions(String selectedGroupId) {
+        String cacheKey = selectedGroupId.toLowerCase(Locale.ROOT);
         List<ShieldPermission> cached = selectedGroupPermissionCache.getIfPresent(cacheKey);
         if (cached != null && !cached.isEmpty()) {
             return cached;
         }
 
-        List<ShieldPermission> result = apiClient.loadSelectedGroupPermissions(
-                identity.getUsername(), identity.getPsaId(), selectedGroupId);
+        List<ShieldPermission> result = apiClient.loadSelectedGroupPermissions(selectedGroupId);
         if (!result.isEmpty()) {
             selectedGroupPermissionCache.put(cacheKey, result);
         } else {

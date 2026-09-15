@@ -94,8 +94,7 @@ public class ShieldPermissionCheckerTest {
         }
 
         @Override
-        List<ShieldPermission> loadSelectedGroupPermissions(
-                String username, String psaId, String requestedGroupId) {
+        List<ShieldPermission> loadSelectedGroupPermissions(String requestedGroupId) {
             selectedGroupFallbackCalls++;
             return selectedGroupPermissions;
         }
