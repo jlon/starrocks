@@ -153,6 +153,26 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
         sql = "select from_unixtime(substr('1786230073414', 1, 10), 'yyyy-MM-dd HH:mm:ss');";
         assertPlanContains(sql, "2026-08-09 07:01:13");
 
+        // Hive/Spark Java-style input format is rewritten for the StarRocks runtime.
+        sql = "select unix_timestamp(cast('2026091015' as string), 'yyyyMMddHH');";
+        assertPlanContains(sql, "1789023600");
+
+        sql = "select unix_timestamp(ta, 'yyyyMMddHH') from tall;";
+        assertPlanContains(sql, "unix_timestamp(1: ta, '%Y%m%d%H')");
+
+        sql = "select unix_timestamp(ta, 'yyyyMMddHHmmss') from tall;";
+        assertPlanContains(sql, "unix_timestamp(1: ta, '%Y%m%d%H%i%s')");
+
+        sql = "select unix_timestamp(ta, 'yyyy/MM/dd HH:mm:ss') from tall;";
+        assertPlanContains(sql, "unix_timestamp(1: ta, '%Y/%m/%d %H:%i:%s')");
+
+        sql = "select unix_timestamp(ta, 'yyyy-MM-dd HH:mm:ss.SSS') from tall;";
+        assertPlanContains(sql, "unix_timestamp(1: ta, '%Y-%m-%d %H:%i:%s.%f')");
+
+        // Formats outside the explicit compatibility list must not be partially rewritten.
+        sql = "select unix_timestamp(ta, 'yyyy-MM') from tall;";
+        assertPlanContains(sql, "unix_timestamp(1: ta, 'yyyy-MM')");
+
         sql = "select from_unixtime(1724049401, 1, 1);";
         assertPlanContains(sql, "2024-08-19 15:37:41");
 
