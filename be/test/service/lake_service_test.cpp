@@ -3737,8 +3737,10 @@ TEST_F(LakeServiceTest, test_get_tablet_stats) {
     _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
     ASSERT_EQ(1, response.tablet_stats_size());
     ASSERT_EQ(_tablet_id, response.tablet_stats(0).tablet_id());
+    ASSERT_EQ(1, response.tablet_stats(0).version());
     ASSERT_EQ(0, response.tablet_stats(0).num_rows());
     ASSERT_EQ(0, response.tablet_stats(0).data_size());
+    ASSERT_TRUE(response.tablet_stats(0).count_fast_path_safe());
 
     // Write some data into the tablet, num_rows = 1024, data_size=65536
     size_t expected_num_rows = 1024;
@@ -3772,8 +3774,10 @@ TEST_F(LakeServiceTest, test_get_tablet_stats) {
         _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
         EXPECT_EQ(1, response.tablet_stats_size());
         EXPECT_EQ(_tablet_id, response.tablet_stats(0).tablet_id());
+        EXPECT_EQ(3, response.tablet_stats(0).version());
         EXPECT_EQ(expected_num_rows, response.tablet_stats(0).num_rows());
         EXPECT_EQ(expected_data_size, response.tablet_stats(0).data_size());
+        EXPECT_TRUE(response.tablet_stats(0).count_fast_path_safe());
     }
 
     // get_tablet_stats() should not fill the metadata cache (fill_cache=false) to avoid polluting
@@ -3857,6 +3861,31 @@ TEST_F(LakeServiceTest, test_get_tablet_stats_allows_one_active_request_per_cn) 
     EXPECT_EQ(1, second_response.tablet_stats_size());
 }
 
+TEST_F(LakeServiceTest, test_get_tablet_stats_with_delete_predicate_is_not_count_safe) {
+    auto txn_log = generate_write_txn_log(1, 10, 100);
+    txn_log.mutable_op_write()->mutable_rowset()->mutable_delete_predicate()->set_version(1);
+    ASSERT_OK(_tablet_mgr->put_txn_log(txn_log));
+
+    PublishVersionRequest publish_request;
+    publish_request.set_base_version(1);
+    publish_request.set_new_version(2);
+    publish_request.add_tablet_ids(_tablet_id);
+    publish_request.add_txn_ids(txn_log.txn_id());
+    PublishVersionResponse publish_response;
+    _lake_service.publish_version(nullptr, &publish_request, &publish_response, nullptr);
+    ASSERT_EQ(0, publish_response.failed_tablets_size());
+
+    TabletStatRequest request;
+    TabletStatResponse response;
+    auto* info = request.add_tablet_infos();
+    info->set_tablet_id(_tablet_id);
+    info->set_version(2);
+    _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
+
+    ASSERT_EQ(1, response.tablet_stats_size());
+    EXPECT_FALSE(response.tablet_stats(0).count_fast_path_safe());
+}
+
 TEST_F(LakeServiceTest, test_get_tablet_stats_cache) {
     // Enable the standalone stat cache with a small test capacity.
     auto old_enabled = config::enable_lake_tablet_stat_cache;
@@ -3899,6 +3928,7 @@ TEST_F(LakeServiceTest, test_get_tablet_stats_cache) {
         ASSERT_EQ(1, response.tablet_stats_size());
         EXPECT_EQ(expected_num_rows, response.tablet_stats(0).num_rows());
         EXPECT_EQ(expected_data_size, response.tablet_stats(0).data_size());
+        EXPECT_TRUE(response.tablet_stats(0).count_fast_path_safe());
     }
     EXPECT_EQ(miss0 + 1, stat_cache->miss_count());
     EXPECT_EQ(hit0, stat_cache->hit_count());
@@ -3914,6 +3944,7 @@ TEST_F(LakeServiceTest, test_get_tablet_stats_cache) {
         ASSERT_EQ(1, response.tablet_stats_size());
         EXPECT_EQ(expected_num_rows, response.tablet_stats(0).num_rows());
         EXPECT_EQ(expected_data_size, response.tablet_stats(0).data_size());
+        EXPECT_TRUE(response.tablet_stats(0).count_fast_path_safe());
     }
     EXPECT_EQ(miss0 + 1, stat_cache->miss_count());
     EXPECT_EQ(hit0 + 1, stat_cache->hit_count());
@@ -4048,6 +4079,7 @@ TEST_F(LakeServiceTest, test_get_tablet_stats_pk_approximate_mode) {
     _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
     ASSERT_EQ(1, response.tablet_stats_size());
     EXPECT_EQ(pk_tablet_id, response.tablet_stats(0).tablet_id());
+    EXPECT_FALSE(response.tablet_stats(0).count_fast_path_safe());
     // Approximate mode: num_rows - num_dels = 100 - 20 = 80
     EXPECT_EQ(80, response.tablet_stats(0).num_rows());
 }
@@ -4098,6 +4130,7 @@ TEST_F(LakeServiceTest, test_get_tablet_stats_pk_accurate_mode) {
     _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
     ASSERT_EQ(1, response.tablet_stats_size());
     EXPECT_EQ(pk_tablet_id, response.tablet_stats(0).tablet_id());
+    EXPECT_FALSE(response.tablet_stats(0).count_fast_path_safe());
     // In accurate mode, get_rowset_num_deletes() reads actual delete vectors.
     // Without actual delete vectors written, no deletes should be deducted.
     EXPECT_EQ(200, response.tablet_stats(0).num_rows());

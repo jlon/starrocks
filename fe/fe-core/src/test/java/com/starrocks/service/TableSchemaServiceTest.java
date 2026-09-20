@@ -230,6 +230,7 @@ public class TableSchemaServiceTest extends StarRocksTestBase {
         TMetaScanNode metaScanNode = tPlan2.getNodes().get(0).getMeta_scan_node();
         TTableSchemaKey schemaKey2 = metaScanNode == null ? null : metaScanNode.getSchema_key();
         Assertions.assertNotNull(schemaKey2);
+        Assertions.assertTrue(metaScanNode.isCount_only_scan());
         Assertions.assertEquals(db.getId(), schemaKey2.getDb_id());
         Assertions.assertEquals(table.getId(), schemaKey2.getTable_id());
         Assertions.assertEquals(schemaInfo.getId(), schemaKey2.getSchema_id());
@@ -429,4 +430,3 @@ public class TableSchemaServiceTest extends StarRocksTestBase {
         }
     }
 }
-

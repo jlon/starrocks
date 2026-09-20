@@ -105,6 +105,9 @@ public class MaterializedIndex extends MetaObject implements Writable, GsonPostP
     @SerializedName(value = "rowCount")
     private long rowCount;
 
+    // Rebuilt by TabletStatMgr from CN metadata evidence and intentionally not persisted.
+    private transient volatile boolean countFastPathSafe;
+
     private Map<Long, Tablet> idToTablets;
     @SerializedName(value = "tablets")
     private List<Tablet> tablets;
@@ -268,6 +271,14 @@ public class MaterializedIndex extends MetaObject implements Writable, GsonPostP
 
     public void setRowCount(long rowCount) {
         this.rowCount = rowCount;
+    }
+
+    public boolean isCountFastPathSafe() {
+        return countFastPathSafe;
+    }
+
+    public void setCountFastPathSafe(boolean countFastPathSafe) {
+        this.countFastPathSafe = countFastPathSafe;
     }
 
     public long getDataSize() {

@@ -84,6 +84,18 @@ ThreadPool* vacuum_thread_pool(ExecEnv* env) {
     return get_thread_pool(env, TTaskType::RELEASE_SNAPSHOT);
 }
 
+bool is_count_fast_path_safe(const TabletMetadataPB& metadata) {
+    if (metadata.schema().keys_type() != DUP_KEYS || !metadata.delvec_meta().delvecs().empty()) {
+        return false;
+    }
+    for (const auto& rowset : metadata.rowsets()) {
+        if (rowset.has_delete_predicate() || !rowset.has_num_rows() || rowset.num_rows() < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 int get_num_publish_queued_tasks(void*) {
 #ifndef BE_TEST
     auto tp = publish_version_thread_pool(ExecEnv::GetInstance());
@@ -1246,20 +1258,21 @@ void LakeServiceImpl::get_tablet_stats(::google::protobuf::RpcController* contro
 
                     auto task_start_us = butil::gettimeofday_us();
 
-                    // Optional stat cache: a lake tablet's (num_rows, data_size) for a given version
-                    // is immutable, so a hit lets us skip the bundle metadata read and the
-                    // rowset/delvec computation entirely. The accurate dimension uses the current
-                    // config value; the real accurate_mode also needs is_pk_tablet (unknown until
-                    // metadata is read), but keying on the config value is a safe superset that never
-                    // serves an accurate result to an approximate request or vice versa.
+                    // Optional stat cache: a lake tablet's stat for a given version is immutable,
+                    // so a hit lets us skip the bundle metadata read and the rowset/delvec computation.
+                    // The accurate dimension uses the current config value; the real accurate_mode also
+                    // needs is_pk_tablet (unknown until metadata is read), but keying on the config value
+                    // is a safe superset that never serves an accurate result to an approximate request.
                     const bool stat_accurate = config::lake_enable_accurate_pk_row_count;
                     if (auto cached = _tablet_mgr->tablet_stat_cache()->lookup(tablet_id, version, stat_accurate);
                         cached.has_value()) {
                         std::lock_guard l(response_mtx);
                         auto tablet_stat = response->add_tablet_stats();
                         tablet_stat->set_tablet_id(tablet_id);
+                        tablet_stat->set_version(version);
                         tablet_stat->set_num_rows(cached->num_rows);
                         tablet_stat->set_data_size(cached->data_size);
+                        tablet_stat->set_count_fast_path_safe(cached->count_fast_path_safe);
                         return;
                     }
 
@@ -1277,6 +1290,7 @@ void LakeServiceImpl::get_tablet_stats(::google::protobuf::RpcController* contro
                     // (delvec), so calling get_rowset_num_deletes() for non-PK tablets is wasteful.
                     const bool is_pk_tablet = (*tablet_metadata)->schema().keys_type() == PRIMARY_KEYS;
                     const bool accurate_mode = is_pk_tablet && stat_accurate;
+                    const bool count_fast_path_safe = is_count_fast_path_safe(**tablet_metadata);
                     const int num_rowsets = (*tablet_metadata)->rowsets_size();
 
                     int64_t num_rows = 0;
@@ -1329,13 +1343,16 @@ void LakeServiceImpl::get_tablet_stats(::google::protobuf::RpcController* contro
                                      << ", elapsed_ms: " << elapsed_ms;
                     }
 
-                    _tablet_mgr->tablet_stat_cache()->insert(tablet_id, version, stat_accurate, num_rows, data_size);
+                    _tablet_mgr->tablet_stat_cache()->insert(tablet_id, version, stat_accurate, num_rows, data_size,
+                                                              count_fast_path_safe);
 
                     std::lock_guard l(response_mtx);
                     auto tablet_stat = response->add_tablet_stats();
                     tablet_stat->set_tablet_id(tablet_id);
+                    tablet_stat->set_version(version);
                     tablet_stat->set_num_rows(num_rows);
                     tablet_stat->set_data_size(data_size);
+                    tablet_stat->set_count_fast_path_safe(count_fast_path_safe);
                 },
                 [&] {
                     LOG(WARNING) << "get tablet stats task has been cancelled ";

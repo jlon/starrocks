@@ -57,6 +57,10 @@ public class LakeTablet extends Tablet {
     @SerializedName(value = JSON_KEY_DATA_SIZE_UPDATE_TIME)
     private volatile long dataSizeUpdateTime = 0L;
 
+    // This evidence is derived from the current tablet metadata and must be recollected after FE restart.
+    private transient volatile boolean countFastPathSafe = false;
+    private transient volatile long countFastPathSafeUpdateTime = 0L;
+
     private volatile long minVersion = 0L;
 
     // Written by the ALTER ... DROP PERSISTENT INDEX path and read lock-free by the lake publish
@@ -95,6 +99,19 @@ public class LakeTablet extends Tablet {
 
     public long getDataSizeUpdateTime() {
         return dataSizeUpdateTime;
+    }
+
+    public boolean isCountFastPathSafe(long visibleVersionTime) {
+        return countFastPathSafe && countFastPathSafeUpdateTime >= visibleVersionTime;
+    }
+
+    public boolean hasCountFastPathSafety(long visibleVersionTime) {
+        return countFastPathSafeUpdateTime >= visibleVersionTime;
+    }
+
+    public void setCountFastPathSafety(boolean countFastPathSafe, long updateTime) {
+        this.countFastPathSafe = countFastPathSafe;
+        this.countFastPathSafeUpdateTime = updateTime;
     }
 
     public long getMinVersion() {

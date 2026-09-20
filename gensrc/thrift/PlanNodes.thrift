@@ -1338,6 +1338,9 @@ struct TMetaScanNode {
     5: optional i64 schema_id
     6: optional Descriptors.TTableSchemaKey schema_key
     7: optional i32 next_uniq_id
+    // A Lake-only fast path for a pure count(*) / count(1) MetaScan. The BE may
+    // sum rowset metadata instead of opening segment files.
+    8: optional bool count_only_scan
 }
 
 struct TDecodeNode {

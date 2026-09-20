@@ -211,6 +211,7 @@ public class TabletStatMgr extends FrontendDaemon {
                 long maxTabletSize = 0L;
                 long minAdjacentTabletPairSize = Long.MAX_VALUE;
                 Map<Pair<Long, Long>, Long> indexRowCountMap = Maps.newHashMap();
+                Map<Pair<Long, Long>, Boolean> indexCountFastPathSafeMap = Maps.newHashMap();
                 // NOTE: calculate the row first with read lock, then update the stats with write lock
                 OlapTable olapTable = (OlapTable) table;
                 // Reshard is leader-only (TabletStatMgr runs on all FEs), and only for cloud-native
@@ -238,10 +239,13 @@ public class TabletStatMgr extends FrontendDaemon {
                                 // MergeTabletJobFactory's per-index merge budget re-enforces the same floor
                                 // inside an admitted job, so the floor holds even for manual size-based merges.
                                 boolean eligibleForMerge = tablets.size() > parallelismFloor;
+                                boolean indexCountFastPathSafe = true;
                                 long prevFreshTabletSize = -1L;
                                 // NOTE: can take a rather long time to iterate lots of tablets
                                 for (Tablet tablet : tablets) {
                                     indexRowCount += tablet.getRowCount(version);
+                                    indexCountFastPathSafe &= tablet instanceof LakeTablet
+                                            && ((LakeTablet) tablet).isCountFastPathSafe(visibleVersionTime);
                                     long dataSize = tablet.getDataSize(true);
                                     maxTabletSize = Math.max(maxTabletSize, dataSize);
                                     if (!(tablet instanceof LakeTablet)
@@ -257,6 +261,8 @@ public class TabletStatMgr extends FrontendDaemon {
                                 } // end for tablets
                                 indexRowCountMap.put(Pair.create(physicalPartition.getId(), index.getId()),
                                         indexRowCount);
+                                indexCountFastPathSafeMap.put(Pair.create(physicalPartition.getId(), index.getId()),
+                                        indexCountFastPathSafe);
                                 if (!olapTable.isTempPartition(partition.getId())) {
                                     totalRowCount += indexRowCount;
                                 }
@@ -280,6 +286,11 @@ public class TabletStatMgr extends FrontendDaemon {
                                         indexRowCountMap.get(Pair.create(physicalPartition.getId(), index.getId()));
                                 if (indexRowCount != null) {
                                     index.setRowCount(indexRowCount);
+                                }
+                                Boolean countFastPathSafe = indexCountFastPathSafeMap.get(
+                                        Pair.create(physicalPartition.getId(), index.getId()));
+                                if (countFastPathSafe != null) {
+                                    index.setCountFastPathSafe(countFastPathSafe);
                                 }
                             }
                         }
@@ -465,7 +476,7 @@ public class TabletStatMgr extends FrontendDaemon {
             Map<Long, List<TabletStatEntry>> partitionTabletsByNode = new LinkedHashMap<>();
             for (Tablet tablet : snapshot.tablets) {
                 LakeTablet lakeTablet = (LakeTablet) tablet;
-                if (lakeTablet.getDataSizeUpdateTime() >= visibleVersionTime) {
+                if (isLakeTabletStatFresh(lakeTablet, visibleVersionTime, table.hasDelete())) {
                     continue;
                 }
                 ComputeNode node;
@@ -538,7 +549,7 @@ public class TabletStatMgr extends FrontendDaemon {
             return null;
         }
         long visibleVersionTime = snapshot.visibleVersionTime;
-        snapshot.tablets.removeIf(t -> ((LakeTablet) t).getDataSizeUpdateTime() >= visibleVersionTime);
+        snapshot.tablets.removeIf(t -> isLakeTabletStatFresh((LakeTablet) t, visibleVersionTime, table.hasDelete()));
         if (snapshot.tablets.isEmpty()) {
             LOG.debug("Skipped tablet stat collection of partition {}", snapshot.debugName());
             return null;
@@ -553,6 +564,12 @@ public class TabletStatMgr extends FrontendDaemon {
     private static boolean isInitialEmptyPartition(long visibleVersion) {
         return Config.enable_lake_tablet_stat_skip_initial_version
                 && visibleVersion <= PhysicalPartition.PARTITION_INIT_VERSION;
+    }
+
+    private static boolean isLakeTabletStatFresh(LakeTablet tablet, long visibleVersionTime,
+                                                 boolean requireCountFastPathSafety) {
+        return tablet.getDataSizeUpdateTime() >= visibleVersionTime
+                && (!requireCountFastPathSafety || tablet.hasCountFastPathSafety(visibleVersionTime));
     }
 
     private void updateLakeTableTabletStat(@NotNull Database db, @NotNull OlapTable table) {
@@ -1137,8 +1154,14 @@ public class TabletStatMgr extends FrontendDaemon {
                     if (response != null && response.tabletStats != null) {
                         for (TabletStat stat : response.tabletStats) {
                             LakeTablet tablet = (LakeTablet) tablets.get(stat.tabletId);
+                            if (tablet == null) {
+                                continue;
+                            }
                             tablet.setDataSize(stat.dataSize);
                             tablet.setRowCount(stat.numRows);
+                            if (stat.version != null && stat.version == version && stat.countFastPathSafe != null) {
+                                tablet.setCountFastPathSafety(stat.countFastPathSafe, collectStatTime);
+                            }
                             tablet.setDataSizeUpdateTime(collectStatTime);
                             updatedTabletCount++;
                         }
@@ -1249,7 +1272,7 @@ public class TabletStatMgr extends FrontendDaemon {
         @Override
         public CollectTabletStatJobResult execute() {
             long start = System.currentTimeMillis();
-            Map<Long, LakeTablet> tabletById = new HashMap<>();
+            Map<Long, TabletStatEntry> entryByTabletId = new HashMap<>();
             TabletStatRequest request = new TabletStatRequest();
             List<TabletInfo> tabletInfos = Lists.newArrayListWithCapacity(entries.size());
             for (TabletStatEntry entry : entries) {
@@ -1257,7 +1280,7 @@ public class TabletStatMgr extends FrontendDaemon {
                 tabletInfo.tabletId = entry.tabletId;
                 tabletInfo.version = entry.version;
                 tabletInfos.add(tabletInfo);
-                tabletById.put(entry.tabletId, entry.tablet);
+                entryByTabletId.put(entry.tabletId, entry);
             }
             request.tabletInfos = tabletInfos;
             request.timeoutMs = LakeService.TIMEOUT_GET_TABLET_STATS;
@@ -1274,11 +1297,14 @@ public class TabletStatMgr extends FrontendDaemon {
                 TabletStatResponse response = responseFuture.get();
                 if (response != null && response.tabletStats != null) {
                     for (TabletStat stat : response.tabletStats) {
-                        LakeTablet tablet = tabletById.get(stat.tabletId);
-                        if (tablet != null) {
-                            tablet.setDataSize(stat.dataSize);
-                            tablet.setRowCount(stat.numRows);
-                            tablet.setDataSizeUpdateTime(collectStatTime);
+                        TabletStatEntry entry = entryByTabletId.get(stat.tabletId);
+                        if (entry != null) {
+                            entry.tablet.setDataSize(stat.dataSize);
+                            entry.tablet.setRowCount(stat.numRows);
+                            if (stat.version != null && stat.version == entry.version && stat.countFastPathSafe != null) {
+                                entry.tablet.setCountFastPathSafety(stat.countFastPathSafe, collectStatTime);
+                            }
+                            entry.tablet.setDataSizeUpdateTime(collectStatTime);
                             updatedTabletCount++;
                         }
                     }

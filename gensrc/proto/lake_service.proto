@@ -241,6 +241,8 @@ message TabletStatResponse {
         optional int64 tablet_id = 1;
         optional int64 num_rows = 2;
         optional int64 data_size = 3;
+        optional int64 version = 4;
+        optional bool count_fast_path_safe = 5;
     }
 
     repeated TabletStat tablet_stats = 1;

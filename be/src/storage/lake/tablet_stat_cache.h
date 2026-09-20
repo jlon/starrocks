@@ -27,10 +27,10 @@
 namespace starrocks::lake {
 
 // Standalone CN-side cache of get_tablet_stats results. Key is (tablet_id, version, accurate),
-// value is (num_rows, data_size). A lake tablet's visible version is immutable, so a cached value
-// is always valid for its key; the TTL only governs memory reclamation, never correctness. It is a
-// separate cache and is never inserted into the query metadata cache, preserving the
-// fill_meta_cache=false design for background stat collection.
+// value is the row count, data size, and count fast-path safety. A lake tablet's visible version
+// is immutable, so a cached value is always valid for its key; the TTL only governs memory
+// reclamation, never correctness. It is a separate cache and is never inserted into the query
+// metadata cache, preserving the fill_meta_cache=false design for background stat collection.
 //
 // It caches the final stat rather than tablet metadata, so a hit lets get_tablet_stats skip both
 // the bundle metadata read from object storage and the rowset/delvec computation. This mainly helps
@@ -51,6 +51,7 @@ public:
     struct Value {
         int64_t num_rows = 0;
         int64_t data_size = 0;
+        bool count_fast_path_safe = false;
     };
 
     LakeTabletStatCache();
@@ -63,7 +64,8 @@ public:
     std::optional<Value> lookup(int64_t tablet_id, int64_t version, bool accurate);
 
     // Inserts or refreshes a stat with the configured TTL. A no-op when the cache is disabled.
-    void insert(int64_t tablet_id, int64_t version, bool accurate, int64_t num_rows, int64_t data_size);
+    void insert(int64_t tablet_id, int64_t version, bool accurate, int64_t num_rows, int64_t data_size,
+                bool count_fast_path_safe);
 
     // Removes expired entries. Exposed for tests; also run periodically by the background cleaner.
     void clean_expired();

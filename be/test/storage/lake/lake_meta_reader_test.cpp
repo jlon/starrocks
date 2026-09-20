@@ -159,6 +159,34 @@ TEST_F(LakeMetaReaderTest, test_get_segments_with_dup_keys_table) {
     ASSERT_EQ(2, options_list.size()) << "Expected 2 options for non-PK table";
 }
 
+TEST_F(LakeMetaReaderTest, test_count_only_num_rows_for_dup_keys_table) {
+    ASSIGN_OR_ABORT(auto tablet_id, create_tablet_with_data(DUP_KEYS, 2, 2));
+    ASSIGN_OR_ABORT(auto tablet, _tablet_mgr->get_tablet(tablet_id, 3));
+
+    LakeMetaReader reader;
+    ASSIGN_OR_ABORT(auto num_rows, reader.TEST_count_only_num_rows(tablet));
+
+    ASSERT_EQ(20, num_rows);
+}
+
+TEST_F(LakeMetaReaderTest, test_count_only_num_rows_for_empty_dup_keys_table) {
+    ASSIGN_OR_ABORT(auto tablet_id, create_tablet_with_data(DUP_KEYS, 0));
+    ASSIGN_OR_ABORT(auto tablet, _tablet_mgr->get_tablet(tablet_id, 1));
+
+    LakeMetaReader reader;
+    ASSIGN_OR_ABORT(auto num_rows, reader.TEST_count_only_num_rows(tablet));
+
+    ASSERT_EQ(0, num_rows);
+}
+
+TEST_F(LakeMetaReaderTest, test_count_only_num_rows_rejects_primary_key_table) {
+    ASSIGN_OR_ABORT(auto tablet_id, create_tablet_with_data(PRIMARY_KEYS, 1, 1));
+    ASSIGN_OR_ABORT(auto tablet, _tablet_mgr->get_tablet(tablet_id, 2));
+
+    LakeMetaReader reader;
+    ASSERT_FALSE(reader.TEST_count_only_num_rows(tablet).ok());
+}
+
 // Test _get_segments with multiple rowsets
 TEST_F(LakeMetaReaderTest, test_get_segments_with_multiple_rowsets) {
     // Create a primary key tablet with 3 rowsets, each containing 2 segments

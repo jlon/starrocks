@@ -20,6 +20,7 @@
 
 #include <gtest/gtest.h>
 
+#include "column/chunk.h"
 #include "common/status.h"
 #include "exec/lake_meta_scan_node.h"
 #include "exec/pipeline/fragment_context.h"
@@ -166,6 +167,37 @@ TEST_F(LakeMetaScannerTest, test_init_lazy_and_real) {
     // after open() called, reader is created and initialized
     ASSERT_TRUE(st2.ok()) << st2;
     ASSERT_NE(nullptr, scanner.TEST_reader());
+}
+
+TEST_F(LakeMetaScannerTest, test_count_only_scan_returns_rowset_count) {
+    auto metadata_or = _tablet_mgr->get_tablet_metadata(_tablet_id, 2);
+    ASSERT_TRUE(metadata_or.ok()) << metadata_or.status();
+    auto count_metadata = std::make_shared<TabletMetadata>(*metadata_or.value());
+    count_metadata->add_rowsets()->set_num_rows(7);
+    auto status = _tablet_mgr->put_tablet_metadata(*count_metadata);
+    ASSERT_TRUE(status.ok()) << status;
+
+    _tnode->meta_scan_node.__set_count_only_scan(true);
+    _parent = std::make_unique<LakeMetaScanNode>(&_pool, *_tnode, *_tbl);
+
+    auto range = _pool.add(new TInternalScanRange());
+    range->tablet_id = _tablet_id;
+    range->version = "2";
+    MetaScannerParams params{.scan_range = range};
+
+    LakeMetaScanner scanner(_parent.get());
+    DeferOp defer([&]() { scanner.close(_state); });
+    status = scanner.init(_state, params);
+    ASSERT_TRUE(status.ok()) << status;
+    status = scanner.open(_state);
+    ASSERT_TRUE(status.ok()) << status;
+
+    ChunkPtr chunk;
+    status = scanner.get_chunk(_state, &chunk);
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_EQ(1, chunk->num_rows());
+    ASSERT_EQ(7, chunk->get_column_by_index(0)->get(0).get_int64());
+    ASSERT_FALSE(scanner.has_more());
 }
 
 TEST_F(LakeMetaScannerTest, test_read_schema) {

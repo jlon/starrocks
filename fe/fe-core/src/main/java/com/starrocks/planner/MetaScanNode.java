@@ -212,6 +212,9 @@ public class MetaScanNode extends AbstractOlapTableScanNode {
         Map<Integer, String> columnIdToNames = buildColumnIdToNames(columnIdToColumns);
         msg.meta_scan_node.setId_to_names(columnIdToNames);
         msg.meta_scan_node.setLow_cardinality_threshold(CacheDictManager.LOW_CARDINALITY_THRESHOLD);
+        if (olapTable.isCloudNativeTableOrMaterializedView() && isCountOnlyScan()) {
+            msg.meta_scan_node.setCount_only_scan(true);
+        }
         List<TColumn> columnsDesc = Lists.newArrayList();
         for (Column column : tableSchema) {
             TColumn tColumn = column.toThrift();
@@ -238,6 +241,11 @@ public class MetaScanNode extends AbstractOlapTableScanNode {
             result.put(entry.getKey(), aggFuncName + "_" + columnName);
         }
         return result;
+    }
+
+    private boolean isCountOnlyScan() {
+        return !columnIdToColumns.isEmpty() && columnIdToColumns.values().stream()
+                .allMatch(agg -> agg.first.equals("rows"));
     }
 
     @Override
