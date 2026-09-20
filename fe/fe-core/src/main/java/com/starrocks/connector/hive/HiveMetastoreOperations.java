@@ -281,6 +281,10 @@ public class HiveMetastoreOperations {
         return metastore.getPartitionKeysByValue(dbName, tableName, partitionValues);
     }
 
+    public List<String> getPartitionKeysByFilter(String dbName, String tableName, String filter) {
+        return metastore.getPartitionKeysByFilter(dbName, tableName, filter);
+    }
+
     public Partition getPartition(String dbName, String tableName, List<String> partitionValues) {
         return metastore.getPartition(dbName, tableName, partitionValues);
     }

@@ -43,6 +43,33 @@ Hive Catalog 是一种 External Catalog，自 2.3 版本开始支持。通过 Hi
 
   在写入 Hive 表时，如果该表的属性中包含了 `compression_codec`，StarRocks 优先使用该算法对写入数据进行压缩。否则，使用系统变量 `connector_sink_compression_codec` 中设置的压缩算法代替。
 
+### HMS 分区谓词下推
+
+查询 Hive 分区表时，StarRocks 会将可下推的分区谓词转换为 HMS filter，并通过 HMS
+`listPartitionsByFilter` 接口获取候选分区，避免先从 HMS 拉取全表分区再执行本地裁剪。对于分区数量较多
+的表，此机制可以降低 FE 元数据开销，并避免超过 HMS 的
+`hive.metastore.limit.partition.request` 限制。
+
+支持下推以下分区谓词：
+
+- 比较谓词：`=`、`!=`、`<>`、`<`、`<=`、`>` 和 `>=`。
+- `IN` 谓词。
+- 由 `AND` 连接的多个谓词。
+
+字符串、日期和日期时间类型的分区值会以字符串字面量形式传给 HMS；整数类型不会添加引号。不支持下推
+的表达式（例如函数、列与列比较、`LIKE` 或复杂的 `OR`）仍由 StarRocks 本地执行分区裁剪。如果 HMS
+filter 调用失败，StarRocks 会回退到拉取全部分区并在本地裁剪。
+
+可通过 `EXPLAIN` 检查裁剪结果。例如，表按 `dayno` 和 `hour` 两级分区时：
+
+```SQL
+EXPLAIN SELECT *
+FROM hive_catalog.db.tbl
+WHERE dayno >= '20260726' AND dayno <= '20260726';
+```
+
+执行计划中 `partitions=<selected>/<candidates>` 的候选分区数会反映 HMS filter 返回的分区范围。
+
 ## 准备工作
 
 在创建 Hive Catalog 之前，请确保 StarRocks 集群能够正常访问 Hive 的文件存储及元数据服务。

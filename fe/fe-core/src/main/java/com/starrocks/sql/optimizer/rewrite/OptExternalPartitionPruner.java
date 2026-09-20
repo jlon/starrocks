@@ -42,6 +42,7 @@ import com.starrocks.planner.RangePartitionPruner;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.expression.BinaryType;
 import com.starrocks.sql.ast.expression.ExprUtils;
+import com.starrocks.type.Type;
 import com.starrocks.sql.ast.expression.LiteralExpr;
 import com.starrocks.sql.common.ErrorType;
 import com.starrocks.sql.common.StarRocksPlannerException;
@@ -282,8 +283,8 @@ public class OptExternalPartitionPruner {
         List<Optional<ScalarOperator>> effectivePartitionPredicate = Lists.newArrayList();
         for (Column partitionColumn : partitionColumns) {
             ColumnRefOperator partitionColumnRefOperator = operator.getColumnReference(partitionColumn);
-            // only support string type partition column
-            if (partitionColumn.getType().isStringType() && equalPredicateMap.containsKey(partitionColumnRefOperator)) {
+            if (supportHMSPartitionValuePushdown(partitionColumn.getType())
+                    && equalPredicateMap.containsKey(partitionColumnRefOperator)) {
                 effectivePartitionPredicate.add(Optional.of(equalPredicateMap.get(partitionColumnRefOperator)));
             } else {
                 effectivePartitionPredicate.add(Optional.empty());
@@ -292,18 +293,174 @@ public class OptExternalPartitionPruner {
         return effectivePartitionPredicate;
     }
 
+    private static boolean supportHMSPartitionValuePushdown(Type type) {
+        return type.isStringType() || type.isIntegerType() || type.isLargeint()
+                || type.isDateType() || type.isDatetime();
+    }
+
+    /**
+     * Build HMS/Glue partition filter expression from conjuncts on partition columns.
+     * Supports =/!=/</<=/>/>= and IN (expanded to OR). Returns empty if nothing can be pushed.
+     */
+    public static Optional<String> buildHmsPartitionFilter(LogicalScanOperator operator,
+                                                           List<Column> partitionColumns,
+                                                           ScalarOperator predicate) {
+        if (partitionColumns.isEmpty() || predicate == null) {
+            return Optional.empty();
+        }
+        Map<ColumnRefOperator, Column> partitionColumnMap = Maps.newHashMap();
+        for (Column partitionColumn : partitionColumns) {
+            if (!supportHMSPartitionValuePushdown(partitionColumn.getType())) {
+                continue;
+            }
+            partitionColumnMap.put(operator.getColumnReference(partitionColumn), partitionColumn);
+        }
+        if (partitionColumnMap.isEmpty()) {
+            return Optional.empty();
+        }
+
+        List<String> filterParts = Lists.newArrayList();
+        for (ScalarOperator conjunct : Utils.extractConjuncts(predicate)) {
+            Optional<String> part = convertConjunctToHmsFilter(conjunct, partitionColumnMap);
+            if (part.isPresent()) {
+                filterParts.add(part.get());
+            }
+        }
+        if (filterParts.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(String.join(" AND ", filterParts));
+    }
+
+    private static Optional<String> convertConjunctToHmsFilter(ScalarOperator conjunct,
+                                                               Map<ColumnRefOperator, Column> partitionColumnMap) {
+        if (conjunct instanceof BinaryPredicateOperator) {
+            BinaryPredicateOperator binary = (BinaryPredicateOperator) conjunct;
+            BinaryType binaryType = binary.getBinaryType();
+            if (!(binaryType.isEqualOrRange() || binaryType.isNotEqual())) {
+                return Optional.empty();
+            }
+            ColumnRefOperator columnRef = extractPartitionColumnRef(binary.getChild(0));
+            ScalarOperator right = binary.getChild(1);
+            if (columnRef == null || !right.isConstantRef() || !partitionColumnMap.containsKey(columnRef)) {
+                // also allow constant on left, column on right for range/eq
+                columnRef = extractPartitionColumnRef(binary.getChild(1));
+                right = binary.getChild(0);
+                if (columnRef == null || !right.isConstantRef() || !partitionColumnMap.containsKey(columnRef)) {
+                    return Optional.empty();
+                }
+                binaryType = flipBinaryType(binaryType);
+                if (binaryType == null) {
+                    return Optional.empty();
+                }
+            }
+            Column partitionColumn = partitionColumnMap.get(columnRef);
+            ConstantOperator constant = (ConstantOperator) right;
+            String literal = formatLiteralForHmsFilter(constant, partitionColumn.getType());
+            if (literal == null) {
+                return Optional.empty();
+            }
+            return Optional.of(partitionColumn.getName() + " " + binaryType.toString() + " " + literal);
+        } else if (conjunct instanceof InPredicateOperator) {
+            InPredicateOperator inPredicate = (InPredicateOperator) conjunct;
+            if (inPredicate.isNotIn()) {
+                return Optional.empty();
+            }
+            ColumnRefOperator columnRef = extractPartitionColumnRef(inPredicate.getChild(0));
+            if (columnRef == null || !partitionColumnMap.containsKey(columnRef)) {
+                return Optional.empty();
+            }
+            Column partitionColumn = partitionColumnMap.get(columnRef);
+            List<String> equals = Lists.newArrayList();
+            for (int i = 1; i < inPredicate.getChildren().size(); i++) {
+                ScalarOperator child = inPredicate.getChild(i);
+                if (!child.isConstantRef()) {
+                    return Optional.empty();
+                }
+                String literal = formatLiteralForHmsFilter((ConstantOperator) child, partitionColumn.getType());
+                if (literal == null) {
+                    return Optional.empty();
+                }
+                equals.add(partitionColumn.getName() + " = " + literal);
+            }
+            if (equals.isEmpty()) {
+                return Optional.empty();
+            }
+            if (equals.size() == 1) {
+                return Optional.of(equals.get(0));
+            }
+            return Optional.of("(" + String.join(" OR ", equals) + ")");
+        }
+        return Optional.empty();
+    }
+
+    private static ColumnRefOperator extractPartitionColumnRef(ScalarOperator operator) {
+        if (operator == null) {
+            return null;
+        }
+        if (operator.isColumnRef()) {
+            return (ColumnRefOperator) operator;
+        }
+        return null;
+    }
+
+    private static BinaryType flipBinaryType(BinaryType type) {
+        switch (type) {
+            case EQ:
+            case NE:
+                return type;
+            case LT:
+                return BinaryType.GT;
+            case LE:
+                return BinaryType.GE;
+            case GT:
+                return BinaryType.LT;
+            case GE:
+                return BinaryType.LE;
+            default:
+                return null;
+        }
+    }
+
+    private static String formatLiteralForHmsFilter(ConstantOperator constant, Type partitionColumnType) {
+        if (constant.isNull() || !constant.getType().matchesType(partitionColumnType)) {
+            return null;
+        }
+        boolean quoted = partitionColumnType.isStringType() || partitionColumnType.isDateType()
+                || partitionColumnType.isDatetime();
+        String raw;
+        if (constant.getType().isStringType()) {
+            raw = constant.getVarchar();
+        } else if (constant.getType().isDate() || constant.getType().isDatetime()) {
+            raw = constant.toString();
+        } else {
+            raw = constant.toString();
+        }
+        if (quoted) {
+            return "'" + raw.replace("'", "''") + "'";
+        }
+        return raw;
+    }
+
     private static List<Optional<String>> getPartitionValue(List<Optional<ScalarOperator>> predicates) {
         List<Optional<String>> partitionValues = Lists.newArrayList();
         for (Optional<ScalarOperator> predicate : predicates) {
             if (predicate.isPresent()) {
                 Preconditions.checkState(predicate.get() instanceof BinaryPredicateOperator);
                 ConstantOperator constantOperator = predicate.get().getChild(1).cast();
-                partitionValues.add(Optional.of(constantOperator.getVarchar()));
+                partitionValues.add(Optional.of(formatConstantForHivePartition(constantOperator)));
             } else {
                 partitionValues.add(Optional.empty());
             }
         }
         return partitionValues;
+    }
+
+    private static String formatConstantForHivePartition(ConstantOperator constant) {
+        if (constant.getType().isStringType()) {
+            return constant.getVarchar();
+        }
+        return constant.toString();
     }
 
     private static void initPartitionInfo(LogicalScanOperator operator, OptimizerContext context,
@@ -336,14 +493,21 @@ public class OptExternalPartitionPruner {
 
                 // get partition names
                 List<String> partitionNames;
-                // check if the partition predicate could be used for filter partition names
-                List<Optional<ScalarOperator>> effectivePartitionPredicate =
-                        getEffectivePartitionPredicate(operator, partitionColumns, operator.getPredicate());
-                if (effectivePartitionPredicate.stream().anyMatch(Optional::isPresent)) {
-                    List<Optional<String>> partitionValues = getPartitionValue(effectivePartitionPredicate);
-                    partitionNames = GlobalStateMgr.getCurrentState().getMetadataMgr()
-                            .listPartitionNamesByValue(table.getCatalogName(), table.getCatalogDBName(),
-                                    table.getCatalogTableName(), partitionValues);
+                Optional<String> hmsPartitionFilter =
+                        buildHmsPartitionFilter(operator, partitionColumns, operator.getPredicate());
+                if (hmsPartitionFilter.isPresent()) {
+                    try {
+                        partitionNames = GlobalStateMgr.getCurrentState().getMetadataMgr()
+                                .listPartitionNamesByFilter(table.getCatalogName(), table.getCatalogDBName(),
+                                        table.getCatalogTableName(), hmsPartitionFilter.get());
+                    } catch (Exception e) {
+                        LOG.warn("Failed to list partitions by filter [{}], fallback to list all partitions. table: {}.{}.{}",
+                                hmsPartitionFilter.get(), table.getCatalogName(), table.getCatalogDBName(),
+                                table.getCatalogTableName(), e);
+                        partitionNames = GlobalStateMgr.getCurrentState().getMetadataMgr()
+                                .listPartitionNames(table.getCatalogName(), table.getCatalogDBName(),
+                                        table.getCatalogTableName(), ConnectorMetadataRequestContext.DEFAULT);
+                    }
                 } else {
                     partitionNames = GlobalStateMgr.getCurrentState().getMetadataMgr()
                             .listPartitionNames(table.getCatalogName(), table.getCatalogDBName(),

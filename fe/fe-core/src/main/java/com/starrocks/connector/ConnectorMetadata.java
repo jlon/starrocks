@@ -122,6 +122,14 @@ public interface ConnectorMetadata {
     }
 
     /**
+     * Return partition names filtered by an HMS partition filter expression.
+     * Default falls back to listing all partition names for connectors that do not support filter pushdown.
+     */
+    default List<String> listPartitionNamesByFilter(String databaseName, String tableName, String filter) {
+        return listPartitionNames(databaseName, tableName, ConnectorMetadataRequestContext.DEFAULT);
+    }
+
+    /**
      * Get Table descriptor for the table specific by `dbName`.`tblName`
      *
      * @param dbName  - the string represents the database name

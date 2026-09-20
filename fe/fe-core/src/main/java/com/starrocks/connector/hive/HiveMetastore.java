@@ -158,6 +158,21 @@ public class HiveMetastore implements IHiveMetastore {
     }
 
     @Override
+    public List<String> getPartitionKeysByFilter(String dbName, String tableName, String filter) {
+        org.apache.hadoop.hive.metastore.api.Table table = client.getTable(dbName, tableName);
+        List<String> partitionColumnNames = table.getPartitionKeys().stream()
+                .map(FieldSchema::getName)
+                .collect(Collectors.toList());
+        List<org.apache.hadoop.hive.metastore.api.Partition> partitions =
+                client.getPartitionsByFilter(dbName, tableName, filter);
+        List<String> partitionNames = new ArrayList<>(partitions.size());
+        for (org.apache.hadoop.hive.metastore.api.Partition partition : partitions) {
+            partitionNames.add(PartitionUtil.toHivePartitionName(partitionColumnNames, partition.getValues()));
+        }
+        return partitionNames;
+    }
+
+    @Override
     public boolean partitionExists(Table table, List<String> partitionValues) {
         HiveTable hiveTable = (HiveTable) table;
         String dbName = hiveTable.getCatalogDBName();
