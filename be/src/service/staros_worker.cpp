@@ -66,8 +66,9 @@ namespace fslib = staros::starlet::fslib;
 
 StarOSWorker::StarOSWorker()
         : _mtx(),
-          _cache_mtx(),
+          _fs_cache_build_mtx(),
           _shards(),
+          _fs_cache_builds(),
           _fs_cache(new_lru_cache(config::starlet_filesystem_instance_cache_capacity)) {}
 
 StarOSWorker::~StarOSWorker() = default;
@@ -363,25 +364,71 @@ StarOSWorker::new_shared_filesystem(std::string_view scheme, const Configuration
         return value_or;
     }
 
+    std::shared_ptr<FsCacheBuildState> state;
+    bool should_build = false;
+    {
+        std::unique_lock l(_fs_cache_build_mtx);
+        value_or = find_fs_cache(cache_key);
+        if (value_or.ok()) {
+            VLOG(9) << "Share filesystem";
+            return value_or;
+        }
+
+        auto it = _fs_cache_builds.find(cache_key);
+        if (it == _fs_cache_builds.end()) {
+            state = std::make_shared<FsCacheBuildState>();
+            _fs_cache_builds.emplace(cache_key, state);
+            should_build = true;
+        } else {
+            state = it->second;
+            while (state->loading) {
+                state->cv.wait(l);
+            }
+            if (!state->status.ok()) {
+                return state->status;
+            }
+            return std::make_pair(state->key, state->fs);
+        }
+    }
+
+    DCHECK(should_build);
     VLOG(9) << "Create a new filesystem";
 
     // Create a new instance of FileSystem
     auto fs_or = fslib::FileSystemFactory::new_filesystem(scheme, conf);
+    absl::Status status = fs_or.status();
+    std::shared_ptr<fslib::FileSystem> fs;
+    std::shared_ptr<std::string> fs_cache_key;
+    if (fs_or.ok()) {
+        // turn unique_ptr to shared_ptr
+        fs = std::move(fs_or).value();
+
+        value_or = find_fs_cache(cache_key);
+        if (value_or.ok()) {
+            fs_cache_key = value_or->first;
+            fs = value_or->second;
+        } else {
+            // Put the FileSystem into LRU cache.
+            fs_cache_key = insert_fs_cache(cache_key, fs);
+        }
+    }
+
+    {
+        std::lock_guard l(_fs_cache_build_mtx);
+        if (fs_or.ok()) {
+            state->key = fs_cache_key;
+            state->fs = fs;
+        } else {
+            state->status = status;
+        }
+        state->loading = false;
+        _fs_cache_builds.erase(cache_key);
+    }
+    state->cv.notify_all();
+
     if (!fs_or.ok()) {
-        return fs_or.status();
+        return status;
     }
-    // turn unique_ptr to shared_ptr
-    std::shared_ptr<fslib::FileSystem> fs = std::move(fs_or).value();
-
-    // Put the FileSysatem into LRU cache
-    std::unique_lock l(_cache_mtx);
-    value_or = find_fs_cache(cache_key);
-    if (value_or.ok()) {
-        VLOG(9) << "Share filesystem";
-        return value_or;
-    }
-    auto fs_cache_key = insert_fs_cache(cache_key, fs);
-
     return std::make_pair(std::move(fs_cache_key), std::move(fs));
 }
 

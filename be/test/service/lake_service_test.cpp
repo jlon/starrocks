@@ -21,6 +21,9 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include "column/chunk.h"
 #include "column/fixed_length_column.h"
@@ -40,6 +43,7 @@
 #include "storage/lake/tablet_manager.h"
 #include "storage/lake/tablet_metadata.h"
 #include "storage/lake/tablet_reshard_helper.h"
+#include "storage/lake/tablet_stat_cache.h"
 #include "storage/lake/test_util.h"
 #include "storage/lake/txn_log.h"
 #include "storage/protobuf_file.h"
@@ -3793,6 +3797,154 @@ TEST_F(LakeServiceTest, test_get_tablet_stats) {
 
     _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
     ASSERT_EQ(0, response.tablet_stats_size());
+}
+
+TEST_F(LakeServiceTest, test_get_tablet_stats_allows_one_active_request_per_cn) {
+    TabletStatRequest first_request;
+    auto* first_info = first_request.add_tablet_infos();
+    first_info->set_tablet_id(_tablet_id);
+    first_info->set_version(1);
+
+    TabletStatRequest second_request;
+    auto* second_info = second_request.add_tablet_infos();
+    second_info->set_tablet_id(_tablet_id);
+    second_info->set_version(1);
+
+    TabletStatResponse first_response;
+    TabletStatResponse second_response;
+    std::mutex mutex;
+    std::condition_variable cv;
+    int before_submit_count = 0;
+    bool release_first_request = false;
+
+    SyncPoint::GetInstance()->SetCallBack("LakeServiceImpl::get_tablet_stats:before_submit", [&](void*) {
+        std::unique_lock<std::mutex> l(mutex);
+        ++before_submit_count;
+        cv.notify_all();
+        if (before_submit_count == 1) {
+            cv.wait(l, [&]() { return release_first_request; });
+        }
+    });
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([&]() {
+        SyncPoint::GetInstance()->ClearCallBack("LakeServiceImpl::get_tablet_stats:before_submit");
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+
+    std::thread first_thread(
+            [&]() { _lake_service.get_tablet_stats(nullptr, &first_request, &first_response, nullptr); });
+    {
+        std::unique_lock<std::mutex> l(mutex);
+        ASSERT_TRUE(cv.wait_for(l, std::chrono::seconds(5), [&]() { return before_submit_count == 1; }));
+    }
+
+    std::thread second_thread(
+            [&]() { _lake_service.get_tablet_stats(nullptr, &second_request, &second_response, nullptr); });
+    bool second_request_submitted_while_first_active = false;
+    {
+        std::unique_lock<std::mutex> l(mutex);
+        second_request_submitted_while_first_active =
+                cv.wait_for(l, std::chrono::milliseconds(200), [&]() { return before_submit_count > 1; });
+        release_first_request = true;
+        cv.notify_all();
+    }
+
+    first_thread.join();
+    second_thread.join();
+
+    EXPECT_FALSE(second_request_submitted_while_first_active);
+    EXPECT_EQ(1, first_response.tablet_stats_size());
+    EXPECT_EQ(1, second_response.tablet_stats_size());
+}
+
+TEST_F(LakeServiceTest, test_get_tablet_stats_cache) {
+    // Enable the standalone stat cache with a small test capacity.
+    auto old_enabled = config::enable_lake_tablet_stat_cache;
+    auto old_capacity = config::lake_tablet_stat_cache_capacity;
+    config::enable_lake_tablet_stat_cache = true;
+    config::lake_tablet_stat_cache_capacity = 1024;
+    DeferOp restore([&]() {
+        config::enable_lake_tablet_stat_cache = old_enabled;
+        config::lake_tablet_stat_cache_capacity = old_capacity;
+    });
+
+    // Write data (num_rows=1024, data_size=65536) and publish to version 3.
+    size_t expected_num_rows = 1024;
+    size_t expected_data_size = 65536;
+    auto txn_log = generate_write_txn_log(2, expected_num_rows, expected_data_size);
+    ASSERT_OK(_tablet_mgr->put_txn_log(txn_log));
+    {
+        PublishVersionRequest request;
+        request.set_base_version(1);
+        request.set_new_version(3);
+        request.add_tablet_ids(_tablet_id);
+        request.add_txn_ids(txn_log.txn_id());
+        PublishVersionResponse response;
+        _lake_service.publish_version(nullptr, &request, &response, nullptr);
+        ASSERT_EQ(0, response.failed_tablets_size());
+    }
+
+    auto* stat_cache = _tablet_mgr->tablet_stat_cache();
+    auto miss0 = stat_cache->miss_count();
+    auto hit0 = stat_cache->hit_count();
+
+    // First call: cache miss -> computes the stat and stores it.
+    {
+        TabletStatRequest request;
+        TabletStatResponse response;
+        auto* info = request.add_tablet_infos();
+        info->set_tablet_id(_tablet_id);
+        info->set_version(3);
+        _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
+        ASSERT_EQ(1, response.tablet_stats_size());
+        EXPECT_EQ(expected_num_rows, response.tablet_stats(0).num_rows());
+        EXPECT_EQ(expected_data_size, response.tablet_stats(0).data_size());
+    }
+    EXPECT_EQ(miss0 + 1, stat_cache->miss_count());
+    EXPECT_EQ(hit0, stat_cache->hit_count());
+
+    // Second call for the same (tablet, version): cache hit -> identical result, no extra miss.
+    {
+        TabletStatRequest request;
+        TabletStatResponse response;
+        auto* info = request.add_tablet_infos();
+        info->set_tablet_id(_tablet_id);
+        info->set_version(3);
+        _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
+        ASSERT_EQ(1, response.tablet_stats_size());
+        EXPECT_EQ(expected_num_rows, response.tablet_stats(0).num_rows());
+        EXPECT_EQ(expected_data_size, response.tablet_stats(0).data_size());
+    }
+    EXPECT_EQ(miss0 + 1, stat_cache->miss_count());
+    EXPECT_EQ(hit0 + 1, stat_cache->hit_count());
+}
+
+TEST_F(LakeServiceTest, test_get_tablet_stats_cache_disabled_by_config) {
+    // The explicit switch disables the cache: lookup is an immediate miss with no bookkeeping and
+    // insert is a no-op, so counters stay unchanged.
+    auto old_enabled = config::enable_lake_tablet_stat_cache;
+    auto old_capacity = config::lake_tablet_stat_cache_capacity;
+    config::enable_lake_tablet_stat_cache = false;
+    config::lake_tablet_stat_cache_capacity = 1024;
+    DeferOp restore([&]() {
+        config::enable_lake_tablet_stat_cache = old_enabled;
+        config::lake_tablet_stat_cache_capacity = old_capacity;
+    });
+
+    auto* stat_cache = _tablet_mgr->tablet_stat_cache();
+    auto miss0 = stat_cache->miss_count();
+    auto hit0 = stat_cache->hit_count();
+
+    TabletStatRequest request;
+    TabletStatResponse response;
+    auto* info = request.add_tablet_infos();
+    info->set_tablet_id(_tablet_id);
+    info->set_version(1);
+    _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
+    ASSERT_EQ(1, response.tablet_stats_size());
+
+    EXPECT_EQ(miss0, stat_cache->miss_count());
+    EXPECT_EQ(hit0, stat_cache->hit_count());
 }
 
 TEST_F(LakeServiceTest, test_get_tablet_stats_null_thread_pool) {

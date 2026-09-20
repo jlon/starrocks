@@ -16,8 +16,14 @@
 
 #include <bthread/types.h>
 
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <set>
 #include <shared_mutex>
+#include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -56,6 +62,43 @@ class CompactionScheduler;
 class Metacache;
 class VersionedTablet;
 class TableSchemaService;
+class LakeTabletStatCache;
+
+// Request-scoped cache of bundle tablet metadata, shared by tablets of the same partition that
+// live in one bundle metadata file, within a single get_tablet_stats request. It keeps both the
+// raw serialized bytes and the parsed BundleTabletMetadataPB so a hit can extract any tablet's
+// metadata without re-reading it from object storage or re-parsing the bundle. Entries are never
+// inserted into the global metacache, preserving the fill_meta_cache=false design for background
+// stat collection (see #36973). Thread-safe: the stat tasks of one request run concurrently.
+class BundleMetadataCache {
+public:
+    struct Entry {
+        std::string serialized_data;
+        BundleTabletMetadataPtr bundle_metadata;
+    };
+
+    // Returns the cached entry, or lets one caller load it while concurrent callers for the same
+    // path wait for that result. Failed loads are not cached so a later request can retry.
+    StatusOr<std::shared_ptr<Entry>> get_or_load(
+            const std::string& real_path,
+            const std::function<StatusOr<std::shared_ptr<Entry>>()>& loader);
+
+    int64_t hit_count() const { return _hit_count.load(std::memory_order_relaxed); }
+    int64_t miss_count() const { return _miss_count.load(std::memory_order_relaxed); }
+
+private:
+    struct CacheState {
+        bool loading = true;
+        Status status;
+        std::shared_ptr<Entry> entry;
+        std::condition_variable cv;
+    };
+
+    std::mutex _mutex;
+    std::unordered_map<std::string, std::shared_ptr<CacheState>> _cache;
+    std::atomic<int64_t> _hit_count{0};
+    std::atomic<int64_t> _miss_count{0};
+};
 
 class TabletManager {
     friend class Tablet;
@@ -128,7 +171,8 @@ public:
                                                     const std::shared_ptr<FileSystem>& fs = nullptr);
     StatusOr<TabletMetadataPtr> get_tablet_metadata(int64_t tablet_id, int64_t version, const CacheOptions& cache_opts,
                                                     int64_t expected_gtid = 0,
-                                                    const std::shared_ptr<FileSystem>& fs = nullptr);
+                                                    const std::shared_ptr<FileSystem>& fs = nullptr,
+                                                    BundleMetadataCache* bundle_cache = nullptr);
 
     // Do not use this function except in a list dir
     StatusOr<TabletMetadataPtr> get_tablet_metadata(const std::string& path, bool fill_cache = true,
@@ -143,7 +187,8 @@ public:
                                                            const std::shared_ptr<FileSystem>& fs = nullptr);
     StatusOr<TabletMetadataPtr> get_single_tablet_metadata(int64_t tablet_id, int64_t version,
                                                            const CacheOptions& cache_opts, int64_t expected_gtid = 0,
-                                                           const std::shared_ptr<FileSystem>& fs = nullptr);
+                                                           const std::shared_ptr<FileSystem>& fs = nullptr,
+                                                           BundleMetadataCache* bundle_cache = nullptr);
 
     static StatusOr<BundleTabletMetadataPtr> parse_bundle_tablet_metadata(const std::string& path,
                                                                           const std::string& serialized_string);
@@ -266,6 +311,10 @@ public:
     // The return value will never be null.
     Metacache* metacache() { return _metacache.get(); }
 
+    // Optional standalone cache of get_tablet_stats results (see LakeTabletStatCache). Always
+    // non-null; it is a no-op when enable_lake_tablet_stat_cache is false or capacity is 0.
+    LakeTabletStatCache* tablet_stat_cache() { return _tablet_stat_cache.get(); }
+
     StatusOr<int64_t> get_tablet_data_size(int64_t tablet_id, int64_t* version_hint);
 
     StatusOr<int64_t> get_tablet_num_rows(int64_t tablet_id, int64_t version);
@@ -346,6 +395,7 @@ private:
 private:
     std::shared_ptr<LocationProvider> _location_provider;
     std::unique_ptr<Metacache> _metacache;
+    std::unique_ptr<LakeTabletStatCache> _tablet_stat_cache;
     std::unique_ptr<CompactionScheduler> _compaction_scheduler;
     UpdateManager* _update_mgr = nullptr;
     std::unique_ptr<TableSchemaService> _table_schema_service;

@@ -823,6 +823,22 @@ CONF_mBool(lake_enable_accurate_pk_row_count, "true");
 // Default is 5 minutes (300000 ms).
 CONF_mInt64(lake_tablet_stat_slow_log_ms, "300000");
 
+// Optional CN-side cache of get_tablet_stats results, keyed by (tablet_id, version, accurate_mode).
+// A lake tablet's visible version is immutable, so the (num_rows, data_size) computed for a given
+// (tablet_id, version) never changes; caching it lets FE restarts/upgrades, multiple FEs and
+// in-round retries skip re-reading bundle metadata from object storage. It is a standalone cache
+// and never pollutes the query metadata cache (fill_meta_cache=false is preserved).
+CONF_mBool(enable_lake_tablet_stat_cache, "true");
+// lake_tablet_stat_cache_capacity is the max number of cached entries; 0 disables the cache even when
+// enable_lake_tablet_stat_cache is true. The default covers the observed 880k-tablet production workload.
+CONF_mInt64(lake_tablet_stat_cache_capacity, "1048576");
+// Time-to-live for a cached entry in seconds. Expired-and-unused entries are reclaimed by a
+// background cleaner; the cache is also hard-bounded by lake_tablet_stat_cache_capacity via LRU
+// eviction, so memory can never grow without bound.
+CONF_mInt64(lake_tablet_stat_cache_ttl_sec, "3600");
+// Interval in seconds at which the background cleaner reclaims expired lake tablet stat entries.
+CONF_mInt32(lake_tablet_stat_cache_clean_interval_sec, "300");
+
 // Result buffer cancelled time (unit: second).
 CONF_mInt32(result_buffer_cancelled_interval_time, "300");
 

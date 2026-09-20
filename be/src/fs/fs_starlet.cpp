@@ -27,6 +27,8 @@
 #include <sys/stat.h>
 #include <worker.h>
 
+#include <limits>
+
 #include "common/config.h"
 #include "fs/encrypt_file.h"
 #include "fs/output_stream_adapter.h"
@@ -614,6 +616,28 @@ public:
         auto fs_st = get_shard_filesystem(pair.second);
         if (!fs_st.ok()) {
             return to_status(fs_st.status());
+        }
+        if (offset < 0) {
+            return Status::InvalidArgument(fmt::format("Invalid cache drop offset {} for {}", offset, path));
+        }
+        if (size < 0) {
+            auto fst = (*fs_st)->stat(pair.first);
+            if (!fst.ok()) {
+                return to_status(fst.status());
+            }
+            auto unsigned_offset = static_cast<uint64_t>(offset);
+            if (unsigned_offset >= fst->size) {
+                return Status::OK();
+            }
+            auto remaining_size = fst->size - unsigned_offset;
+            if (remaining_size > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+                return Status::InvalidArgument(
+                        fmt::format("Cache drop size {} exceeds int64 max for {}", remaining_size, path));
+            }
+            size = static_cast<int64_t>(remaining_size);
+        }
+        if (size == 0) {
+            return Status::OK();
         }
         return to_status((*fs_st)->drop_cache(pair.first, offset, size));
     }

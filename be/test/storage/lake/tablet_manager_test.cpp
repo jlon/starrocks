@@ -18,7 +18,12 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <condition_variable>
+#include <chrono>
 #include <fstream>
+#include <thread>
+#include <vector>
 
 #include "common/config.h"
 #include "fs/fs.h"
@@ -28,6 +33,7 @@
 #include "storage/lake/location_provider.h"
 #include "storage/lake/metacache.h"
 #include "storage/lake/options.h"
+#include "storage/lake/tablet_stat_cache.h"
 #include "storage/lake/update_manager.h"
 #include "storage/lake/versioned_tablet.h"
 #include "storage/olap_define.h"
@@ -1246,6 +1252,226 @@ TEST_F(LakeTabletManagerTest, get_tablet_metadata_skip_meta_cache_reads_durable)
     auto cached = _tablet_manager->metacache()->lookup_tablet_metadata(path);
     ASSERT_TRUE(cached != nullptr);
     EXPECT_EQ(kDurableCommitTime, cached->commit_time());
+}
+
+TEST_F(LakeTabletManagerTest, get_single_tablet_metadata_bundle_reuse) {
+    // Two tablets of one partition share a single bundle metadata file. Method B: within one
+    // request-local BundleMetadataCache, the bundle is read+parsed once and reused across tablets.
+    TabletSchemaPB schema_pb;
+    schema_pb.set_id(10);
+    schema_pb.set_num_short_key_columns(1);
+    schema_pb.set_keys_type(DUP_KEYS);
+    schema_pb.set_num_rows_per_row_block(65535);
+    auto* c0 = schema_pb.add_column();
+    c0->set_unique_id(0);
+    c0->set_name("c0");
+    c0->set_type("INT");
+    c0->set_is_key(true);
+    c0->set_is_nullable(false);
+
+    std::map<int64_t, TabletMetadataPB> metadatas;
+    for (int64_t id : {1, 2}) {
+        starrocks::TabletMetadataPB m;
+        m.set_id(id);
+        m.set_version(2);
+        m.mutable_schema()->CopyFrom(schema_pb);
+        (*m.mutable_historical_schemas())[10].CopyFrom(schema_pb);
+        metadatas.emplace(id, m);
+    }
+    ASSERT_OK(_tablet_manager->put_bundle_tablet_metadata(metadatas));
+    _tablet_manager->metacache()->prune();
+
+    lake::BundleMetadataCache bundle_cache;
+    lake::CacheOptions opts{.fill_meta_cache = false, .fill_data_cache = false};
+
+    ASSIGN_OR_ABORT(auto m1, _tablet_manager->get_single_tablet_metadata(1, 2, opts, 0, nullptr, &bundle_cache));
+    EXPECT_EQ(1, m1->id());
+    ASSIGN_OR_ABORT(auto m2, _tablet_manager->get_single_tablet_metadata(2, 2, opts, 0, nullptr, &bundle_cache));
+    EXPECT_EQ(2, m2->id());
+
+    // Same bundle: the first call reads object storage (miss), the second reuses the cache (hit).
+    EXPECT_EQ(1, bundle_cache.miss_count());
+    EXPECT_EQ(1, bundle_cache.hit_count());
+
+    // Reuse must not pollute the global metadata cache (fill_meta_cache=false is preserved).
+    EXPECT_TRUE(_tablet_manager->metacache()->lookup_tablet_metadata(
+                        _tablet_manager->tablet_metadata_location(1, 2)) == nullptr);
+    EXPECT_TRUE(_tablet_manager->metacache()->lookup_tablet_metadata(
+                        _tablet_manager->tablet_metadata_location(2, 2)) == nullptr);
+
+    // Without a cache, behavior is unchanged and each call still succeeds.
+    ASSIGN_OR_ABORT(auto m3, _tablet_manager->get_single_tablet_metadata(1, 2, opts, 0, nullptr, nullptr));
+    EXPECT_EQ(1, m3->id());
+}
+
+TEST_F(LakeTabletManagerTest, get_tablet_metadata_with_bundle_cache_skips_legacy_probe) {
+    TabletSchemaPB schema_pb;
+    schema_pb.set_id(10);
+    schema_pb.set_num_short_key_columns(1);
+    schema_pb.set_keys_type(DUP_KEYS);
+    schema_pb.set_num_rows_per_row_block(65535);
+    auto* c0 = schema_pb.add_column();
+    c0->set_unique_id(0);
+    c0->set_name("c0");
+    c0->set_type("INT");
+    c0->set_is_key(true);
+    c0->set_is_nullable(false);
+
+    starrocks::TabletMetadataPB metadata;
+    metadata.set_id(1);
+    metadata.set_version(2);
+    metadata.mutable_schema()->CopyFrom(schema_pb);
+    (*metadata.mutable_historical_schemas())[10].CopyFrom(schema_pb);
+
+    std::map<int64_t, TabletMetadataPB> metadatas;
+    metadatas.emplace(1, metadata);
+    ASSERT_OK(_tablet_manager->put_bundle_tablet_metadata(metadatas));
+    _tablet_manager->metacache()->prune();
+
+    TEST_ENABLE_ERROR_POINT("TabletManager::load_tablet_metadata",
+                            Status::IOError("legacy tablet metadata probe should be skipped"));
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([]() {
+        TEST_DISABLE_ERROR_POINT("TabletManager::load_tablet_metadata");
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+
+    lake::BundleMetadataCache bundle_cache;
+    lake::CacheOptions opts{.fill_meta_cache = false, .fill_data_cache = false};
+    ASSIGN_OR_ABORT(auto loaded, _tablet_manager->get_tablet_metadata(1, 2, opts, 0, nullptr, &bundle_cache));
+
+    EXPECT_EQ(1, loaded->id());
+    EXPECT_EQ(2, loaded->version());
+    EXPECT_EQ(1, bundle_cache.miss_count());
+}
+
+TEST_F(LakeTabletManagerTest, get_tablet_metadata_with_bundle_cache_falls_back_to_legacy_metadata) {
+    auto tablet_id = next_id();
+    starrocks::TabletMetadata metadata;
+    metadata.set_id(tablet_id);
+    metadata.set_version(2);
+    metadata.mutable_schema()->set_id(10);
+    metadata.mutable_schema()->set_num_short_key_columns(1);
+    metadata.mutable_schema()->set_keys_type(DUP_KEYS);
+    metadata.mutable_schema()->set_num_rows_per_row_block(65535);
+    auto* c0 = metadata.mutable_schema()->add_column();
+    c0->set_unique_id(0);
+    c0->set_name("c0");
+    c0->set_type("INT");
+    c0->set_is_key(true);
+    c0->set_is_nullable(false);
+    ASSERT_OK(_tablet_manager->put_tablet_metadata(metadata));
+    _tablet_manager->metacache()->prune();
+
+    lake::BundleMetadataCache bundle_cache;
+    lake::CacheOptions opts{.fill_meta_cache = false, .fill_data_cache = false};
+    ASSIGN_OR_ABORT(auto loaded, _tablet_manager->get_tablet_metadata(tablet_id, 2, opts, 0, nullptr, &bundle_cache));
+
+    EXPECT_EQ(tablet_id, loaded->id());
+    EXPECT_EQ(2, loaded->version());
+}
+
+TEST_F(LakeTabletManagerTest, lake_tablet_stat_cache_default_config) {
+    EXPECT_TRUE(config::enable_lake_tablet_stat_cache);
+    EXPECT_EQ(1048576, config::lake_tablet_stat_cache_capacity);
+}
+
+TEST_F(LakeTabletManagerTest, lake_tablet_stat_cache) {
+    bool old_enabled = config::enable_lake_tablet_stat_cache;
+    int64_t old_cap = config::lake_tablet_stat_cache_capacity;
+    DeferOp restore_config([old_enabled, old_cap] {
+        config::enable_lake_tablet_stat_cache = old_enabled;
+        config::lake_tablet_stat_cache_capacity = old_cap;
+    });
+    lake::LakeTabletStatCache cache;
+
+    // Disabled by switch: lookup misses and insert is a no-op.
+    config::enable_lake_tablet_stat_cache = false;
+    config::lake_tablet_stat_cache_capacity = 128;
+    EXPECT_FALSE(cache.lookup(1, 2, false).has_value());
+    cache.insert(1, 2, false, 100, 200);
+    EXPECT_FALSE(cache.lookup(1, 2, false).has_value());
+
+    // Enabled: insert then hit returns the stored value.
+    config::enable_lake_tablet_stat_cache = true;
+    config::lake_tablet_stat_cache_capacity = 128;
+    cache.insert(1, 2, false, 100, 200);
+    auto v = cache.lookup(1, 2, false);
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(100, v->num_rows);
+    EXPECT_EQ(200, v->data_size);
+
+    // A different version or accurate flag is a different key -> miss.
+    EXPECT_FALSE(cache.lookup(1, 3, false).has_value());
+    EXPECT_FALSE(cache.lookup(1, 2, true).has_value());
+
+    // The accurate dimension keeps separate values for the same (tablet, version).
+    cache.insert(1, 2, true, 111, 222);
+    auto va = cache.lookup(1, 2, true);
+    ASSERT_TRUE(va.has_value());
+    EXPECT_EQ(111, va->num_rows);
+    EXPECT_EQ(222, va->data_size);
+    cache.stop();
+
+    // Capacity is a hard bound: inserting beyond it evicts LRU entries automatically.
+    config::lake_tablet_stat_cache_capacity = 2;
+    lake::LakeTabletStatCache small;
+    small.insert(10, 1, false, 1, 1);
+    small.insert(11, 1, false, 1, 1);
+    small.insert(12, 1, false, 1, 1);
+    EXPECT_LE(small.size(), 2u);
+    small.stop();
+}
+
+TEST_F(LakeTabletManagerTest, bundle_metadata_cache_loads_once_for_concurrent_requests) {
+    lake::BundleMetadataCache bundle_cache;
+    constexpr int kWorkers = 8;
+    std::atomic<int> load_count{0};
+    std::atomic<int> success_count{0};
+    std::mutex mutex;
+    std::condition_variable cv;
+    int ready_workers = 0;
+    bool started = false;
+    std::vector<std::thread> workers;
+
+    for (int i = 0; i < kWorkers; ++i) {
+        workers.emplace_back([&]() {
+            {
+                std::unique_lock<std::mutex> l(mutex);
+                ++ready_workers;
+                cv.notify_all();
+                cv.wait(l, [&]() { return started; });
+            }
+
+            auto result = bundle_cache.get_or_load("bundle-1", [&]() {
+                load_count.fetch_add(1, std::memory_order_relaxed);
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                auto entry = std::make_shared<lake::BundleMetadataCache::Entry>();
+                entry->serialized_data = "serialized";
+                entry->bundle_metadata = std::make_shared<BundleTabletMetadataPB>();
+                return StatusOr<std::shared_ptr<lake::BundleMetadataCache::Entry>>(entry);
+            });
+            if (result.ok() && result.value()->serialized_data == "serialized") {
+                success_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+
+    {
+        std::unique_lock<std::mutex> l(mutex);
+        cv.wait(l, [&]() { return ready_workers == kWorkers; });
+        started = true;
+    }
+    cv.notify_all();
+
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    EXPECT_EQ(kWorkers, success_count.load(std::memory_order_relaxed));
+    EXPECT_EQ(1, load_count.load(std::memory_order_relaxed));
+    EXPECT_EQ(1, bundle_cache.miss_count());
+    EXPECT_EQ(kWorkers - 1, bundle_cache.hit_count());
 }
 
 TEST_F(LakeTabletManagerTest, parse_bundle_tablet_metadata_with_zero_size) {

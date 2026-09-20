@@ -42,6 +42,7 @@
 #include "storage/lake/tablet.h"
 #include "storage/lake/tablet_metadata.h"
 #include "storage/lake/tablet_reshard.h"
+#include "storage/lake/tablet_stat_cache.h"
 #include "storage/lake/transactions.h"
 #include "storage/lake/update_manager.h"
 #include "storage/lake/vacuum.h"
@@ -1220,6 +1221,10 @@ void LakeServiceImpl::get_tablet_stats(::google::protobuf::RpcController* contro
     auto thread_pool_token = ConcurrencyLimitedThreadPoolToken(thread_pool, max_pending);
     auto latch = BThreadCountDownLatch(request->tablet_infos_size());
     bthread::Mutex response_mtx;
+    // Request-local cache: tablets of the same partition share one bundle metadata file, so this
+    // lets them reuse a single read+parse instead of reading the bundle from object storage per
+    // tablet. It is dropped when the request finishes and never enters the global metacache.
+    lake::BundleMetadataCache bundle_cache;
     for (const auto& tablet_info : request->tablet_infos()) {
         auto task = std::make_shared<CancellableRunnable>(
                 [&, tablet_info] {
@@ -1234,9 +1239,27 @@ void LakeServiceImpl::get_tablet_stats(::google::protobuf::RpcController* contro
 
                     auto task_start_us = butil::gettimeofday_us();
 
+                    // Optional stat cache: a lake tablet's (num_rows, data_size) for a given version
+                    // is immutable, so a hit lets us skip the bundle metadata read and the
+                    // rowset/delvec computation entirely. The accurate dimension uses the current
+                    // config value; the real accurate_mode also needs is_pk_tablet (unknown until
+                    // metadata is read), but keying on the config value is a safe superset that never
+                    // serves an accurate result to an approximate request or vice versa.
+                    const bool stat_accurate = config::lake_enable_accurate_pk_row_count;
+                    if (auto cached = _tablet_mgr->tablet_stat_cache()->lookup(tablet_id, version, stat_accurate);
+                        cached.has_value()) {
+                        std::lock_guard l(response_mtx);
+                        auto tablet_stat = response->add_tablet_stats();
+                        tablet_stat->set_tablet_id(tablet_id);
+                        tablet_stat->set_num_rows(cached->num_rows);
+                        tablet_stat->set_data_size(cached->data_size);
+                        return;
+                    }
+
                     // Don't fill caches to avoid polluting hot query caches from background stat collection.
                     lake::CacheOptions cache_opts{.fill_meta_cache = false, .fill_data_cache = false};
-                    auto tablet_metadata = _tablet_mgr->get_tablet_metadata(tablet_id, version, cache_opts);
+                    auto tablet_metadata =
+                            _tablet_mgr->get_tablet_metadata(tablet_id, version, cache_opts, 0, nullptr, &bundle_cache);
                     if (!tablet_metadata.ok()) {
                         LOG(WARNING) << "Fail to get tablet metadata. tablet_id: " << tablet_id
                                      << ", version: " << version << ", error: " << tablet_metadata.status();
@@ -1246,7 +1269,7 @@ void LakeServiceImpl::get_tablet_stats(::google::protobuf::RpcController* contro
                     // Determine if this is a primary-key tablet.  Only PK tablets maintain delete vectors
                     // (delvec), so calling get_rowset_num_deletes() for non-PK tablets is wasteful.
                     const bool is_pk_tablet = (*tablet_metadata)->schema().keys_type() == PRIMARY_KEYS;
-                    const bool accurate_mode = is_pk_tablet && config::lake_enable_accurate_pk_row_count;
+                    const bool accurate_mode = is_pk_tablet && stat_accurate;
                     const int num_rowsets = (*tablet_metadata)->rowsets_size();
 
                     int64_t num_rows = 0;
@@ -1299,6 +1322,8 @@ void LakeServiceImpl::get_tablet_stats(::google::protobuf::RpcController* contro
                                      << ", elapsed_ms: " << elapsed_ms;
                     }
 
+                    _tablet_mgr->tablet_stat_cache()->insert(tablet_id, version, stat_accurate, num_rows, data_size);
+
                     std::lock_guard l(response_mtx);
                     auto tablet_stat = response->add_tablet_stats();
                     tablet_stat->set_tablet_id(tablet_id);
@@ -1317,6 +1342,9 @@ void LakeServiceImpl::get_tablet_stats(::google::protobuf::RpcController* contro
     }
 
     latch.wait();
+    VLOG(2) << "Finished get_tablet_stats. tablets: " << request->tablet_infos_size()
+            << ", bundle_reads: " << bundle_cache.miss_count()
+            << ", bundle_reuses: " << bundle_cache.hit_count();
 }
 
 void LakeServiceImpl::lock_tablet_metadata(::google::protobuf::RpcController* controller,

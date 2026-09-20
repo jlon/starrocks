@@ -23,8 +23,10 @@
 #include <manager.grpc.pb.h>
 #include <shard.pb.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <future>
 
 #include "common/config.h"
 #include "common/shutdown_hook.h"
@@ -249,6 +251,90 @@ TEST_F(StarOSWorkerTest, test_fs_cache_concurrent) {
     key2.reset();
 
     EXPECT_FALSE(worker->lookup_fs_cache(cache_key));
+}
+
+TEST_F(StarOSWorkerTest, test_fs_cache_build_waits_only_same_key) {
+    staros::starlet::fslib::register_builtin_filesystems();
+    staros::starlet::ShardInfo shard_info;
+    shard_info.id = 1;
+    auto fs_info = shard_info.path_info.mutable_fs_info();
+    fs_info->set_fs_type(staros::FileStoreType::S3);
+    auto s3_fs_info = fs_info->mutable_s3_fs_info();
+    s3_fs_info->set_bucket("test_bucket_a");
+    s3_fs_info->set_endpoint("test_endpoint");
+    s3_fs_info->set_region("us-east-1");
+    auto credential = s3_fs_info->mutable_credential();
+    auto simple_credential = credential->mutable_simple_credential();
+    simple_credential->set_access_key("test_ak");
+    simple_credential->set_access_key_secret("test_sk");
+    shard_info.path_info.set_full_path(absl::StrFormat("s3://%s/%d/", s3_fs_info->bucket(), time(NULL)));
+    shard_info.cache_info.set_enable_cache(true);
+    shard_info.cache_info.set_async_write_back(false);
+
+    auto another_shard_info = shard_info;
+    another_shard_info.id = 2;
+    another_shard_info.path_info.mutable_fs_info()->mutable_s3_fs_info()->set_bucket("test_bucket_b");
+    another_shard_info.path_info.set_full_path(
+            absl::StrFormat("s3://%s/%d/", "test_bucket_b", time(NULL) + 1));
+
+    auto scheme_or = StarOSWorker::build_scheme_from_shard_info(shard_info);
+    ASSERT_TRUE(scheme_or.ok());
+    auto conf_or = shard_info.fslib_conf_from_this(false, "");
+    ASSERT_TRUE(conf_or.ok());
+    auto another_conf_or = another_shard_info.fslib_conf_from_this(false, "");
+    ASSERT_TRUE(another_conf_or.ok());
+
+    auto scheme = scheme_or.value();
+    auto conf = conf_or.value();
+    auto another_conf = another_conf_or.value();
+    auto cache_key = StarOSWorker::get_cache_key(scheme, conf);
+    auto another_cache_key = StarOSWorker::get_cache_key(scheme, another_conf);
+    ASSERT_NE(cache_key, another_cache_key);
+
+    auto worker = std::make_shared<StarOSWorker>();
+    g_worker = worker;
+
+    auto build_state = std::make_shared<StarOSWorker::FsCacheBuildState>();
+    {
+        std::lock_guard l(worker->_fs_cache_build_mtx);
+        worker->_fs_cache_builds.emplace(cache_key, build_state);
+    }
+
+    auto another_result = std::async(std::launch::async, [&] {
+        return worker->new_shared_filesystem(scheme, another_conf).status();
+    });
+    auto another_status = another_result.wait_for(std::chrono::seconds(1));
+    EXPECT_EQ(std::future_status::ready, another_status);
+    if (another_status != std::future_status::ready) {
+        {
+            std::lock_guard l(worker->_fs_cache_build_mtx);
+            build_state->status = absl::UnavailableError("release blocked different-key build");
+            build_state->loading = false;
+            worker->_fs_cache_builds.erase(cache_key);
+        }
+        build_state->cv.notify_all();
+        auto status = another_result.get();
+        (void)status;
+        return;
+    }
+    EXPECT_TRUE(another_result.get().ok());
+
+    auto same_result = std::async(std::launch::async, [&] {
+        return worker->new_shared_filesystem(scheme, conf).status();
+    });
+    EXPECT_EQ(std::future_status::timeout, same_result.wait_for(std::chrono::milliseconds(100)));
+
+    {
+        std::lock_guard l(worker->_fs_cache_build_mtx);
+        build_state->status = absl::UnavailableError("injected same-key build failure");
+        build_state->loading = false;
+        worker->_fs_cache_builds.erase(cache_key);
+    }
+    build_state->cv.notify_all();
+
+    auto status = same_result.get();
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(absl::StatusCode::kUnavailable, status.code());
 }
 
 // Verify that a cache hit in retrieve_shard_info() does not trigger the fallback path
