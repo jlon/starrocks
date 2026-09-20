@@ -184,6 +184,8 @@ public:
 
 private:
     StatusOr<std::optional<SeekRange>> get_seek_range() const;
+    bool should_use_parallel_load(const SegmentReadOptions& seg_options, int32_t seg_start, int32_t seg_end,
+                                  const std::unordered_set<int>* skip_segment_idxs) const;
 
     TabletManager* _tablet_mgr;
     int64_t _tablet_id;

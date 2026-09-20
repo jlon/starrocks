@@ -1848,25 +1848,34 @@ public class Config extends ConfigBase {
 
     /**
      * If true, FE collects lake tablet statistics from multiple physical partitions concurrently.
-     * The default false keeps the original serial collection behavior.
+     * This is the legacy partition-level parallel path and is only used when
+     * enable_lake_tablet_stat_cn_batch_collection is false.
      */
     @ConfField(mutable = true)
     public static boolean enable_parallel_lake_tablet_stat_collection = false;
 
     /**
-     * Number of FE worker threads used to collect lake tablet statistics when parallel collection is enabled.
+     * Number of FE worker threads used to collect lake tablet statistics in the CN-batch path or in the legacy
+     * partition-level parallel path.
      */
     @ConfField(mutable = true)
     public static int lake_tablet_stat_collect_parallelism = 16;
 
     /**
-     * Max number of unfinished partition-level lake tablet statistic collection jobs.
+     * Max number of unfinished lake tablet statistic collection jobs.
      */
     @ConfField(mutable = true)
     public static int lake_tablet_stat_max_inflight_tasks = 256;
 
     /**
-     * Print a slow log for one partition-level lake tablet statistic collection job when cost is above this value.
+     * Progress log interval for lake tablet statistic collection. Set to a positive value to print periodic progress
+     * logs; set to a non-positive value to disable progress logs.
+     */
+    @ConfField(mutable = true)
+    public static long lake_tablet_stat_progress_log_interval_ms = -1;
+
+    /**
+     * Print a slow log for one lake tablet statistic collection job when cost is above this value.
      */
     @ConfField(mutable = true)
     public static long lake_tablet_stat_collect_slow_log_ms = 5000;
@@ -1876,6 +1885,33 @@ public class Config extends ConfigBase {
      */
     @ConfField(mutable = true)
     public static long lake_tablet_stat_cancel_wait_ms = 5000;
+
+    /**
+     * When enabled, lake tablet statistics are collected by aggregating stale tablets per compute node into
+     * batched get_tablet_stats requests, instead of issuing one request per physical partition. This reduces the
+     * number of small RPCs and the churn on the CN lake_metadata_fetch thread pool. It is disabled by default because
+     * production validation must prove the CN-batch path stable before replacing the legacy collection paths.
+     */
+    @ConfField(mutable = true)
+    public static boolean enable_lake_tablet_stat_cn_batch_collection = false;
+
+    /**
+     * Max number of tablets carried in one batched get_tablet_stats request when
+     * enable_lake_tablet_stat_cn_batch_collection is enabled. Tablets of the same physical partition are kept
+     * contiguous within a batch to preserve bundle-metadata locality on the CN side.
+     */
+    @ConfField(mutable = true)
+    public static int lake_tablet_stat_batch_size = 100;
+
+    /**
+     * When enabled, lake tablet statistic collection skips physical partitions still at the initial version
+     * (visibleVersion &lt;= PARTITION_INIT_VERSION). Such partitions never had a load committed, so their row count
+     * and data size are guaranteed to be 0 and querying the CN would only read remote initial metadata and, for
+     * bundle-optimized tablets, trigger an object-store FileNotFound on the per-tablet metadata path. Disable it only
+     * if a partition can legitimately hold data at the initial version.
+     */
+    @ConfField(mutable = true)
+    public static boolean enable_lake_tablet_stat_skip_initial_version = true;
 
     @ConfField(mutable = true, comment = "time interval to collect tablet info from backend")
     public static long tablet_collect_interval_seconds = 60;

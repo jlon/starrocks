@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <optional>
 #include <unordered_set>
 
@@ -1203,6 +1204,108 @@ TEST_F(LakeRowsetSegmentMetadataFilterTest, test_load_segments_parallel_with_ski
     EXPECT_EQ(segments[2].segment_meta_pos, 2);
 }
 
+TEST_F(LakeRowsetSegmentMetadataFilterTest, test_cold_metadata_cache_load_segments_uses_adaptive_parallel) {
+    create_rowsets_with_segment_metas();
+
+    ConfigResetGuard<bool> guard(&config::enable_load_segment_parallel, false);
+
+    std::atomic<int> parallel_hits{0};
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([] {
+        SyncPoint::GetInstance()->ClearAllCallBacks();
+        SyncPoint::GetInstance()->ClearTrace();
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+    SyncPoint::GetInstance()->SetCallBack("Rowset::load_segments::parallel_load", [&](void*) {
+        parallel_hits.fetch_add(1);
+    });
+
+    auto rowset =
+            std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 0 /* compaction_segment_limit */);
+
+    std::vector<SegmentPtr> segments;
+    SegmentReadOptions seg_options;
+    seg_options.lake_io_opts.fill_data_cache = true;
+    seg_options.lake_io_opts.fill_metadata_cache = true;
+    ASSERT_OK(rowset->load_segments(&segments, seg_options, nullptr));
+    ASSERT_EQ(segments.size(), 3);
+    EXPECT_GE(parallel_hits.load(), 2);
+
+    parallel_hits.store(0);
+    segments.clear();
+    ASSERT_OK(rowset->load_segments(&segments, seg_options, nullptr));
+    ASSERT_EQ(segments.size(), 3);
+    EXPECT_EQ(parallel_hits.load(), 0);
+}
+
+TEST_F(LakeRowsetSegmentMetadataFilterTest, test_adaptive_parallel_load_can_be_disabled) {
+    create_rowsets_with_segment_metas();
+
+    ConfigResetGuard<bool> serial_guard(&config::enable_load_segment_parallel, false);
+    ConfigResetGuard<bool> adaptive_guard(&config::enable_adaptive_load_segment_parallel, false);
+
+    std::atomic<int> parallel_hits{0};
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([] {
+        SyncPoint::GetInstance()->ClearAllCallBacks();
+        SyncPoint::GetInstance()->ClearTrace();
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+    SyncPoint::GetInstance()->SetCallBack("Rowset::load_segments::parallel_load",
+                                          [&](void*) { parallel_hits.fetch_add(1); });
+
+    auto rowset =
+            std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 0 /* compaction_segment_limit */);
+
+    std::vector<SegmentPtr> segments;
+    SegmentReadOptions seg_options;
+    seg_options.lake_io_opts.fill_data_cache = true;
+    seg_options.lake_io_opts.fill_metadata_cache = true;
+    ASSERT_OK(rowset->load_segments(&segments, seg_options, nullptr));
+    ASSERT_EQ(segments.size(), 3);
+    EXPECT_EQ(parallel_hits.load(), 0);
+}
+
+TEST_F(LakeRowsetSegmentMetadataFilterTest, test_unopened_cached_segment_uses_adaptive_parallel) {
+    create_rowsets_with_segment_metas();
+
+    ConfigResetGuard<bool> guard(&config::enable_load_segment_parallel, false);
+
+    auto* cache = _tablet_mgr->metacache();
+    cache->prune();
+
+    const auto& rowset_meta = _tablet_metadata->rowsets(0);
+    const auto segment_path = _tablet_mgr->segment_location(_tablet_metadata->id(), rowset_meta.segments(0));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(segment_path));
+    FileInfo segment_info{.path = segment_path};
+    auto cached_segment = std::make_shared<Segment>(fs, segment_info, 0, _tablet_schema, _tablet_mgr.get());
+    ASSERT_FALSE(cached_segment->is_open());
+    cache->cache_segment(segment_info.cache_key(), cached_segment);
+
+    std::atomic<int> parallel_hits{0};
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([] {
+        SyncPoint::GetInstance()->ClearAllCallBacks();
+        SyncPoint::GetInstance()->ClearTrace();
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+    SyncPoint::GetInstance()->SetCallBack("Rowset::load_segments::parallel_load", [&](void*) {
+        parallel_hits.fetch_add(1);
+    });
+
+    auto rowset =
+            std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 0 /* compaction_segment_limit */);
+
+    std::vector<SegmentPtr> segments;
+    SegmentReadOptions seg_options;
+    seg_options.lake_io_opts.fill_data_cache = true;
+    seg_options.lake_io_opts.fill_metadata_cache = true;
+    ASSERT_OK(rowset->load_segments(&segments, seg_options, nullptr));
+    ASSERT_EQ(segments.size(), 3);
+    EXPECT_GE(parallel_hits.load(), 2);
+    EXPECT_TRUE(cached_segment->is_open());
+}
+
 // ================================================================================
 // Tests for Rowset segment range mode (large rowset split compaction)
 // ================================================================================
@@ -1256,6 +1359,34 @@ TEST_F(LakeRowsetTest, test_segment_range_mode_load_segments) {
     // Load segments with fill_data_cache = false
     ASSIGN_OR_ABORT(auto segments, rowset->segments(false));
     ASSERT_EQ(2, segments.size()); // Only 2 segments loaded
+}
+
+TEST_F(LakeRowsetTest, test_segment_range_mode_does_not_use_adaptive_parallel_load) {
+    create_rowsets_for_testing();
+
+    ConfigResetGuard<bool> guard(&config::enable_load_segment_parallel, false);
+
+    std::atomic<int> parallel_hits{0};
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([] {
+        SyncPoint::GetInstance()->ClearAllCallBacks();
+        SyncPoint::GetInstance()->ClearTrace();
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+    SyncPoint::GetInstance()->SetCallBack("Rowset::load_segments::parallel_load", [&](void*) {
+        parallel_hits.fetch_add(1);
+    });
+
+    auto rowset = std::make_shared<lake::Rowset>(_tablet_mgr.get(), _tablet_metadata, 0, 0 /* segment_start */,
+                                                 2 /* segment_end */);
+
+    std::vector<SegmentPtr> segments;
+    SegmentReadOptions seg_options;
+    seg_options.lake_io_opts.fill_data_cache = true;
+    seg_options.lake_io_opts.fill_metadata_cache = true;
+    ASSERT_OK(rowset->load_segments(&segments, seg_options, nullptr));
+    ASSERT_EQ(2, segments.size());
+    EXPECT_EQ(0, parallel_hits.load());
 }
 
 TEST_F(LakeRowsetTest, test_segment_range_mode_vs_normal_mode) {

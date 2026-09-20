@@ -153,7 +153,7 @@ private:
     std::shared_ptr<std::vector<uint64_t>> _rssid_rowids;
 };
 
-class MergeIterator : public ChunkIterator {
+class MergeIterator : public ChunkIterator, public PreparedChunkIterator {
 public:
     explicit MergeIterator(std::vector<ChunkIteratorPtr> children)
             : ChunkIterator(children[0]->schema(), children[0]->chunk_size()),
@@ -175,6 +175,8 @@ public:
     void close() override;
 
     size_t merged_rows() const override { return _merged_rows; }
+
+    Status prepare() override { return prepare_chunk_iterators(_children); }
 
     Status init_encoded_schema(ColumnIdToGlobalDictMap& dict_maps) override {
         RETURN_IF_ERROR(ChunkIterator::init_encoded_schema(dict_maps));

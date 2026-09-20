@@ -73,7 +73,9 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -355,6 +357,10 @@ public class TabletStatMgr extends FrontendDaemon {
             return;
         }
 
+        if (Config.enable_lake_tablet_stat_cn_batch_collection) {
+            updateLakeTabletStatCnBatch();
+            return;
+        }
         if (Config.enable_parallel_lake_tablet_stat_collection) {
             updateLakeTabletStatParallel();
             return;
@@ -401,6 +407,89 @@ public class TabletStatMgr extends FrontendDaemon {
         collector.logSummary(System.currentTimeMillis() - start);
     }
 
+    // Collect lake tablet stats by aggregating stale tablets per compute node into batched
+    // get_tablet_stats requests, instead of one request per physical partition. Batches preserve
+    // per-partition (i.e. bundle) locality so a CN can reuse a bundle metadata read across the
+    // tablets of the same partition inside one request.
+    private void updateLakeTabletStatCnBatch() {
+        long start = System.currentTimeMillis();
+        LakeTabletStatCollector collector = newLakeTabletStatCollector("all databases (cn-batch)");
+        try {
+            WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+            CnBatchAccumulator accumulator = new CnBatchAccumulator(collector);
+
+            List<Long> dbIds = GlobalStateMgr.getCurrentState().getLocalMetastore().getDbIds();
+            for (Long dbId : dbIds) {
+                if (collector.isInterrupted()) {
+                    break;
+                }
+                Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
+                if (db == null) {
+                    continue;
+                }
+                for (Table table : GlobalStateMgr.getCurrentState().getLocalMetastore().getTables(db.getId())) {
+                    if (collector.isInterrupted()) {
+                        break;
+                    }
+                    if (table.isCloudNativeTableOrMaterializedView()) {
+                        collectStaleTabletsAndSubmitBatches(db, (OlapTable) table, warehouseManager, accumulator);
+                    }
+                }
+            }
+
+            accumulator.flushAll();
+            collector.waitAll();
+        } finally {
+            collector.close();
+        }
+        collector.logSummary(System.currentTimeMillis() - start);
+    }
+
+    // Scan one table's physical partitions under a short read lock. Stale tablets are grouped by
+    // owning CN per partition before they enter the accumulator, so batch construction preserves
+    // bundle locality unless one partition alone exceeds the configured batch size.
+    private void collectStaleTabletsAndSubmitBatches(@NotNull Database db, @NotNull OlapTable table,
+                                                     @NotNull WarehouseManager warehouseManager,
+                                                     @NotNull CnBatchAccumulator accumulator) {
+        for (PhysicalPartition partition : getPartitions(db, table)) {
+            if (accumulator.isInterrupted()) {
+                return;
+            }
+            PartitionSnapshot snapshot = createPartitionSnapshot(db, table, partition);
+            long visibleVersion = snapshot.visibleVersion;
+            if (isInitialEmptyPartition(visibleVersion)) {
+                continue;
+            }
+            long visibleVersionTime = snapshot.visibleVersionTime;
+            Map<Long, ComputeNode> nodeById = new LinkedHashMap<>();
+            Map<Long, List<TabletStatEntry>> partitionTabletsByNode = new LinkedHashMap<>();
+            for (Tablet tablet : snapshot.tablets) {
+                LakeTablet lakeTablet = (LakeTablet) tablet;
+                if (lakeTablet.getDataSizeUpdateTime() >= visibleVersionTime) {
+                    continue;
+                }
+                ComputeNode node;
+                try {
+                    node = warehouseManager.getComputeNodeAssignedToTablet(computeResource, tablet.getId());
+                } catch (ErrorReportException e) {
+                    continue;
+                }
+                if (node == null) {
+                    continue;
+                }
+                nodeById.putIfAbsent(node.getId(), node);
+                partitionTabletsByNode.computeIfAbsent(node.getId(), k -> new ArrayList<>())
+                        .add(new TabletStatEntry(tablet.getId(), lakeTablet, visibleVersion));
+            }
+            for (Map.Entry<Long, List<TabletStatEntry>> entry : partitionTabletsByNode.entrySet()) {
+                if (accumulator.isInterrupted()) {
+                    return;
+                }
+                accumulator.addPartitionGroup(nodeById.get(entry.getKey()), entry.getValue());
+            }
+        }
+    }
+
     private void adjustStatUpdateRows(long tableId, long totalRowCount) {
         BasicStatsMeta meta = GlobalStateMgr.getCurrentState().getAnalyzeMgr().getTableBasicStatsMeta(tableId);
         if (meta != null) {
@@ -444,6 +533,10 @@ public class TabletStatMgr extends FrontendDaemon {
     private CollectTabletStatJob createCollectTabletStatJob(@NotNull Database db, @NotNull OlapTable table,
                                                             @NotNull PhysicalPartition partition) {
         PartitionSnapshot snapshot = createPartitionSnapshot(db, table, partition);
+        if (isInitialEmptyPartition(snapshot.visibleVersion)) {
+            LOG.debug("Skipped tablet stat collection of initial empty partition {}", snapshot.debugName());
+            return null;
+        }
         long visibleVersionTime = snapshot.visibleVersionTime;
         snapshot.tablets.removeIf(t -> ((LakeTablet) t).getDataSizeUpdateTime() >= visibleVersionTime);
         if (snapshot.tablets.isEmpty()) {
@@ -453,12 +546,30 @@ public class TabletStatMgr extends FrontendDaemon {
         return new CollectTabletStatJob(snapshot, computeResource);
     }
 
+    // A physical partition still at the initial version has never had a load committed, so its row count and
+    // data size are guaranteed to be 0. Collecting stats for it would only make the CN read remote initial
+    // metadata and, for bundle-optimized tablets, trigger an object-store FileNotFound on the per-tablet
+    // metadata path. The same "initial version means no data" semantics are used by ConsistencyChecker.
+    private static boolean isInitialEmptyPartition(long visibleVersion) {
+        return Config.enable_lake_tablet_stat_skip_initial_version
+                && visibleVersion <= PhysicalPartition.PARTITION_INIT_VERSION;
+    }
+
     private void updateLakeTableTabletStat(@NotNull Database db, @NotNull OlapTable table) {
-        if (Config.enable_parallel_lake_tablet_stat_collection) {
+        if (Config.enable_lake_tablet_stat_cn_batch_collection || Config.enable_parallel_lake_tablet_stat_collection) {
             long start = System.currentTimeMillis();
-            LakeTabletStatCollector collector = newLakeTabletStatCollector(db.getFullName() + "." + table.getName());
+            String collectorName = db.getFullName() + "." + table.getName()
+                    + (Config.enable_lake_tablet_stat_cn_batch_collection ? " (cn-batch)" : "");
+            LakeTabletStatCollector collector = newLakeTabletStatCollector(collectorName);
             try {
-                submitLakeTableTabletStatJobs(collector, db, table);
+                if (Config.enable_lake_tablet_stat_cn_batch_collection) {
+                    WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+                    CnBatchAccumulator accumulator = new CnBatchAccumulator(collector);
+                    collectStaleTabletsAndSubmitBatches(db, table, warehouseManager, accumulator);
+                    accumulator.flushAll();
+                } else {
+                    submitLakeTableTabletStatJobs(collector, db, table);
+                }
                 collector.waitAll();
             } finally {
                 collector.close();
@@ -551,6 +662,10 @@ public class TabletStatMgr extends FrontendDaemon {
         return Math.max(0, Config.lake_tablet_stat_collect_slow_log_ms);
     }
 
+    private static long lakeTabletStatProgressLogIntervalMs() {
+        return Config.lake_tablet_stat_progress_log_interval_ms;
+    }
+
     private static long lakeTabletStatCancelWaitMs() {
         return Math.max(0, Config.lake_tablet_stat_cancel_wait_ms);
     }
@@ -584,6 +699,8 @@ public class TabletStatMgr extends FrontendDaemon {
         private final int maxInflightTasks;
         private final CompletionService<CollectTabletStatJobResult> completionService;
         private final Set<Future<CollectTabletStatJobResult>> inFlightFutures = ConcurrentHashMap.newKeySet();
+        private final Map<Future<CollectTabletStatJobResult>, String> inFlightSerialKeys = new ConcurrentHashMap<>();
+        private final Set<String> activeSerialKeys = ConcurrentHashMap.newKeySet();
         private final Thread ownerThread;
         private int inFlightJobs = 0;
         private int maxObservedInFlightJobs = 0;
@@ -594,6 +711,10 @@ public class TabletStatMgr extends FrontendDaemon {
         private long requestedTablets = 0;
         private long updatedTablets = 0;
         private long slowJobs = 0;
+        private long startTimeMs = System.currentTimeMillis();
+        private long nextProgressLogTimeMs = -1;
+        private String lastSubmittedPartition = "";
+        private String lastCompletedPartition = "";
         private boolean interrupted = false;
         private volatile boolean stopRequested = false;
         private boolean closed = false;
@@ -616,7 +737,7 @@ public class TabletStatMgr extends FrontendDaemon {
             ownerThread.interrupt();
         }
 
-        void submit(@Nullable CollectTabletStatJob job) {
+        void submit(@Nullable LakeTabletStatJob job) {
             if (job == null) {
                 skippedJobs++;
                 return;
@@ -626,16 +747,36 @@ public class TabletStatMgr extends FrontendDaemon {
                 return;
             }
 
+            String serialKey = job.serialKey();
+            if (!serialKey.isEmpty()) {
+                waitUntilSerialKeyIdle(serialKey);
+                if (isInterrupted()) {
+                    skippedJobs++;
+                    return;
+                }
+            }
+
             Future<CollectTabletStatJobResult> future = completionService.submit(job::execute);
             inFlightFutures.add(future);
+            if (!serialKey.isEmpty()) {
+                inFlightSerialKeys.put(future, serialKey);
+                activeSerialKeys.add(serialKey);
+            }
             submittedJobs++;
             requestedTablets += job.getTabletCount();
+            lastSubmittedPartition = job.debugName();
             inFlightJobs++;
             maxObservedInFlightJobs = Math.max(maxObservedInFlightJobs, inFlightJobs);
             if (stopRequested) {
                 future.cancel(true);
             }
             if (inFlightJobs >= maxInflightTasks) {
+                waitOne();
+            }
+        }
+
+        private void waitUntilSerialKeyIdle(String serialKey) {
+            while (activeSerialKeys.contains(serialKey) && !isInterrupted()) {
                 waitOne();
             }
         }
@@ -649,9 +790,10 @@ public class TabletStatMgr extends FrontendDaemon {
         private void waitOne() {
             Future<CollectTabletStatJobResult> future = null;
             try {
-                future = completionService.take();
+                future = waitForOneCompletedJob();
                 CollectTabletStatJobResult result = future.get();
                 completedJobs++;
+                lastCompletedPartition = result.partitionName;
                 updatedTablets += result.updatedTabletCount;
                 if (result.failed()) {
                     failedJobs++;
@@ -668,9 +810,85 @@ public class TabletStatMgr extends FrontendDaemon {
                 throw toRuntimeException(e);
             } finally {
                 if (future != null && inFlightFutures.remove(future)) {
+                    clearSerialKey(future);
                     inFlightJobs--;
                 }
             }
+        }
+
+        private void clearSerialKey(Future<CollectTabletStatJobResult> future) {
+            String serialKey = inFlightSerialKeys.remove(future);
+            if (serialKey != null) {
+                activeSerialKeys.remove(serialKey);
+            }
+        }
+
+        private Future<CollectTabletStatJobResult> waitForOneCompletedJob() throws InterruptedException {
+            while (true) {
+                long waitMs = getProgressLogWaitMs();
+                if (waitMs < 0) {
+                    return completionService.take();
+                }
+                Future<CollectTabletStatJobResult> future = completionService.poll(waitMs, TimeUnit.MILLISECONDS);
+                if (future != null) {
+                    return future;
+                }
+                logProgressIfDue();
+            }
+        }
+
+        private long getProgressLogWaitMs() {
+            long intervalMs = lakeTabletStatProgressLogIntervalMs();
+            if (intervalMs <= 0) {
+                nextProgressLogTimeMs = -1;
+                return -1;
+            }
+            long nowMs = System.currentTimeMillis();
+            if (nextProgressLogTimeMs < 0) {
+                nextProgressLogTimeMs = nowMs + intervalMs;
+            }
+            return Math.max(1, nextProgressLogTimeMs - nowMs);
+        }
+
+        private void logProgressIfDue() {
+            long intervalMs = lakeTabletStatProgressLogIntervalMs();
+            if (intervalMs <= 0) {
+                nextProgressLogTimeMs = -1;
+                return;
+            }
+            long nowMs = System.currentTimeMillis();
+            if (nextProgressLogTimeMs < 0) {
+                nextProgressLogTimeMs = nowMs + intervalMs;
+                return;
+            }
+            if (nowMs < nextProgressLogTimeMs) {
+                return;
+            }
+            logProgress(nowMs);
+            do {
+                nextProgressLogTimeMs += intervalMs;
+            } while (nextProgressLogTimeMs <= nowMs);
+        }
+
+        private void logProgress(long nowMs) {
+            long finishedPartitions = completedJobs + skippedJobs;
+            long seenPartitions = submittedJobs + skippedJobs;
+            double progress = seenPartitions == 0 ? 100.0 : finishedPartitions * 100.0 / seenPartitions;
+            long elapsedMs = Math.max(0, nowMs - startTimeMs);
+            double rate = elapsedMs == 0 ? 0.0 : finishedPartitions * 1000.0 / elapsedMs;
+            LOG.info("lake tablet stat collection progress for {}: progress: {}% ({}/{} seen partitions), " +
+                            "in-flight: {}, submitted: {}, completed: {}, failed: {}, skipped: {}, " +
+                            "requested tablets: {}, updated tablets: {}, " +
+                            "elapsed: {} ms, rate: {} partitions/s, max in-flight: {}, parallelism: {}, " +
+                            "max in-flight config: {}, last submitted partition: {}, last completed partition: {}",
+                    name, formatDouble(progress), finishedPartitions, seenPartitions, inFlightJobs, submittedJobs,
+                    completedJobs, failedJobs, skippedJobs, requestedTablets, updatedTablets, elapsedMs,
+                    formatDouble(rate), maxObservedInFlightJobs, parallelism, maxInflightTasks,
+                    lastSubmittedPartition, lastCompletedPartition);
+        }
+
+        private String formatDouble(double value) {
+            return String.format(Locale.ROOT, "%.2f", value);
         }
 
         private RuntimeException toRuntimeException(ExecutionException exception) {
@@ -746,6 +964,7 @@ public class TabletStatMgr extends FrontendDaemon {
                         break;
                     }
                     if (inFlightFutures.remove(future)) {
+                        clearSerialKey(future);
                         inFlightJobs--;
                         remainingJobs--;
                     }
@@ -762,12 +981,26 @@ public class TabletStatMgr extends FrontendDaemon {
         }
     }
 
+    private interface LakeTabletStatJob {
+        CollectTabletStatJobResult execute();
+
+        int getTabletCount();
+
+        String debugName();
+
+        default String serialKey() {
+            return "";
+        }
+    }
+
     private static class CollectTabletStatJobResult {
+        private final String partitionName;
         private final int updatedTabletCount;
         private final int failedResponseCount;
         private final long costMs;
 
-        CollectTabletStatJobResult(int updatedTabletCount, int failedResponseCount, long costMs) {
+        CollectTabletStatJobResult(String partitionName, int updatedTabletCount, int failedResponseCount, long costMs) {
+            this.partitionName = partitionName;
             this.updatedTabletCount = updatedTabletCount;
             this.failedResponseCount = failedResponseCount;
             this.costMs = costMs;
@@ -793,7 +1026,7 @@ public class TabletStatMgr extends FrontendDaemon {
         }
     }
 
-    private static class CollectTabletStatJob {
+    private static class CollectTabletStatJob implements LakeTabletStatJob {
         private final String dbName;
         private final String tableName;
         private final long partitionId;
@@ -815,7 +1048,8 @@ public class TabletStatMgr extends FrontendDaemon {
             this.computeResource = computeResource;
         }
 
-        CollectTabletStatJobResult execute() {
+        @Override
+        public CollectTabletStatJobResult execute() {
             long start = System.currentTimeMillis();
             int requestCount = sendTasks();
             CollectTabletStatWaitResult waitResult = waitResponse();
@@ -828,15 +1062,17 @@ public class TabletStatMgr extends FrontendDaemon {
                         debugName(), version, tablets.size(), requestCount, waitResult.updatedTabletCount,
                         waitResult.failedResponseCount, costMs);
             }
-            return new CollectTabletStatJobResult(waitResult.updatedTabletCount,
+            return new CollectTabletStatJobResult(debugName(), waitResult.updatedTabletCount,
                     waitResult.failedResponseCount, costMs);
         }
 
-        private String debugName() {
+        @Override
+        public String debugName() {
             return String.format("%s.%s.%d", dbName, tableName, partitionId);
         }
 
-        private int getTabletCount() {
+        @Override
+        public int getTabletCount() {
             return tablets.size();
         }
 
@@ -916,6 +1152,168 @@ public class TabletStatMgr extends FrontendDaemon {
                 }
             }
             return new CollectTabletStatWaitResult(updatedTabletCount, failedResponseCount);
+        }
+    }
+
+    // A stale tablet target to refresh, carrying its owning LakeTablet reference and the visible
+    // version captured at scan time. Used by the per-CN batch collection path.
+    private static class TabletStatEntry {
+        private final long tabletId;
+        private final LakeTablet tablet;
+        private final long version;
+
+        TabletStatEntry(long tabletId, LakeTablet tablet, long version) {
+            this.tabletId = tabletId;
+            this.tablet = tablet;
+            this.version = version;
+        }
+    }
+
+    private static class CnBatchAccumulator {
+        private final LakeTabletStatCollector collector;
+        private final int batchSize;
+        private final Map<Long, ComputeNode> nodeById = new LinkedHashMap<>();
+        private final Map<Long, List<TabletStatEntry>> pendingByNode = new LinkedHashMap<>();
+
+        CnBatchAccumulator(LakeTabletStatCollector collector) {
+            this.collector = Objects.requireNonNull(collector, "collector is null");
+            this.batchSize = Math.max(1, Config.lake_tablet_stat_batch_size);
+        }
+
+        boolean isInterrupted() {
+            return collector.isInterrupted();
+        }
+
+        void addPartitionGroup(ComputeNode node, List<TabletStatEntry> entries) {
+            if (entries.isEmpty() || collector.isInterrupted()) {
+                return;
+            }
+            long nodeId = node.getId();
+            nodeById.putIfAbsent(nodeId, node);
+
+            if (entries.size() > batchSize) {
+                flushNode(nodeId);
+                for (int offset = 0; offset < entries.size() && !collector.isInterrupted(); offset += batchSize) {
+                    int end = Math.min(offset + batchSize, entries.size());
+                    submitBatch(node, entries.subList(offset, end));
+                }
+                return;
+            }
+
+            List<TabletStatEntry> pending = pendingByNode.computeIfAbsent(nodeId, ignored -> new ArrayList<>());
+            if (!pending.isEmpty() && pending.size() + entries.size() > batchSize) {
+                flushNode(nodeId);
+                pending = pendingByNode.computeIfAbsent(nodeId, ignored -> new ArrayList<>());
+            }
+            pending.addAll(entries);
+            if (pending.size() >= batchSize) {
+                flushNode(nodeId);
+            }
+        }
+
+        void flushAll() {
+            List<Long> nodeIds = new ArrayList<>(pendingByNode.keySet());
+            for (long nodeId : nodeIds) {
+                if (collector.isInterrupted()) {
+                    return;
+                }
+                flushNode(nodeId);
+            }
+        }
+
+        private void flushNode(long nodeId) {
+            List<TabletStatEntry> pending = pendingByNode.remove(nodeId);
+            if (pending == null || pending.isEmpty() || collector.isInterrupted()) {
+                return;
+            }
+            submitBatch(nodeById.get(nodeId), pending);
+        }
+
+        private void submitBatch(ComputeNode node, List<TabletStatEntry> entries) {
+            collector.submit(new CnBatchTabletStatJob(node, new ArrayList<>(entries)));
+        }
+    }
+
+    // Collects stats for a batch of tablets that all belong to one compute node in a single
+    // get_tablet_stats RPC. Batches are built to keep tablets of the same partition contiguous, so
+    // the CN can reuse a bundle metadata read across them within the request.
+    private static class CnBatchTabletStatJob implements LakeTabletStatJob {
+        private final ComputeNode node;
+        private final List<TabletStatEntry> entries;
+
+        CnBatchTabletStatJob(ComputeNode node, List<TabletStatEntry> entries) {
+            this.node = Objects.requireNonNull(node, "node is null");
+            this.entries = Objects.requireNonNull(entries, "entries is null");
+        }
+
+        @Override
+        public CollectTabletStatJobResult execute() {
+            long start = System.currentTimeMillis();
+            Map<Long, LakeTablet> tabletById = new HashMap<>();
+            TabletStatRequest request = new TabletStatRequest();
+            List<TabletInfo> tabletInfos = Lists.newArrayListWithCapacity(entries.size());
+            for (TabletStatEntry entry : entries) {
+                TabletInfo tabletInfo = new TabletInfo();
+                tabletInfo.tabletId = entry.tabletId;
+                tabletInfo.version = entry.version;
+                tabletInfos.add(tabletInfo);
+                tabletById.put(entry.tabletId, entry.tablet);
+            }
+            request.tabletInfos = tabletInfos;
+            request.timeoutMs = LakeService.TIMEOUT_GET_TABLET_STATS;
+
+            // Record send time before the RPC. If a partition gets a newer visible version during
+            // the RPC, its visibleVersionTime will exceed this time, so the tablet is refreshed
+            // again next round (same semantics as the per-partition path).
+            long collectStatTime = System.currentTimeMillis();
+            int updatedTabletCount = 0;
+            int failedResponseCount = 0;
+            try {
+                LakeService lakeService = BrpcProxy.getLakeService(node.getHost(), node.getBrpcPort());
+                Future<TabletStatResponse> responseFuture = lakeService.getTabletStats(request);
+                TabletStatResponse response = responseFuture.get();
+                if (response != null && response.tabletStats != null) {
+                    for (TabletStat stat : response.tabletStats) {
+                        LakeTablet tablet = tabletById.get(stat.tabletId);
+                        if (tablet != null) {
+                            tablet.setDataSize(stat.dataSize);
+                            tablet.setRowCount(stat.numRows);
+                            tablet.setDataSizeUpdateTime(collectStatTime);
+                            updatedTabletCount++;
+                        }
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                failedResponseCount++;
+            } catch (Exception e) {
+                // A per-CN RPC failure (unreachable node, timeout, remote metadata read failure) is
+                // expected and must not abort the whole round; count it and let other batches proceed.
+                failedResponseCount++;
+                LOG.warn("Fail to collect tablet stat batch on node {}: {}", node.getHost(), e.getMessage());
+            }
+
+            long costMs = System.currentTimeMillis() - start;
+            if (lakeTabletStatSlowLogMs() > 0 && costMs >= lakeTabletStatSlowLogMs()) {
+                LOG.info("slow lake tablet stat batch. node: {}, tablets: {}, updated: {}, failed: {}, cost: {} ms",
+                        node.getHost(), entries.size(), updatedTabletCount, failedResponseCount, costMs);
+            }
+            return new CollectTabletStatJobResult(debugName(), updatedTabletCount, failedResponseCount, costMs);
+        }
+
+        @Override
+        public int getTabletCount() {
+            return entries.size();
+        }
+
+        @Override
+        public String debugName() {
+            return String.format("cn-%d batch(%d)", node.getId(), entries.size());
+        }
+
+        @Override
+        public String serialKey() {
+            return "cn-" + node.getId();
         }
     }
 }

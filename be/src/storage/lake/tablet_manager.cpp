@@ -543,6 +543,24 @@ Status TabletManager::verify_tablet_metadata_persisted(const std::string& metada
     return file.load(&metadata, /*fill_cache=*/false);
 }
 
+Status TabletManager::verify_bundle_metadata_persisted(const std::string& meta_location, size_t expected_tablet_count,
+                                                       FileSystem* fs) {
+    TEST_ERROR_POINT("TabletManager::verify_bundle_metadata_persisted");
+    // Read the just-written bundle back from remote storage. get_metas_from_bundle_tablet_metadata opens the
+    // file directly with skip_fill_local_cache=true (bypassing metacache and the data cache), so a bundle
+    // reported as written but not durably persisted surfaces here as an error before publish is reported
+    // successful. A single read, no retry: a transient read-after-write lag simply makes this publish retry
+    // rather than advancing the version on a non-durable bundle.
+    ASSIGN_OR_RETURN(auto metadatas, get_metas_from_bundle_tablet_metadata(meta_location, fs));
+    if (metadatas.size() != expected_tablet_count) {
+        return Status::Corruption(
+                fmt::format("bundle metadata read-back tablet count mismatch after write, expected {}, got {}, "
+                            "location {}",
+                            expected_tablet_count, metadatas.size(), meta_location));
+    }
+    return Status::OK();
+}
+
 Status TabletManager::cache_tablet_metadata(const TabletMetadataPtr& metadata) {
     auto metadata_location = tablet_metadata_location(metadata->id(), metadata->version());
     if (auto ptr = _metacache->lookup_tablet_metadata(metadata_location); ptr != nullptr) {
@@ -711,6 +729,9 @@ Status TabletManager::put_bundle_tablet_metadata(std::map<int64_t, TabletMetadat
     put_fixed64_le(&fixed_buf, size_field_value);
     RETURN_IF_ERROR(meta_file->append(Slice(fixed_buf)));
     RETURN_IF_ERROR(meta_file->close());
+    if (config::lake_aggregate_publish_readback_check) {
+        RETURN_IF_ERROR(verify_bundle_metadata_persisted(meta_location, tablet_metas.size(), fs.get()));
+    }
     _metacache->cache_aggregation_partition(partition_location, true);
     return Status::OK();
 }
@@ -786,12 +807,19 @@ StatusOr<TabletMetadataPtr> TabletManager::get_tablet_metadata(int64_t tablet_id
 StatusOr<TabletMetadataPtr> TabletManager::get_tablet_metadata(int64_t tablet_id, int64_t version,
                                                                const CacheOptions& cache_opts, int64_t expected_gtid,
                                                                const std::shared_ptr<FileSystem>& fs,
-                                                               BundleMetadataCache* bundle_cache) {
+                                                               BundleMetadataCache* bundle_cache, bool prefer_bundle) {
     TEST_ERROR_POINT("TabletManager::get_tablet_metadata");
     StatusOr<TabletMetadataPtr> tablet_metadata_or;
     auto cache_key = _location_provider->real_location(tablet_metadata_root_location(tablet_id));
 
-    if (bundle_cache != nullptr || (cache_key.ok() && _metacache->lookup_aggregation_partition(*cache_key))) {
+    if (version == kInitialVersion) {
+        // Version 1 is represented by the shared initial metadata file or a legacy per-tablet
+        // metadata file, never by a bundle metadata file.
+        tablet_metadata_or =
+                get_tablet_metadata(tablet_metadata_location(tablet_id, version), cache_opts, expected_gtid, fs);
+    } else if (bundle_cache != nullptr || prefer_bundle ||
+               (cache_key.ok() && _metacache->lookup_aggregation_partition(*cache_key))) {
+        // Prefer a known bundle before the legacy per-tablet metadata path.
         tablet_metadata_or =
                 get_single_tablet_metadata(tablet_id, version, cache_opts, expected_gtid, fs, bundle_cache);
         if (tablet_metadata_or.ok()) {
@@ -842,7 +870,25 @@ StatusOr<TabletMetadataPtr> TabletManager::get_tablet_metadata(const string& pat
     StatusOr<TabletMetadataPtr> metadata_or;
     auto [tablet_id, version] = parse_tablet_metadata_filename(basename(path));
     auto cache_key = _location_provider->real_location(tablet_metadata_root_location(tablet_id));
-    if (cache_key.ok() && _metacache->lookup_aggregation_partition(*cache_key)) {
+
+    if (tablet_id != 0 && version == kInitialVersion) {
+        // The initial version is persisted once as the shared initial metadata file
+        // (0000000000000000_<kInitialVersion>.meta), or, for older non-optimized creates, as the per-tablet
+        // <tablet_id>_<kInitialVersion>.meta file. That shared file is a plain metadata PB, not a bundle, so
+        // get_single_tablet_metadata always returns NotFound for kInitialVersion and the bundle path holds
+        // nothing here. Read the shared initial file first and fall back to the per-tablet file; this avoids
+        // a guaranteed-miss probe on the per-tablet path, which the object store reports as FileNotFound and
+        // background stat collection over huge numbers of empty initial partitions amplifies into a log/CPU
+        // storm.
+        std::string initial_path = join_path(prefix_name(path), tablet_initial_metadata_filename());
+        metadata_or = load_tablet_metadata(initial_path, cache_opts.fill_data_cache, expected_gtid, fs);
+        if (metadata_or.ok()) {
+            auto metadata = const_cast<starrocks::TabletMetadataPB*>(metadata_or.value().get());
+            metadata->set_id(tablet_id);
+        } else if (metadata_or.status().is_not_found()) {
+            metadata_or = load_tablet_metadata(path, cache_opts.fill_data_cache, expected_gtid, fs);
+        }
+    } else if (cache_key.ok() && _metacache->lookup_aggregation_partition(*cache_key)) {
         metadata_or = get_single_tablet_metadata(tablet_id, version, cache_opts, expected_gtid, fs);
         if (metadata_or.status().is_not_found()) {
             metadata_or = load_tablet_metadata(path, cache_opts.fill_data_cache, expected_gtid, fs);
@@ -854,17 +900,6 @@ StatusOr<TabletMetadataPtr> TabletManager::get_tablet_metadata(const string& pat
             if (metadata_or.ok() && cache_key.ok()) {
                 _metacache->cache_aggregation_partition(*cache_key, true);
             }
-        }
-    }
-
-    if (metadata_or.status().is_not_found() && tablet_id != 0 && version == kInitialVersion) {
-        // If the metadata is not found, we will try to read the initial metadata at least
-        std::string new_path = join_path(prefix_name(path), tablet_initial_metadata_filename());
-        metadata_or = load_tablet_metadata(new_path, cache_opts.fill_data_cache, expected_gtid, fs);
-        // set tablet id for initial metadata
-        if (metadata_or.ok()) {
-            auto metadata = const_cast<starrocks::TabletMetadataPB*>(metadata_or.value().get());
-            metadata->set_id(tablet_id);
         }
     }
 
@@ -881,7 +916,6 @@ StatusOr<TabletMetadataPtr> TabletManager::get_tablet_metadata(const string& pat
     if (metadata_or.status().is_not_found() && tablet_id != 0 && version == kInitialVersion && fs == nullptr) {
         metadata_or = construct_initial_metadata(tablet_id);
     }
-
     if (!metadata_or.ok()) {
         return metadata_or.status();
     }
@@ -1798,9 +1832,11 @@ void TabletManager::TEST_set_global_schema_cache(int64_t schema_id, TabletSchema
 }
 
 StatusOr<VersionedTablet> TabletManager::get_tablet(int64_t tablet_id, int64_t version, bool fill_meta_cache,
-                                                    bool fill_data_cache) {
+                                                    bool fill_data_cache, bool prefer_bundle_metadata) {
     CacheOptions cache_opts{.fill_meta_cache = fill_meta_cache, .fill_data_cache = fill_data_cache};
-    ASSIGN_OR_RETURN(auto metadata, get_tablet_metadata(tablet_id, version, cache_opts));
+    ASSIGN_OR_RETURN(auto metadata, get_tablet_metadata(tablet_id, version, cache_opts, /*expected_gtid=*/0,
+                                                        /*fs=*/nullptr, /*bundle_cache=*/nullptr,
+                                                        prefer_bundle_metadata));
     return VersionedTablet(this, std::move(metadata));
 }
 

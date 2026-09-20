@@ -269,6 +269,66 @@ TEST_F(LakeDuplicateTabletReaderTest, test_issue_75203_physical_split_transient_
     ASSERT_EQ(again.value(), nullptr);
 }
 
+TEST_F(LakeDuplicateTabletReaderTest, test_cache_file_only_prepares_segment_iterators_on_open) {
+    std::vector<int> k0{1, 2, 3, 4, 5};
+    std::vector<int> v0{2, 4, 6, 8, 10};
+    std::vector<int> k1{30, 31, 32, 33, 34};
+    std::vector<int> v1{0, 1, 2, 3, 4};
+
+    auto c0 = Int32Column::create();
+    auto c1 = Int32Column::create();
+    auto c2 = Int32Column::create();
+    auto c3 = Int32Column::create();
+    c0->append_numbers(k0.data(), k0.size() * sizeof(int));
+    c1->append_numbers(v0.data(), v0.size() * sizeof(int));
+    c2->append_numbers(k1.data(), k1.size() * sizeof(int));
+    c3->append_numbers(v1.data(), v1.size() * sizeof(int));
+
+    Chunk chunk0({std::move(c0), std::move(c1)}, _schema);
+    Chunk chunk1({std::move(c2), std::move(c3)}, _schema);
+
+    VersionedTablet tablet(_tablet_mgr.get(), _tablet_metadata);
+    {
+        int64_t txn_id = next_id();
+        ASSIGN_OR_ABORT(auto writer, tablet.new_writer(kHorizontal, txn_id));
+        ASSERT_OK(writer->open());
+        ASSERT_OK(writer->write(chunk0));
+        ASSERT_OK(writer->finish());
+        ASSERT_OK(writer->write(chunk1));
+        ASSERT_OK(writer->finish());
+
+        const auto& files = writer->segments();
+        ASSERT_EQ(2, files.size());
+
+        auto* rowset = _tablet_metadata->add_rowsets();
+        rowset->set_overlapped(true);
+        rowset->set_id(1);
+        auto* segs = rowset->mutable_segments();
+        auto* segs_size = rowset->mutable_segment_size();
+        for (const auto& file : writer->segments()) {
+            segs->Add()->assign(file.path);
+            segs_size->Add(file.size.value());
+        }
+        writer->close();
+    }
+
+    _tablet_metadata->set_version(2);
+    CHECK_OK(_tablet_mgr->put_tablet_metadata(*_tablet_metadata));
+
+    auto reader = std::make_shared<TabletReader>(_tablet_mgr.get(), _tablet_metadata, *_schema);
+    ASSERT_OK(reader->prepare());
+    TabletReaderParams params;
+    params.lake_io_opts.cache_file_only = true;
+    ASSERT_OK(reader->open(params));
+
+    EXPECT_GT(reader->stats().segment_init_ns, 0);
+    EXPECT_GT(reader->stats().column_iterator_init_ns, 0);
+
+    auto read_chunk_ptr = ChunkHelper::new_chunk(*_schema, 1024);
+    ASSERT_TRUE(reader->get_next(read_chunk_ptr.get()).is_end_of_file());
+    reader->close();
+}
+
 class LakeAggregateTabletReaderTest : public TestBase {
 public:
     LakeAggregateTabletReaderTest() : TestBase(kTestDirectory) {

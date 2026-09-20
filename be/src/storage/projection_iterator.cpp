@@ -21,7 +21,7 @@
 
 namespace starrocks {
 
-class ProjectionIterator final : public ChunkIterator {
+class ProjectionIterator final : public ChunkIterator, public PreparedChunkIterator {
 public:
     ProjectionIterator(Schema schema, ChunkIteratorPtr child)
             : ChunkIterator(std::move(schema), child->chunk_size()), _child(std::move(child)) {
@@ -31,6 +31,8 @@ public:
     void close() override;
 
     size_t merged_rows() const override { return _child->merged_rows(); }
+
+    Status prepare() override { return prepare_chunk_iterator(_child); }
 
     Status init_encoded_schema(ColumnIdToGlobalDictMap& dict_maps) override {
         RETURN_IF_ERROR(ChunkIterator::init_encoded_schema(dict_maps));

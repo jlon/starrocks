@@ -726,6 +726,15 @@ TARGET_LINK_LIBRARIES(lake_service_test ${TEST_LINK_LIBS})
 SET_TARGET_PROPERTIES(lake_service_test PROPERTIES COMPILE_FLAGS "-fno-access-control")
 SET_TARGET_PROPERTIES(lake_service_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/service")
 
+# lake_segment_init_test keeps the SegmentInit regression coverage independent from starrocks_dw_test.
+ADD_EXECUTABLE(lake_segment_init_test test_main.cpp
+        storage/lake/rowset_test.cpp
+        storage/lake/tablet_reader_test.cpp
+        storage/union_iterator_test.cpp)
+TARGET_LINK_LIBRARIES(lake_segment_init_test ${TEST_LINK_LIBS})
+SET_TARGET_PROPERTIES(lake_segment_init_test PROPERTIES COMPILE_FLAGS "-fno-access-control")
+SET_TARGET_PROPERTIES(lake_segment_init_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/storage/lake")
+
 # =================================================
 # test cases must be compiled as a standalone binary
 ADD_BE_TEST(storage/task/engine_storage_migration_task_test)

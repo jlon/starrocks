@@ -27,6 +27,7 @@
 #include "storage/lake/column_mode_partial_update_handler.h"
 #include "storage/lake/lake_delvec_loader.h"
 #include "storage/lake/meta_file.h"
+#include "storage/lake/metacache.h"
 #include "storage/lake/segment_metadata_filter.h"
 #include "storage/lake/tablet.h"
 #include "storage/lake/tablet_range_helper.h"
@@ -586,6 +587,53 @@ StatusOr<std::vector<SegmentPtr>> Rowset::segments(const LakeIOOptions& lake_io_
     return segments;
 }
 
+bool Rowset::should_use_parallel_load(const SegmentReadOptions& seg_options, int32_t seg_start, int32_t seg_end,
+                                      const std::unordered_set<int>* skip_segment_idxs) const {
+    if (_parallel_load) {
+        return true;
+    }
+    if (!config::enable_adaptive_load_segment_parallel) {
+        return false;
+    }
+    if (is_segment_range_mode()) {
+        return false;
+    }
+    if (!seg_options.lake_io_opts.fill_metadata_cache || seg_end - seg_start <= 1) {
+        return false;
+    }
+
+    auto* cache = _tablet_mgr->metacache();
+    if (cache == nullptr) {
+        return false;
+    }
+
+    const auto& files_to_offset = metadata().bundle_file_offsets();
+    const auto bundle_file_offsets_size = metadata().bundle_file_offsets_size();
+    for (int index = seg_start; index < seg_end; ++index) {
+        if (skip_segment_idxs != nullptr && skip_segment_idxs->count(index) > 0) {
+            continue;
+        }
+
+        const auto& seg_name = metadata().segments(index);
+        std::string segment_path;
+        if (seg_options.lake_io_opts.location_provider) {
+            segment_path = seg_options.lake_io_opts.location_provider->segment_location(tablet_id(), seg_name);
+        } else {
+            segment_path = _tablet_mgr->segment_location(tablet_id(), seg_name);
+        }
+        FileInfo segment_info{.path = segment_path};
+        if (bundle_file_offsets_size > 0) {
+            segment_info.bundle_file_offset = files_to_offset.Get(index);
+        }
+        auto segment = cache->lookup_segment(segment_info.cache_key());
+        if (segment == nullptr || !segment->is_open()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 Status Rowset::load_segments(std::vector<SegmentPtr>* segments, bool fill_cache, int64_t buffer_size) {
     std::vector<LoadedSegment> loaded;
     RETURN_IF_ERROR(load_segments(&loaded, fill_cache, buffer_size));
@@ -626,6 +674,7 @@ Status Rowset::load_segments(std::vector<LoadedSegment>* segments, SegmentReadOp
         seg_start = _segment_range_start;
         seg_end = _segment_range_end;
     }
+    const bool parallel_load = should_use_parallel_load(seg_options, seg_start, seg_end, skip_segment_idxs);
 
     // When parallel loading is enabled, we need to preserve the index mapping between
     // segments vector and metadata. We use a vector of (index, future) pairs to track
@@ -651,7 +700,7 @@ Status Rowset::load_segments(std::vector<LoadedSegment>* segments, SegmentReadOp
     // Pre-allocate segments vector to maintain correct index mapping.
     // This is necessary because when parallel loading is enabled with skip_segment_idxs,
     // we need to ensure segments[i] corresponds to metadata segment i.
-    bool use_index_mapping = _parallel_load && skip_segment_idxs != nullptr && !skip_segment_idxs->empty();
+    bool use_index_mapping = parallel_load && skip_segment_idxs != nullptr && !skip_segment_idxs->empty();
     int base_idx = segments->size();
     if (use_index_mapping) {
         segments->resize(base_idx + metadata().segment_metas_size());
@@ -711,7 +760,7 @@ Status Rowset::load_segments(std::vector<LoadedSegment>* segments, SegmentReadOp
             segment_info.encryption_meta = segment_meta.encryption_meta();
         }
 
-        if (_parallel_load) {
+        if (parallel_load) {
             int captured_idx = current_idx;
             auto task = std::make_shared<std::packaged_task<std::pair<StatusOr<SegmentPtr>, std::string>()>>([=]() {
 #ifdef BE_TEST

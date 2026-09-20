@@ -549,6 +549,9 @@ public class OlapScanNode extends AbstractOlapTableScanNode {
             internalRange.setTablet_id(tabletId);
             internalRange.setPartition_id(physicalPartitionId);
             internalRange.setRow_count(selectedTablet.getRowCount(0));
+            if (olapTable.isCloudNativeTableOrMaterializedView() && Boolean.TRUE.equals(olapTable.isFileBundling())) {
+                internalRange.setIs_file_bundling(true);
+            }
             if (isOutputChunkByBucket) {
                 if (withoutColocateRequirement) {
                     internalRange.setBucket_sequence((int) tabletId);
@@ -662,6 +665,13 @@ public class OlapScanNode extends AbstractOlapTableScanNode {
 
             if (gtid > 0) {
                 internalRange.setGtid(gtid);
+            }
+
+            // Tell the CN this is a file-bundling shared-data table so it reads the shared bundle tablet
+            // metadata first, instead of probing the non-existent per-tablet <tablet_id>_<version>.meta and
+            // producing a FileNotFound before falling back to the bundle.
+            if (olapTable.isCloudNativeTableOrMaterializedView() && Boolean.TRUE.equals(olapTable.isFileBundling())) {
+                internalRange.setIs_file_bundling(true);
             }
 
             // random shuffle List && only collect one copy

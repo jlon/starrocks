@@ -1371,6 +1371,159 @@ TEST_F(LakeTabletManagerTest, get_tablet_metadata_with_bundle_cache_falls_back_t
     EXPECT_EQ(2, loaded->version());
 }
 
+TEST_F(LakeTabletManagerTest, get_tablet_metadata_initial_version_reads_initial_file_first) {
+    // An empty initial-version tablet (created with tablet-creation optimization) persists only the shared
+    // initial metadata file (0000000000000000_0000000000000001.meta); the per-tablet
+    // <tablet_id>_0000000000000001.meta file does not exist. Reading version=1 must go straight to the
+    // initial file instead of first probing the missing per-tablet path, which the object store reports as
+    // FileNotFound and background stat collection amplifies into a log/CPU storm.
+    auto tablet_id = next_id();
+    starrocks::TabletMetadata initial_metadata;
+    initial_metadata.set_version(1);
+    initial_metadata.set_next_rowset_id(1);
+    EXPECT_OK(_tablet_manager->put_tablet_metadata(std::make_shared<starrocks::TabletMetadata>(initial_metadata),
+                                                   _tablet_manager->tablet_initial_metadata_location(tablet_id)));
+    _tablet_manager->metacache()->prune();
+
+    // Count how many times load_tablet_metadata is entered. The reorder makes it exactly one (the initial
+    // file). Before the fix it was two: a guaranteed-miss probe on the per-tablet path followed by the
+    // initial file read.
+    std::atomic<int> load_calls{0};
+    SyncPoint::GetInstance()->SetCallBack("TabletManager::load_tablet_metadata",
+                                          [&](void* /*arg*/) { load_calls.fetch_add(1, std::memory_order_relaxed); });
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([]() {
+        SyncPoint::GetInstance()->ClearCallBack("TabletManager::load_tablet_metadata");
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+
+    // Plain path (query/repair callers).
+    ASSIGN_OR_ABORT(auto loaded, _tablet_manager->get_tablet_metadata(tablet_id, 1));
+    EXPECT_EQ(tablet_id, loaded->id());
+    EXPECT_EQ(1, loaded->version());
+    EXPECT_EQ(1, load_calls.load(std::memory_order_relaxed));
+
+    // get_tablet_stats path: a request-local BundleMetadataCache is passed, and the initial file is still
+    // read directly without the per-tablet probe.
+    _tablet_manager->metacache()->prune();
+    load_calls.store(0, std::memory_order_relaxed);
+    lake::BundleMetadataCache bundle_cache;
+    lake::CacheOptions opts{.fill_meta_cache = false, .fill_data_cache = false};
+    ASSIGN_OR_ABORT(auto stat_loaded,
+                    _tablet_manager->get_tablet_metadata(tablet_id, 1, opts, 0, nullptr, &bundle_cache));
+    EXPECT_EQ(tablet_id, stat_loaded->id());
+    EXPECT_EQ(1, stat_loaded->version());
+    EXPECT_EQ(1, load_calls.load(std::memory_order_relaxed));
+    EXPECT_EQ(0, bundle_cache.miss_count());
+}
+
+TEST_F(LakeTabletManagerTest, get_tablet_metadata_initial_version_falls_back_to_legacy_file) {
+    // Backward compatibility: a tablet created without the optimization persists the per-tablet
+    // <tablet_id>_0000000000000001.meta file and no shared initial file. Reading version=1 must fall back to
+    // the per-tablet file when the initial file is absent.
+    auto tablet_id = next_id();
+    starrocks::TabletMetadata legacy_metadata;
+    legacy_metadata.set_id(tablet_id);
+    legacy_metadata.set_version(1);
+    legacy_metadata.set_next_rowset_id(1);
+    EXPECT_OK(_tablet_manager->put_tablet_metadata(std::make_shared<starrocks::TabletMetadata>(legacy_metadata),
+                                                   _tablet_manager->tablet_metadata_location(tablet_id, 1)));
+    _tablet_manager->metacache()->prune();
+
+    ASSIGN_OR_ABORT(auto loaded, _tablet_manager->get_tablet_metadata(tablet_id, 1));
+    EXPECT_EQ(tablet_id, loaded->id());
+    EXPECT_EQ(1, loaded->version());
+}
+
+static std::map<int64_t, TabletMetadataPB> make_two_tablet_bundle_metas() {
+    TabletSchemaPB schema_pb;
+    schema_pb.set_id(10);
+    schema_pb.set_num_short_key_columns(1);
+    schema_pb.set_keys_type(DUP_KEYS);
+    schema_pb.set_num_rows_per_row_block(65535);
+    auto* c0 = schema_pb.add_column();
+    c0->set_unique_id(0);
+    c0->set_name("c0");
+    c0->set_type("INT");
+    c0->set_is_key(true);
+    c0->set_is_nullable(false);
+
+    std::map<int64_t, TabletMetadataPB> metadatas;
+    for (int64_t id : {1, 2}) {
+        starrocks::TabletMetadataPB m;
+        m.set_id(id);
+        m.set_version(2);
+        m.mutable_schema()->CopyFrom(schema_pb);
+        (*m.mutable_historical_schemas())[10].CopyFrom(schema_pb);
+        metadatas.emplace(id, m);
+    }
+    return metadatas;
+}
+
+TEST_F(LakeTabletManagerTest, put_bundle_tablet_metadata_readback_default_and_fail_closed) {
+    // Read-back is enabled by default so a non-durable bundle write fails the publish instead of advancing
+    // the version on a bundle that never landed.
+    EXPECT_TRUE(config::lake_aggregate_publish_readback_check);
+
+    auto metadatas = make_two_tablet_bundle_metas();
+
+    // Inject a read-back failure: the bundle bytes were written and closed, but persistence cannot be
+    // confirmed. put_bundle_tablet_metadata must surface this as an error (fail-closed).
+    SyncPoint::GetInstance()->EnableProcessing();
+    TEST_ENABLE_ERROR_POINT("TabletManager::verify_bundle_metadata_persisted",
+                            Status::IOError("injected bundle read-back failure"));
+    DeferOp defer([]() {
+        TEST_DISABLE_ERROR_POINT("TabletManager::verify_bundle_metadata_persisted");
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+
+    auto st = _tablet_manager->put_bundle_tablet_metadata(metadatas);
+    EXPECT_FALSE(st.ok());
+    EXPECT_TRUE(st.is_io_error()) << st;
+}
+
+TEST_F(LakeTabletManagerTest, put_bundle_tablet_metadata_readback_can_be_disabled) {
+    auto saved = config::lake_aggregate_publish_readback_check;
+    config::lake_aggregate_publish_readback_check = false;
+    DeferOp reset([saved]() { config::lake_aggregate_publish_readback_check = saved; });
+
+    // With read-back disabled the verify step is skipped entirely, so the injected failure is never hit.
+    SyncPoint::GetInstance()->EnableProcessing();
+    TEST_ENABLE_ERROR_POINT("TabletManager::verify_bundle_metadata_persisted",
+                            Status::IOError("read-back should be skipped when disabled"));
+    DeferOp defer([]() {
+        TEST_DISABLE_ERROR_POINT("TabletManager::verify_bundle_metadata_persisted");
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+
+    auto metadatas = make_two_tablet_bundle_metas();
+    ASSERT_OK(_tablet_manager->put_bundle_tablet_metadata(metadatas));
+}
+
+TEST_F(LakeTabletManagerTest, get_tablet_metadata_prefer_bundle_skips_legacy_probe) {
+    // A file-bundling tablet's metadata lives only in the shared bundle. With a cold aggregation marker
+    // (pruned metacache, e.g. right after a CN restart), a normal read would probe the per-tablet
+    // <tablet_id>_<version>.meta path first and hit FileNotFound. prefer_bundle=true must read the bundle
+    // first and must not probe the per-tablet path.
+    auto metadatas = make_two_tablet_bundle_metas(); // tablets 1,2 at version 2
+    ASSERT_OK(_tablet_manager->put_bundle_tablet_metadata(metadatas));
+    _tablet_manager->metacache()->prune(); // clear the aggregation-partition marker -> cold
+
+    TEST_ENABLE_ERROR_POINT("TabletManager::load_tablet_metadata",
+                            Status::IOError("legacy per-tablet metadata probe should be skipped"));
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([]() {
+        TEST_DISABLE_ERROR_POINT("TabletManager::load_tablet_metadata");
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+
+    lake::CacheOptions opts{.fill_meta_cache = false, .fill_data_cache = false};
+    ASSIGN_OR_ABORT(auto loaded,
+                    _tablet_manager->get_tablet_metadata(1, 2, opts, 0, nullptr, nullptr, /*prefer_bundle=*/true));
+    EXPECT_EQ(1, loaded->id());
+    EXPECT_EQ(2, loaded->version());
+}
+
 TEST_F(LakeTabletManagerTest, lake_tablet_stat_cache_default_config) {
     EXPECT_TRUE(config::enable_lake_tablet_stat_cache);
     EXPECT_EQ(1048576, config::lake_tablet_stat_cache_capacity);

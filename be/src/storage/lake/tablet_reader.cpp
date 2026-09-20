@@ -681,6 +681,9 @@ Status TabletReader::init_collector(const TabletReaderParams& params) {
     if (_collect_iter != nullptr) {
         RETURN_IF_ERROR(_collect_iter->init_encoded_schema(*params.global_dictmaps));
         RETURN_IF_ERROR(_collect_iter->init_output_schema(*params.unused_output_column_ids));
+        if (params.lake_io_opts.cache_file_only && config::enable_lake_segment_parallel_prepare) {
+            RETURN_IF_ERROR(prepare_chunk_iterator(_collect_iter));
+        }
     }
 
     return Status::OK();

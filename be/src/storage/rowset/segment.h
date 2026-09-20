@@ -106,6 +106,8 @@ public:
     Status open(size_t* footer_length_hint, const FooterPointerPB* partial_rowset_footer,
                 const LakeIOOptions& lake_io_opts);
 
+    [[nodiscard]] bool is_open() const { return invoked(_open_once); }
+
     // may return EndOfFile
     StatusOr<ChunkIteratorPtr> new_iterator(const Schema& schema, const SegmentReadOptions& read_options);
 
