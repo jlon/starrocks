@@ -22,7 +22,7 @@ ARG RUN_AS_USER
 ARG GROUP
 
 RUN yum install -y java-17-openjdk-devel tzdata openssl curl vim ca-certificates \
-        fontconfig gzip tar less hostname procps-ng lsof python3-pip nc && \
+        fontconfig gzip tar less hostname procps-ng lsof python3 nc && \
     rpm -ivh https://repo.mysql.com/mysql80-community-release-el8-7.noarch.rpm && \
     yum -y install mysql-community-client --nogpgcheck && \
     yum remove -y mysql80-community-release && \
@@ -45,7 +45,24 @@ COPY --from=artifacts --chown=${USER}:${GROUP} /release/be_artifacts/ ${STARROCK
 COPY --chown=${USER}:${GROUP} docker/dockerfiles/fe/*.sh ${STARROCKS_ROOT}/
 COPY --chown=${USER}:${GROUP} docker/dockerfiles/be/*.sh ${STARROCKS_ROOT}/
 
-RUN mkdir -p ${STARROCKS_ROOT}/fe/meta ${STARROCKS_ROOT}/be/storage && \
+# Register the FE/CN/BE metrics endpoints with Consul without changing the
+# upstream entrypoint implementation.
+USER root
+COPY --chown=${USER}:${GROUP} deploy/monitor/consul_service.py ${STARROCKS_ROOT}/
+COPY --chown=${USER}:${GROUP} deploy/monitor/monitor_entrypoint.sh ${STARROCKS_ROOT}/
+COPY --chown=${USER}:${GROUP} deploy/monitor/monitor_prestop.sh ${STARROCKS_ROOT}/
+RUN set -eux; \
+    for script in fe_entrypoint cn_entrypoint be_entrypoint fe_prestop cn_prestop be_prestop; do \
+        mv "${STARROCKS_ROOT}/${script}.sh" "${STARROCKS_ROOT}/${script}.orig.sh"; \
+    done; \
+    for script in fe_entrypoint cn_entrypoint be_entrypoint; do \
+        ln -s monitor_entrypoint.sh "${STARROCKS_ROOT}/${script}.sh"; \
+    done; \
+    for script in fe_prestop cn_prestop be_prestop; do \
+        ln -s monitor_prestop.sh "${STARROCKS_ROOT}/${script}.sh"; \
+    done; \
+    chmod +x ${STARROCKS_ROOT}/monitor_*.sh ${STARROCKS_ROOT}/*.orig.sh && \
+    mkdir -p ${STARROCKS_ROOT}/fe/meta ${STARROCKS_ROOT}/be/storage && \
     ln -sfT be ${STARROCKS_ROOT}/cn
 
 USER ${RUN_AS_USER}
