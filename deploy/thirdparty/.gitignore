@@ -1,0 +1,4 @@
+# Hadoop native extract dir (~300MB) — built from .cache/ tarball, do not commit
+hadoop-native/
+# Downloaded hadoop-3.4.0.tar.gz (~1GB), reused across builds
+.cache/

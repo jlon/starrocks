@@ -1,0 +1,26 @@
+# Build artifacts (keep output/fe and output/be for local artifact image builds)
+output/*
+!output/fe/
+!output/be/
+**/target/
+be/build*/
+be/output/
+thirdparty/installed/
+thirdparty/src/
+
+# Version control and IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+*.iml
+
+# Docs and tests (not needed for image build)
+docs/
+test/
+**/src/test/
+
+# Logs and temp files
+**/*.log
+**/*.tmp
+**/*.swp

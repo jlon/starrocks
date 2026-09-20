@@ -222,6 +222,9 @@ done
 # might be loaded instead of StarRocks' version (which uses the correct new paths
 # like org.apache.thrift.transport.layered.TFramedTransport).
 export CLASSPATH=${STARROCKS_HOME}/lib/fe-core-4.1.4.jar:${STARROCKS_HOME}/lib/starrocks-hadoop-ext.jar:${CLASSPATH}:${STARROCKS_HOME}/lib:${STARROCKS_HOME}/conf
+if [ -n "${HADOOP_CLASSPATH:-}" ]; then
+    export CLASSPATH=${HADOOP_CLASSPATH}:${CLASSPATH}
+fi
 
 pidfile=$PID_DIR/fe.pid
 

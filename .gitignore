@@ -124,3 +124,7 @@ build-mac/cmake_install.cmake
 _codeql_detected_source_root
 
 .lycheecache
+
+# Local docker/k8s build logs (repo root)
+/build*.log
+/build-*.log
