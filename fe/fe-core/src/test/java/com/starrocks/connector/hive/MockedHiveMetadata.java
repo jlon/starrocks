@@ -29,6 +29,7 @@ import com.starrocks.common.util.DateUtils;
 import com.starrocks.connector.CachingRemoteFileIO;
 import com.starrocks.connector.ConnectorMetadata;
 import com.starrocks.connector.ConnectorMetadataRequestContext;
+import com.starrocks.connector.ConnectorTableId;
 import com.starrocks.connector.GetRemoteFilesParams;
 import com.starrocks.connector.MetastoreType;
 import com.starrocks.connector.PartitionInfo;
@@ -41,6 +42,8 @@ import com.starrocks.connector.RemoteFileInfoDefaultSource;
 import com.starrocks.connector.RemoteFileInfoSource;
 import com.starrocks.connector.RemoteFileOperations;
 import com.starrocks.connector.exception.StarRocksConnectorException;
+import com.starrocks.connector.trino.TrinoViewDefinition;
+import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.expression.DateLiteral;
 import com.starrocks.sql.ast.expression.IntLiteral;
@@ -66,6 +69,7 @@ import org.apache.hadoop.hive.metastore.api.Table;
 import java.lang.reflect.Method;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -397,6 +401,43 @@ public class MockedHiveMetadata implements ConnectorMetadata {
                         "VIRTUAL_VIEW");
         HiveView view5 = HiveMetastoreApiConverter.toHiveView(hmsView5, MOCKED_HIVE_CATALOG_NAME);
         mockTables.put(hmsView5.getTableName(), new HiveTableInfo(view5));
+
+        // View whose stale HMS schema (6 cols, c_nationkey missing in the middle) lags the base
+        // table (7 cols) to simulate ALTER TABLE ADD COLUMNS after the view was created: the
+        // inner `select *` expands to 7 outputs while the view schema only declares 6.
+        cols = Lists.newArrayList();
+        cols.add(new FieldSchema("c_custkey", "int", null));
+        cols.add(new FieldSchema("c_name", "string", null));
+        cols.add(new FieldSchema("c_address", "string", null));
+        cols.add(new FieldSchema("c_phone", "string", null));
+        cols.add(new FieldSchema("c_mktsegment", "string", null));
+        cols.add(new FieldSchema("c_comment", "string", null));
+        sd = new StorageDescriptor(cols, "", "", "", false, -1, null, Lists.newArrayList(), Lists.newArrayList(),
+                Maps.newHashMap());
+        Table hmsView7 =
+                new Table("customer_evolved_view", "tpch", null, 0, 0, 0, sd, Lists.newArrayList(),
+                        Maps.newHashMap(), null, "select * from tpch.customer", "VIRTUAL_VIEW");
+        HiveView view7 = HiveMetastoreApiConverter.toHiveView(hmsView7, MOCKED_HIVE_CATALOG_NAME);
+        mockTables.put(hmsView7.getTableName(), new HiveTableInfo(view7));
+
+        // Trino view whose JSON column order differs from inner query output order.
+        String trinoReorderedColumnsViewText = "/* Presto View: "
+                + "eyJvcmlnaW5hbFNxbCI6IlNFTEVDVCBjX25hbWUsIGNfY3VzdGtleSBGUk9NIGN1c3RvbWVyIiwiY2F0YWxvZyI6ImhpdmUi"
+                + "LCJzY2hlbWEiOiJ0cGNoIiwiY29sdW1ucyI6W3sibmFtZSI6ImNfY3VzdGtleSIsInR5cGUiOiJpbnRlZ2VyIn0seyJuYW1l"
+                + "IjoiY19uYW1lIiwidHlwZSI6InZhcmNoYXIifV0sIm93bmVyIjoidGVzdCIsInJ1bkFzSW52b2tlciI6ZmFsc2V9"
+                + " */";
+        Table hmsView6 =
+                new Table("trino_reordered_columns_view", "tpch", null, 0, 0, 0, sd, Lists.newArrayList(),
+                        Maps.newHashMap(), null, trinoReorderedColumnsViewText, "VIRTUAL_VIEW");
+        String trinoViewPayload = trinoReorderedColumnsViewText.substring(HiveView.PRESTO_VIEW_PREFIX.length(),
+                trinoReorderedColumnsViewText.length() - HiveView.PRESTO_VIEW_SUFFIX.length());
+        TrinoViewDefinition trinoViewDefinition = GsonUtils.GSON.fromJson(
+                new String(Base64.getDecoder().decode(trinoViewPayload)), TrinoViewDefinition.class);
+        HiveView view6 = new HiveView(ConnectorTableId.CONNECTOR_ID_GENERATOR.getNextId().asLong(),
+                MOCKED_HIVE_CATALOG_NAME, hmsView6.getDbName(), hmsView6.getTableName(),
+                HiveMetastoreApiConverter.toFullSchemasForTrinoView(hmsView6, trinoViewDefinition),
+                trinoViewDefinition.getOriginalSql(), HiveView.Type.Trino);
+        mockTables.put(hmsView6.getTableName(), new HiveTableInfo(view6));
     }
 
     private static void mockSubfieldTable() {

@@ -155,6 +155,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -886,6 +887,7 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
     @Override
     public LogicalPlan visitView(ViewRelation node, ExpressionMapping context) {
         LogicalPlan logicalPlan = transform(node.getQueryStatement().getQueryRelation());
+        List<ColumnRefOperator> viewFieldMappings = buildViewFieldMappings(node, logicalPlan);
 
         boolean isInlineView = isInlineView();
         boolean isEnableViewBasedRewrite = isEnableViewBasedRewrite(node.getView());
@@ -894,7 +896,7 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
             OptExprBuilder builder = new OptExprBuilder(
                     logicalPlan.getRoot().getOp(),
                     logicalPlan.getRootBuilder().getInputs(),
-                    new ExpressionMapping(node.getScope(), logicalPlan.getOutputColumn(), logicalPlan.getRootBuilder()
+                    new ExpressionMapping(node.getScope(), viewFieldMappings, logicalPlan.getRootBuilder()
                             .getColumnRefToConstOperators()));
             // Connector views (Hive/Iceberg) must stay inlined: expanded query columns may not match
             // HMS view schema size, and buildViewScan would fail with IllegalStateException.
@@ -903,11 +905,16 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
                 LogicalViewScanOperator viewScanOperator = buildViewScan(logicalPlan, node, newOutputColumns, true);
                 builder.getRoot().getOp().setEquivalentOp(viewScanOperator);
             }
-            return new LogicalPlan(builder, logicalPlan.getOutputColumn(), logicalPlan.getCorrelation());
+            return new LogicalPlan(builder, viewFieldMappings, logicalPlan.getCorrelation());
         } else {
             // Connector views cannot build LogicalViewScanOperator reliably; inline instead.
             if (node.getView().isConnectorView()) {
-                return logicalPlan;
+                OptExprBuilder builder = new OptExprBuilder(
+                        logicalPlan.getRoot().getOp(),
+                        logicalPlan.getRootBuilder().getInputs(),
+                        new ExpressionMapping(node.getScope(), viewFieldMappings,
+                                logicalPlan.getRootBuilder().getColumnRefToConstOperators()));
+                return new LogicalPlan(builder, viewFieldMappings, logicalPlan.getCorrelation());
             }
             // do not expand views in logical plan
             List<ColumnRefOperator> newOutputColumns = Lists.newArrayList();
@@ -926,6 +933,60 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
         return mvTransformerContext != null ? mvTransformerContext.isEnableViewBasedMVRewrite(view) : false;
     }
 
+    /**
+     * Align connector view fields with the inner query outputs. Connector metadata can reorder
+     * fields or lag schema evolution, so fields are resolved by their analyzed origin or name.
+     */
+    private List<ColumnRefOperator> buildViewFieldMappings(ViewRelation node, LogicalPlan logicalPlan) {
+        List<Field> viewFields = node.getScope().getRelationFields().getAllFields();
+        List<ColumnRefOperator> innerOutputs = logicalPlan.getOutputColumn();
+        if (!node.getView().isConnectorView()) {
+            return innerOutputs;
+        }
+
+        ExpressionMapping innerMapping = logicalPlan.getRootBuilder().getExpressionMapping();
+        Map<String, List<ColumnRefOperator>> innerOutputsByName = Maps.newHashMap();
+        for (ColumnRefOperator column : innerOutputs) {
+            innerOutputsByName.computeIfAbsent(column.getName().toLowerCase(Locale.ROOT), ignored -> Lists.newArrayList())
+                    .add(column);
+        }
+
+        List<ColumnRefOperator> viewFieldMappings = Lists.newArrayList();
+        for (int i = 0; i < viewFields.size(); i++) {
+            Field field = viewFields.get(i);
+            ColumnRefOperator mappedColumn = null;
+            Expr originExpression = field.getOriginExpression();
+            if (originExpression != null) {
+                mappedColumn = innerMapping.get(originExpression);
+                if (mappedColumn == null && originExpression instanceof SlotRef) {
+                    mappedColumn = getUniqueOutputByName(innerOutputsByName,
+                            ((SlotRef) originExpression).getColumnName());
+                }
+            }
+            if (mappedColumn == null) {
+                mappedColumn = getUniqueOutputByName(innerOutputsByName, field.getName());
+            }
+            if (mappedColumn == null) {
+                if (viewFields.size() == innerOutputs.size()) {
+                    mappedColumn = innerOutputs.get(i);
+                }
+            }
+            if (mappedColumn == null) {
+                throw new SemanticException("Cannot map connector view field '%s' to its query output", field.getName());
+            }
+            viewFieldMappings.add(mappedColumn);
+        }
+        return viewFieldMappings;
+    }
+
+    private ColumnRefOperator getUniqueOutputByName(Map<String, List<ColumnRefOperator>> outputsByName, String name) {
+        if (name == null) {
+            return null;
+        }
+        List<ColumnRefOperator> outputs = outputsByName.get(name.toLowerCase(Locale.ROOT));
+        return outputs != null && outputs.size() == 1 ? outputs.get(0) : null;
+    }
+
     private LogicalViewScanOperator buildViewScan(LogicalPlan logicalPlan,
                                                   ViewRelation node,
                                                   List<ColumnRefOperator> outputVariables,
@@ -933,7 +994,7 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
         ImmutableMap.Builder<ColumnRefOperator, Column> colRefToColumnMetaMapBuilder = ImmutableMap.builder();
         ImmutableMap.Builder<Column, ColumnRefOperator> columnMetaToColRefMapBuilder = ImmutableMap.builder();
 
-        List<ColumnRefOperator> outputColumns = logicalPlan.getOutputColumn();
+        List<ColumnRefOperator> outputColumns = buildViewFieldMappings(node, logicalPlan);
         List<Column> viewSchema = node.getView().getBaseSchema();
         Preconditions.checkState(outputColumns.size() == viewSchema.size());
         // should add a new relationid for view instead of using original outputColumns directly here,
