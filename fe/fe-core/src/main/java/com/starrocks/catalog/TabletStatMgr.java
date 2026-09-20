@@ -42,6 +42,7 @@ import com.starrocks.catalog.MaterializedIndex.IndexExtState;
 import com.starrocks.common.Config;
 import com.starrocks.common.ErrorReportException;
 import com.starrocks.common.Pair;
+import com.starrocks.common.ThreadPoolManager;
 import com.starrocks.common.util.FrontendDaemon;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
@@ -75,8 +76,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import javax.annotation.Nullable;
 import javax.validation.constraints.NotNull;
 
@@ -86,8 +93,16 @@ import javax.validation.constraints.NotNull;
  */
 public class TabletStatMgr extends FrontendDaemon {
     private static final Logger LOG = LogManager.getLogger(TabletStatMgr.class);
+    private static final String LAKE_TABLET_STAT_COLLECTOR_POOL_NAME = "lake-tablet-stat-collector";
 
     private LocalDateTime lastWorkTimestamp = LocalDateTime.MIN;
+    private final Object lakeTabletStatExecutorLock = new Object();
+    private ThreadPoolExecutor lakeTabletStatExecutor;
+    private int lakeTabletStatExecutorParallelism = 0;
+    private int lakeTabletStatExecutorMaxInflightTasks = 0;
+    private final List<LakeTabletStatCollector> activeLakeTabletStatCollectors = Lists.newArrayList();
+    private boolean lakeTabletStatStopRequested = false;
+    private boolean lakeTabletStatExecutorShutdownRequested = false;
 
     public TabletStatMgr() {
         super("tablet-stat-mgr", Config.tablet_stat_update_interval_second * 1000L);
@@ -95,6 +110,63 @@ public class TabletStatMgr extends FrontendDaemon {
 
     public LocalDateTime getLastWorkTimestamp() {
         return lastWorkTimestamp;
+    }
+
+    @Override
+    public void setStop() {
+        super.setStop();
+        List<LakeTabletStatCollector> activeCollectors;
+        synchronized (lakeTabletStatExecutorLock) {
+            lakeTabletStatStopRequested = true;
+            activeCollectors = Lists.newArrayList(activeLakeTabletStatCollectors);
+        }
+        for (LakeTabletStatCollector collector : activeCollectors) {
+            collector.requestStop();
+        }
+        interrupt();
+        shutdownLakeTabletStatExecutorIfIdle();
+    }
+
+    private void shutdownLakeTabletStatExecutorIfIdle() {
+        synchronized (lakeTabletStatExecutorLock) {
+            if (!activeLakeTabletStatCollectors.isEmpty()) {
+                return;
+            }
+            shutdownLakeTabletStatExecutorLocked();
+        }
+    }
+
+    private void shutdownLakeTabletStatExecutorLocked() {
+        if (lakeTabletStatExecutor == null) {
+            return;
+        }
+        lakeTabletStatExecutor.shutdownNow();
+        lakeTabletStatExecutor = null;
+        lakeTabletStatExecutorParallelism = 0;
+        lakeTabletStatExecutorMaxInflightTasks = 0;
+        lakeTabletStatExecutorShutdownRequested = false;
+    }
+
+    private void registerLakeTabletStatCollector(LakeTabletStatCollector collector) {
+        boolean shouldStop;
+        synchronized (lakeTabletStatExecutorLock) {
+            activeLakeTabletStatCollectors.add(collector);
+            shouldStop = lakeTabletStatStopRequested;
+        }
+        if (shouldStop) {
+            collector.requestStop();
+        }
+    }
+
+    private void finishLakeTabletStatCollector(LakeTabletStatCollector collector, boolean shutdownExecutor) {
+        synchronized (lakeTabletStatExecutorLock) {
+            activeLakeTabletStatCollectors.remove(collector);
+            lakeTabletStatExecutorShutdownRequested |= shutdownExecutor;
+            if ((lakeTabletStatStopRequested || lakeTabletStatExecutorShutdownRequested)
+                    && activeLakeTabletStatCollectors.isEmpty()) {
+                shutdownLakeTabletStatExecutorLocked();
+            }
+        }
     }
 
     public boolean workTimeIsMustAfter(LocalDateTime time) {
@@ -283,6 +355,11 @@ public class TabletStatMgr extends FrontendDaemon {
             return;
         }
 
+        if (Config.enable_parallel_lake_tablet_stat_collection) {
+            updateLakeTabletStatParallel();
+            return;
+        }
+
         List<Long> dbIds = GlobalStateMgr.getCurrentState().getLocalMetastore().getDbIds();
         for (Long dbId : dbIds) {
             Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
@@ -297,6 +374,31 @@ public class TabletStatMgr extends FrontendDaemon {
                 }
             }
         }
+    }
+
+    private void updateLakeTabletStatParallel() {
+        long start = System.currentTimeMillis();
+        LakeTabletStatCollector collector = newLakeTabletStatCollector("all databases");
+        try {
+            List<Long> dbIds = GlobalStateMgr.getCurrentState().getLocalMetastore().getDbIds();
+            for (Long dbId : dbIds) {
+                Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
+                if (db == null) {
+                    continue;
+                }
+
+                List<Table> tables = GlobalStateMgr.getCurrentState().getLocalMetastore().getTables(db.getId());
+                for (Table table : tables) {
+                    if (table.isCloudNativeTableOrMaterializedView()) {
+                        submitLakeTableTabletStatJobs(collector, db, (OlapTable) table);
+                    }
+                }
+            }
+            collector.waitAll();
+        } finally {
+            collector.close();
+        }
+        collector.logSummary(System.currentTimeMillis() - start);
     }
 
     private void adjustStatUpdateRows(long tableId, long totalRowCount) {
@@ -352,6 +454,23 @@ public class TabletStatMgr extends FrontendDaemon {
     }
 
     private void updateLakeTableTabletStat(@NotNull Database db, @NotNull OlapTable table) {
+        if (Config.enable_parallel_lake_tablet_stat_collection) {
+            long start = System.currentTimeMillis();
+            LakeTabletStatCollector collector = newLakeTabletStatCollector(db.getFullName() + "." + table.getName());
+            try {
+                submitLakeTableTabletStatJobs(collector, db, table);
+                collector.waitAll();
+            } finally {
+                collector.close();
+            }
+            collector.logSummary(System.currentTimeMillis() - start);
+            return;
+        }
+
+        updateLakeTableTabletStatSerial(db, table);
+    }
+
+    private void updateLakeTableTabletStatSerial(@NotNull Database db, @NotNull OlapTable table) {
         Collection<PhysicalPartition> partitions = getPartitions(db, table);
         for (PhysicalPartition partition : partitions) {
             CollectTabletStatJob job = createCollectTabletStatJob(db, table, partition);
@@ -360,6 +479,80 @@ public class TabletStatMgr extends FrontendDaemon {
             }
             job.execute();
         }
+    }
+
+    private LakeTabletStatCollector newLakeTabletStatCollector(String name) {
+        int parallelism = lakeTabletStatCollectParallelism();
+        int maxInflightTasks = lakeTabletStatMaxInflightTasks(parallelism);
+        LakeTabletStatCollector collector = new LakeTabletStatCollector(name, parallelism, maxInflightTasks,
+                getLakeTabletStatExecutor(parallelism, maxInflightTasks));
+        registerLakeTabletStatCollector(collector);
+        return collector;
+    }
+
+    private ThreadPoolExecutor getLakeTabletStatExecutor(int parallelism, int maxInflightTasks) {
+        synchronized (lakeTabletStatExecutorLock) {
+            if (lakeTabletStatExecutor == null || lakeTabletStatExecutor.isShutdown()
+                    || lakeTabletStatExecutorMaxInflightTasks != maxInflightTasks) {
+                if (lakeTabletStatExecutor != null && !lakeTabletStatExecutor.isShutdown()) {
+                    lakeTabletStatExecutor.shutdownNow();
+                    LOG.info("Recreated lake tablet stat collector executor because max in-flight changed. " +
+                                    "old parallelism: {}, old max in-flight: {}, new parallelism: {}, " +
+                                    "new max in-flight: {}",
+                            lakeTabletStatExecutorParallelism, lakeTabletStatExecutorMaxInflightTasks,
+                            parallelism, maxInflightTasks);
+                } else {
+                    LOG.info("Created lake tablet stat collector executor. parallelism: {}, max in-flight: {}",
+                            parallelism, maxInflightTasks);
+                }
+                lakeTabletStatExecutor = ThreadPoolManager.newDaemonFixedThreadPool(parallelism, maxInflightTasks,
+                        LAKE_TABLET_STAT_COLLECTOR_POOL_NAME, false);
+                lakeTabletStatExecutorParallelism = parallelism;
+                lakeTabletStatExecutorMaxInflightTasks = maxInflightTasks;
+                return lakeTabletStatExecutor;
+            }
+
+            if (lakeTabletStatExecutorParallelism != parallelism) {
+                ThreadPoolManager.setFixedThreadPoolSize(lakeTabletStatExecutor, parallelism);
+                LOG.info("Resized lake tablet stat collector executor. old parallelism: {}, new parallelism: {}, " +
+                                "max in-flight: {}",
+                        lakeTabletStatExecutorParallelism, parallelism, maxInflightTasks);
+                lakeTabletStatExecutorParallelism = parallelism;
+            }
+            return lakeTabletStatExecutor;
+        }
+    }
+
+    private void submitLakeTableTabletStatJobs(@NotNull LakeTabletStatCollector collector,
+                                               @NotNull Database db,
+                                               @NotNull OlapTable table) {
+        if (collector.isInterrupted()) {
+            return;
+        }
+        Collection<PhysicalPartition> partitions = getPartitions(db, table);
+        for (PhysicalPartition partition : partitions) {
+            if (collector.isInterrupted()) {
+                return;
+            }
+            CollectTabletStatJob job = createCollectTabletStatJob(db, table, partition);
+            collector.submit(job);
+        }
+    }
+
+    private static int lakeTabletStatCollectParallelism() {
+        return Math.max(1, Config.lake_tablet_stat_collect_parallelism);
+    }
+
+    private static int lakeTabletStatMaxInflightTasks(int parallelism) {
+        return Math.max(parallelism, Config.lake_tablet_stat_max_inflight_tasks);
+    }
+
+    private static long lakeTabletStatSlowLogMs() {
+        return Math.max(0, Config.lake_tablet_stat_collect_slow_log_ms);
+    }
+
+    private static long lakeTabletStatCancelWaitMs() {
+        return Math.max(0, Config.lake_tablet_stat_cancel_wait_ms);
     }
 
     private static class PartitionSnapshot {
@@ -385,6 +578,221 @@ public class TabletStatMgr extends FrontendDaemon {
         }
     }
 
+    private class LakeTabletStatCollector implements AutoCloseable {
+        private final String name;
+        private final int parallelism;
+        private final int maxInflightTasks;
+        private final CompletionService<CollectTabletStatJobResult> completionService;
+        private final Set<Future<CollectTabletStatJobResult>> inFlightFutures = ConcurrentHashMap.newKeySet();
+        private final Thread ownerThread;
+        private int inFlightJobs = 0;
+        private int maxObservedInFlightJobs = 0;
+        private long submittedJobs = 0;
+        private long skippedJobs = 0;
+        private long completedJobs = 0;
+        private long failedJobs = 0;
+        private long requestedTablets = 0;
+        private long updatedTablets = 0;
+        private long slowJobs = 0;
+        private boolean interrupted = false;
+        private volatile boolean stopRequested = false;
+        private boolean closed = false;
+
+        LakeTabletStatCollector(String name, int parallelism, int maxInflightTasks, ThreadPoolExecutor executor) {
+            this.name = name;
+            this.parallelism = parallelism;
+            this.maxInflightTasks = maxInflightTasks;
+            this.completionService = new ExecutorCompletionService<>(executor);
+            this.ownerThread = Thread.currentThread();
+        }
+
+        boolean isInterrupted() {
+            return interrupted || stopRequested;
+        }
+
+        void requestStop() {
+            stopRequested = true;
+            cancelInFlightJobs();
+            ownerThread.interrupt();
+        }
+
+        void submit(@Nullable CollectTabletStatJob job) {
+            if (job == null) {
+                skippedJobs++;
+                return;
+            }
+            if (isInterrupted()) {
+                skippedJobs++;
+                return;
+            }
+
+            Future<CollectTabletStatJobResult> future = completionService.submit(job::execute);
+            inFlightFutures.add(future);
+            submittedJobs++;
+            requestedTablets += job.getTabletCount();
+            inFlightJobs++;
+            maxObservedInFlightJobs = Math.max(maxObservedInFlightJobs, inFlightJobs);
+            if (stopRequested) {
+                future.cancel(true);
+            }
+            if (inFlightJobs >= maxInflightTasks) {
+                waitOne();
+            }
+        }
+
+        void waitAll() {
+            while (inFlightJobs > 0 && !isInterrupted()) {
+                waitOne();
+            }
+        }
+
+        private void waitOne() {
+            Future<CollectTabletStatJobResult> future = null;
+            try {
+                future = completionService.take();
+                CollectTabletStatJobResult result = future.get();
+                completedJobs++;
+                updatedTablets += result.updatedTabletCount;
+                if (result.failed()) {
+                    failedJobs++;
+                }
+                if (result.slow()) {
+                    slowJobs++;
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                interrupted = true;
+                throw new RuntimeException("Interrupted while collecting lake tablet stat for " + name, e);
+            } catch (ExecutionException e) {
+                failedJobs++;
+                throw toRuntimeException(e);
+            } finally {
+                if (future != null && inFlightFutures.remove(future)) {
+                    inFlightJobs--;
+                }
+            }
+        }
+
+        private RuntimeException toRuntimeException(ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            if (cause instanceof RuntimeException) {
+                return (RuntimeException) cause;
+            }
+            return new RuntimeException(cause == null ? exception : cause);
+        }
+
+        void logSummary(long costMs) {
+            LOG.info("finished to collect lake tablet stat for {} in parallel. submitted partitions: {}, " +
+                            "completed partitions: {}, failed partitions: {}, skipped partitions: {}, " +
+                            "requested tablets: {}, updated tablets: {}, max in-flight partitions: {}, " +
+                            "parallelism: {}, max in-flight config: {}, slow partitions: {}, cost: {} ms",
+                    name, submittedJobs, completedJobs, failedJobs, skippedJobs, requestedTablets, updatedTablets,
+                    maxObservedInFlightJobs, parallelism, maxInflightTasks, slowJobs, costMs);
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            try {
+                if (interrupted || stopRequested || inFlightJobs > 0) {
+                    cancelAndDrainInFlightJobs();
+                }
+            } finally {
+                closed = true;
+                finishLakeTabletStatCollector(this, !inFlightFutures.isEmpty());
+            }
+        }
+
+        private void cancelAndDrainInFlightJobs() {
+            int canceledJobs = cancelInFlightJobs();
+            if (canceledJobs > 0) {
+                LOG.warn("Canceled {} unfinished lake tablet stat collection jobs for {}", canceledJobs, name);
+            }
+            int unfinishedJobs = drainCanceledJobs();
+            if (unfinishedJobs > 0) {
+                LOG.warn("Lake tablet stat collector for {} still has {} unfinished jobs after cancellation",
+                        name, unfinishedJobs);
+            }
+        }
+
+        private int cancelInFlightJobs() {
+            int canceledJobs = 0;
+            for (Future<CollectTabletStatJobResult> future : inFlightFutures) {
+                if (!future.isDone() && future.cancel(true)) {
+                    canceledJobs++;
+                }
+            }
+            return canceledJobs;
+        }
+
+        private int drainCanceledJobs() {
+            int remainingJobs = inFlightFutures.size();
+            boolean wasInterrupted = Thread.interrupted();
+            long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(lakeTabletStatCancelWaitMs());
+            try {
+                while (remainingJobs > 0) {
+                    long waitNanos = deadlineNanos - System.nanoTime();
+                    if (waitNanos <= 0) {
+                        break;
+                    }
+                    Future<CollectTabletStatJobResult> future =
+                            completionService.poll(waitNanos, TimeUnit.NANOSECONDS);
+                    if (future == null) {
+                        break;
+                    }
+                    if (inFlightFutures.remove(future)) {
+                        inFlightJobs--;
+                        remainingJobs--;
+                    }
+                }
+            } catch (InterruptedException e) {
+                wasInterrupted = true;
+                LOG.warn("Interrupted while draining canceled lake tablet stat collection jobs for {}", name);
+            } finally {
+                if (wasInterrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return remainingJobs;
+        }
+    }
+
+    private static class CollectTabletStatJobResult {
+        private final int updatedTabletCount;
+        private final int failedResponseCount;
+        private final long costMs;
+
+        CollectTabletStatJobResult(int updatedTabletCount, int failedResponseCount, long costMs) {
+            this.updatedTabletCount = updatedTabletCount;
+            this.failedResponseCount = failedResponseCount;
+            this.costMs = costMs;
+        }
+
+        private boolean failed() {
+            return failedResponseCount > 0;
+        }
+
+        private boolean slow() {
+            long slowLogMs = lakeTabletStatSlowLogMs();
+            return slowLogMs > 0 && costMs >= slowLogMs;
+        }
+    }
+
+    private static class CollectTabletStatWaitResult {
+        private final int updatedTabletCount;
+        private final int failedResponseCount;
+
+        CollectTabletStatWaitResult(int updatedTabletCount, int failedResponseCount) {
+            this.updatedTabletCount = updatedTabletCount;
+            this.failedResponseCount = failedResponseCount;
+        }
+    }
+
     private static class CollectTabletStatJob {
         private final String dbName;
         private final String tableName;
@@ -407,16 +815,32 @@ public class TabletStatMgr extends FrontendDaemon {
             this.computeResource = computeResource;
         }
 
-        void execute() {
-            sendTasks();
-            waitResponse();
+        CollectTabletStatJobResult execute() {
+            long start = System.currentTimeMillis();
+            int requestCount = sendTasks();
+            CollectTabletStatWaitResult waitResult = waitResponse();
+            long costMs = System.currentTimeMillis() - start;
+            if (Config.enable_parallel_lake_tablet_stat_collection
+                    && lakeTabletStatSlowLogMs() > 0
+                    && costMs >= lakeTabletStatSlowLogMs()) {
+                LOG.info("slow lake tablet stat collection. partition: {}, version: {}, tablets: {}, requests: {}, " +
+                                "updated tablets: {}, failed responses: {}, cost: {} ms",
+                        debugName(), version, tablets.size(), requestCount, waitResult.updatedTabletCount,
+                        waitResult.failedResponseCount, costMs);
+            }
+            return new CollectTabletStatJobResult(waitResult.updatedTabletCount,
+                    waitResult.failedResponseCount, costMs);
         }
 
         private String debugName() {
             return String.format("%s.%s.%d", dbName, tableName, partitionId);
         }
 
-        private void sendTasks() {
+        private int getTabletCount() {
+            return tablets.size();
+        }
+
+        private int sendTasks() {
             final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
             Map<ComputeNode, List<TabletInfo>> beToTabletInfos = new HashMap<>();
             for (Tablet tablet : tablets.values()) {
@@ -440,6 +864,7 @@ public class TabletStatMgr extends FrontendDaemon {
 
             collectStatTime = System.currentTimeMillis();
             responseList = Lists.newArrayListWithCapacity(beToTabletInfos.size());
+            int requestCount = 0;
             for (Map.Entry<ComputeNode, List<TabletInfo>> entry : beToTabletInfos.entrySet()) {
                 ComputeNode node = entry.getKey();
                 TabletStatRequest request = new TabletStatRequest();
@@ -449,6 +874,7 @@ public class TabletStatMgr extends FrontendDaemon {
                     LakeService lakeService = BrpcProxy.getLakeService(node.getHost(), node.getBrpcPort());
                     Future<TabletStatResponse> responseFuture = lakeService.getTabletStats(request);
                     responseList.add(responseFuture);
+                    requestCount++;
                     LOG.debug(
                             "Sent tablet stat collection task to node {} for partition {} of version {}. tablet " +
                                     "count={}",
@@ -459,13 +885,16 @@ public class TabletStatMgr extends FrontendDaemon {
                             e.getMessage());
                 }
             }
+            return requestCount;
         }
 
-        private void waitResponse() {
+        private CollectTabletStatWaitResult waitResponse() {
             // responseList may be null if there aren't any alive node.
             if (responseList == null) {
-                return;
+                return new CollectTabletStatWaitResult(0, 0);
             }
+            int updatedTabletCount = 0;
+            int failedResponseCount = 0;
             for (Future<TabletStatResponse> responseFuture : responseList) {
                 try {
                     TabletStatResponse response = responseFuture.get();
@@ -475,14 +904,18 @@ public class TabletStatMgr extends FrontendDaemon {
                             tablet.setDataSize(stat.dataSize);
                             tablet.setRowCount(stat.numRows);
                             tablet.setDataSizeUpdateTime(collectStatTime);
+                            updatedTabletCount++;
                         }
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    failedResponseCount++;
                 } catch (ExecutionException e) {
+                    failedResponseCount++;
                     LOG.warn("Fail to collect tablet stat for partition {}: {}", debugName(), e.getMessage());
                 }
             }
+            return new CollectTabletStatWaitResult(updatedTabletCount, failedResponseCount);
         }
     }
 }
