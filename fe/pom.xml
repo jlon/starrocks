@@ -40,6 +40,7 @@ under the License.
         <module>fe-core</module>
         <module>fe-server</module>
         <module>fe-plugin-shield</module>
+        <module>oppo-hive-udf</module>
     </modules>
 
     <name>starrocks-fe</name>

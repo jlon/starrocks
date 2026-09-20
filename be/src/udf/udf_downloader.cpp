@@ -17,6 +17,9 @@
 #include <fmt/format.h>
 
 #include <boost/algorithm/string/predicate.hpp>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <memory>
 
 #include "common/config.h"
@@ -35,6 +38,92 @@ public:
                                const FSOptions& options) = 0;
 };
 namespace detail {
+
+constexpr const char* FILE_SCHEME = "file://";
+constexpr const char* LOCALHOST_PREFIX = "localhost/";
+
+StatusOr<std::string> get_local_path_from_file_url(const std::string& url) {
+    if (!boost::istarts_with(url, FILE_SCHEME)) {
+        return Status::InvalidArgument(fmt::format("invalid file url: {}", url));
+    }
+
+    std::string path = url.substr(std::strlen(FILE_SCHEME));
+    if (boost::istarts_with(path, LOCALHOST_PREFIX)) {
+        path = path.substr(std::strlen(LOCALHOST_PREFIX) - 1);
+    }
+    if (path.empty() || path[0] != '/') {
+        return Status::InvalidArgument(fmt::format("only absolute local file url is supported: {}", url));
+    }
+    return path;
+}
+
+class FileUDFDownLoader : public UDFDownLoader {
+public:
+    Status do_download(std::string& dst_path, const std::string& remote_path, const std::string& md5sum,
+                       const FSOptions& options) override {
+        auto success = false;
+        auto fp = fopen(dst_path.c_str(), "wb");
+        DeferOp defer([&]() {
+            if (fp != nullptr) {
+                fclose(fp);
+            }
+            if (!success) {
+                (void)remove(dst_path.c_str());
+            }
+        });
+
+        if (fp == nullptr) {
+            std::string errmsg = strerror(errno);
+            LOG(ERROR) << fmt::format("fail to open file. file = {}, error = {}", dst_path, errmsg);
+            return Status::InternalError(fmt::format("fail to open tmp file when downloading file from {}. error = {}",
+                                                     remote_path, errmsg));
+        }
+
+        ASSIGN_OR_RETURN(auto local_path, get_local_path_from_file_url(remote_path));
+        FILE* input = fopen(local_path.c_str(), "rb");
+        if (input == nullptr) {
+            std::string errmsg = strerror(errno);
+            LOG(ERROR) << fmt::format("fail to open local file. file = {}, error = {}", local_path, errmsg);
+            return Status::InternalError(
+                    fmt::format("fail to open local file when downloading file from {}. error = {}", remote_path,
+                                errmsg));
+        }
+        DeferOp close_input([&]() { fclose(input); });
+
+        Md5Digest digest;
+        char buf[4096];
+        while (true) {
+            size_t bytes_read = fread(buf, 1, sizeof(buf), input);
+            if (bytes_read > 0) {
+                digest.update(buf, bytes_read);
+                size_t bytes_written = fwrite(buf, 1, bytes_read, fp);
+                if (bytes_written != bytes_read) {
+                    LOG(ERROR) << fmt::format("fail to write data to file {}, error={}", dst_path, ferror(fp));
+                    return Status::InternalError(
+                            fmt::format("file to write data when downloading file from {}", remote_path));
+                }
+            }
+            if (bytes_read < sizeof(buf)) {
+                if (ferror(input)) {
+                    LOG(ERROR) << fmt::format("fail to read local file {}, error={}", local_path, ferror(input));
+                    return Status::InternalError(
+                            fmt::format("fail to read local file when downloading file from {}", remote_path));
+                }
+                break;
+            }
+        }
+
+        digest.digest();
+        if (!boost::iequals(digest.hex(), md5sum)) {
+            LOG(ERROR) << fmt::format("Download file's checksum is not equal, expected={}, actual={}", md5sum,
+                                      digest.hex());
+            return Status::InternalError("Download file's checksum is not match");
+        }
+
+        success = true;
+        return Status::OK();
+    }
+};
 
 class HttpUDFDownLoader : public UDFDownLoader {
 public:
@@ -128,6 +217,9 @@ static std::string get_scheme(const std::string& url) {
 
 std::unique_ptr<UDFDownLoader> get_downloader(const std::string& url) {
     auto schema = get_scheme(url);
+    if (boost::iequals(schema, detail::FILE_SCHEME)) {
+        return std::make_unique<detail::FileUDFDownLoader>();
+    }
     for (auto match : config::s3_compatible_fs_list) {
         if (schema == match) {
             return std::make_unique<detail::S3UDFDownLoader>();

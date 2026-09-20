@@ -72,6 +72,7 @@ import com.starrocks.type.StructField;
 import com.starrocks.type.StructType;
 import com.starrocks.type.Type;
 import com.starrocks.type.VarcharType;
+import org.apache.commons.lang3.StringUtils;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -879,6 +880,16 @@ public class FunctionAnalyzer {
                                                     FunctionCallExpr node,
                                                     Type[] argumentTypes,
                                                     List<Type> newArgumentTypes) {
+        // Explicitly qualified db.fn prefers a database UDF over builtins with the same name.
+        // Unqualified calls preserve the historical builtin-first resolution order.
+        if (StringUtils.isNotEmpty(node.getDbName())) {
+            Function qualifiedUdf = AnalyzerUtils.getUdfFunction(
+                    session, FunctionName.createFnName(node.getFnName().toString()), argumentTypes);
+            if (qualifiedUdf != null) {
+                return qualifiedUdf;
+            }
+        }
+
         // get fn from known function variants
         Function fn = getAdjustedAnalyzedFunction(session, node, argumentTypes, newArgumentTypes);
         if (fn != null) {
