@@ -714,6 +714,11 @@ target_link_libraries(starrocks_dw_objs PRIVATE StarRocksPCH)
 add_executable(starrocks_dw_test test_main.cpp $<TARGET_OBJECTS:starrocks_dw_objs>)
 TARGET_LINK_LIBRARIES(starrocks_dw_test ${TEST_LINK_LIBS})
 
+# tablet_manager_test needs test_main.cpp to initialize the StarRocks test environment.
+ADD_EXECUTABLE(tablet_manager_test test_main.cpp storage/lake/tablet_manager_test.cpp)
+TARGET_LINK_LIBRARIES(tablet_manager_test ${TEST_LINK_LIBS})
+SET_TARGET_PROPERTIES(tablet_manager_test PROPERTIES COMPILE_FLAGS "-fno-access-control")
+SET_TARGET_PROPERTIES(tablet_manager_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/storage/lake")
 
 # =================================================
 # test cases must be compiled as a standalone binary

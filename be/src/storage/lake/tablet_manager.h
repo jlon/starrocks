@@ -322,6 +322,8 @@ private:
     StatusOr<TabletSchemaPtr> get_tablet_schema_by_id(int64_t tablet_id, int64_t schema_id);
 
     Status put_tablet_metadata(const TabletMetadataPtr& metadata, const std::string& metadata_location);
+    // Verify the just-written tablet metadata is persisted and parseable.
+    Status verify_tablet_metadata_persisted(const std::string& metadata_location);
     StatusOr<TabletMetadataPtr> load_tablet_metadata(const std::string& metadata_location, bool fill_data_cache,
                                                      int64_t expected_gtid, const std::shared_ptr<FileSystem>& fs);
     StatusOr<TabletMetadataPtr> construct_initial_metadata(int64_t tablet_id);

@@ -297,6 +297,55 @@ TEST_F(LakeTabletManagerTest, create_tablet_enable_tablet_creation_optimization)
     EXPECT_EQ(CompactionStrategyPB::DEFAULT, metadata->compaction_strategy());
 }
 
+TEST_F(LakeTabletManagerTest, create_tablet_readback_check_detects_unpersisted_metadata) {
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([]() {
+        SyncPoint::GetInstance()->ClearCallBack("ProtobufFile::load::corruption");
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+    SyncPoint::GetInstance()->SetCallBack("ProtobufFile::load::corruption", [](void* arg) {
+        *(Status*)arg = Status::NotFound("injected: initial metadata not persisted");
+    });
+
+    TCreateTabletReq req;
+    req.tablet_id = next_id();
+    req.__set_version(1);
+    req.__set_enable_tablet_creation_optimization(true);
+    req.tablet_schema.__set_id(next_id());
+    req.tablet_schema.__set_schema_hash(270068375);
+    req.tablet_schema.__set_short_key_column_count(2);
+    req.tablet_schema.__set_keys_type(TKeysType::DUP_KEYS);
+
+    auto st = _tablet_manager->create_tablet(req);
+    EXPECT_FALSE(st.ok());
+}
+
+TEST_F(LakeTabletManagerTest, create_tablet_readback_check_disabled) {
+    auto saved = config::lake_create_tablet_readback_check;
+    config::lake_create_tablet_readback_check = false;
+    DeferOp reset([&]() { config::lake_create_tablet_readback_check = saved; });
+
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp defer([]() {
+        SyncPoint::GetInstance()->ClearCallBack("ProtobufFile::load::corruption");
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+    SyncPoint::GetInstance()->SetCallBack("ProtobufFile::load::corruption", [](void* arg) {
+        *(Status*)arg = Status::NotFound("injected: should not be reached when check disabled");
+    });
+
+    TCreateTabletReq req;
+    req.tablet_id = next_id();
+    req.__set_version(1);
+    req.__set_enable_tablet_creation_optimization(true);
+    req.tablet_schema.__set_id(next_id());
+    req.tablet_schema.__set_schema_hash(270068375);
+    req.tablet_schema.__set_short_key_column_count(2);
+    req.tablet_schema.__set_keys_type(TKeysType::DUP_KEYS);
+
+    EXPECT_OK(_tablet_manager->create_tablet(req));
+}
+
 TEST_F(LakeTabletManagerTest, create_tablet_with_duplicate_column_id_or_name) {
     auto tablet_id = next_id();
     auto schema_id = next_id();
