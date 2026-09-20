@@ -17,6 +17,7 @@
 #include <fmt/format.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <numeric>
 #include <set>
@@ -293,15 +294,27 @@ Status ReplicationTxnManager::replicate_remote_snapshot(const TReplicateSnapshot
         // this file, so the download would always get NotFound. Only attempt download for full snapshots.
         // Note: we cannot add a has_dcg flag to TSnapshotInfo or embed DCG in .hdr because cross-cluster
         // replication must not depend on the source cluster upgrading its code version, so for full
-        // snapshots of tables without DCGs, the target still makes one NotFound request (acceptable since
-        // full replication is rare -- only initial sync or fallback).
+        // snapshots from old source clusters, the target checks the remote snapshot listing before trying
+        // to download the optional DCG snapshot file.
         if (!src_snapshot_info.incremental_snapshot) {
             std::string remote_dcgs_snapshot_file_name = std::to_string(request.src_tablet_id) + ".dcgs_snapshot";
-            auto dcgs_snapshot_content_or = ReplicationUtils::download_remote_snapshot_file(
-                    src_snapshot_info.backend.host, src_snapshot_info.backend.http_port, request.src_token,
-                    src_snapshot_info.snapshot_path, request.src_tablet_id, request.src_schema_hash,
-                    remote_dcgs_snapshot_file_name, config::download_low_speed_time);
-            if (dcgs_snapshot_content_or.ok()) {
+            ASSIGN_OR_RETURN(auto remote_snapshot_files,
+                             ReplicationUtils::list_remote_snapshot_files(
+                                     src_snapshot_info.backend.host, src_snapshot_info.backend.http_port,
+                                     request.src_token, src_snapshot_info.snapshot_path, request.src_tablet_id,
+                                     request.src_schema_hash));
+            if (std::find(remote_snapshot_files.begin(), remote_snapshot_files.end(), remote_dcgs_snapshot_file_name) !=
+                remote_snapshot_files.end()) {
+                auto dcgs_snapshot_content_or = ReplicationUtils::download_remote_snapshot_file(
+                        src_snapshot_info.backend.host, src_snapshot_info.backend.http_port, request.src_token,
+                        src_snapshot_info.snapshot_path, request.src_tablet_id, request.src_schema_hash,
+                        remote_dcgs_snapshot_file_name, config::download_low_speed_time);
+                if (!dcgs_snapshot_content_or.ok()) {
+                    LOG(WARNING) << "Failed to download dcgs_snapshot file: " << remote_dcgs_snapshot_file_name
+                                 << ", status: " << dcgs_snapshot_content_or.status();
+                    return dcgs_snapshot_content_or.status().clone_and_prepend(
+                            "Failed to download dcgs_snapshot file: " + remote_dcgs_snapshot_file_name);
+                }
                 DeltaColumnGroupSnapshotPB dcg_snapshot_pb;
                 RETURN_IF_ERROR(
                         ProtobufFileWithHeader::load_from_buffer(&dcg_snapshot_pb, dcgs_snapshot_content_or.value()));
@@ -314,11 +327,11 @@ Status ReplicationTxnManager::replicate_remote_snapshot(const TReplicateSnapshot
                 RETURN_IF_ERROR(convert_dcg_meta_for_non_pk(
                         dcg_snapshot_pb, rowset_id_to_seg_id, request.transaction_id,
                         txn_log->mutable_op_replication()->mutable_dcg_meta(), &filename_map));
-            } else if (!dcgs_snapshot_content_or.status().is_not_found()) {
-                LOG(WARNING) << "Failed to download dcgs_snapshot file: " << remote_dcgs_snapshot_file_name
-                             << ", status: " << dcgs_snapshot_content_or.status();
-                return dcgs_snapshot_content_or.status().clone_and_prepend("Failed to download dcgs_snapshot file: " +
-                                                                           remote_dcgs_snapshot_file_name);
+            } else {
+                LOG(INFO) << "Skip missing dcgs_snapshot file: " << remote_dcgs_snapshot_file_name
+                          << ", txn_id: " << request.transaction_id << ", tablet_id: " << request.tablet_id
+                          << ", src_tablet_id: " << request.src_tablet_id
+                          << ", snapshot_path: " << src_snapshot_info.snapshot_path;
             }
         }
 

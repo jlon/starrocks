@@ -636,6 +636,61 @@ TEST_P(LakeReplicationTxnManagerTest, test_full_snapshot_creates_dcg_file_even_w
     }
 }
 
+TEST_P(LakeReplicationTxnManagerTest, test_full_non_pk_skips_missing_dcg_snapshot) {
+    if (GetParam() == TKeysType::type::PRIMARY_KEYS) {
+        return;
+    }
+
+    TRemoteSnapshotRequest remote_snapshot_request;
+    remote_snapshot_request.__set_transaction_id(_transaction_id);
+    remote_snapshot_request.__set_table_id(_table_id);
+    remote_snapshot_request.__set_partition_id(_partition_id);
+    remote_snapshot_request.__set_tablet_id(_tablet_id);
+    remote_snapshot_request.__set_tablet_type(TTabletType::TABLET_TYPE_LAKE);
+    remote_snapshot_request.__set_schema_hash(_schema_hash);
+    remote_snapshot_request.__set_visible_version(_version);
+    remote_snapshot_request.__set_data_version(_version);
+    remote_snapshot_request.__set_src_token(ExecEnv::GetInstance()->token());
+    remote_snapshot_request.__set_src_tablet_id(_src_tablet_id);
+    remote_snapshot_request.__set_src_tablet_type(TTabletType::TABLET_TYPE_DISK);
+    remote_snapshot_request.__set_src_schema_hash(_schema_hash);
+    remote_snapshot_request.__set_src_visible_version(_src_version);
+    remote_snapshot_request.__set_src_backends({TBackend()});
+
+    TSnapshotInfo remote_snapshot_info;
+    Status status = _replication_txn_manager->remote_snapshot(remote_snapshot_request, &remote_snapshot_info);
+    ASSERT_OK(status);
+    ASSERT_FALSE(remote_snapshot_info.incremental_snapshot);
+
+    std::string dcg_file_path = remote_snapshot_info.snapshot_path + "/" + std::to_string(_src_tablet_id) + "/" +
+                                std::to_string(_schema_hash) + "/" + std::to_string(_src_tablet_id) + ".dcgs_snapshot";
+    ASSERT_OK(fs::remove(dcg_file_path));
+
+    TReplicateSnapshotRequest replicate_snapshot_request;
+    replicate_snapshot_request.__set_transaction_id(_transaction_id);
+    replicate_snapshot_request.__set_table_id(_table_id);
+    replicate_snapshot_request.__set_partition_id(_partition_id);
+    replicate_snapshot_request.__set_tablet_id(_tablet_id);
+    replicate_snapshot_request.__set_tablet_type(TTabletType::TABLET_TYPE_LAKE);
+    replicate_snapshot_request.__set_schema_hash(_schema_hash);
+    replicate_snapshot_request.__set_visible_version(_version);
+    replicate_snapshot_request.__set_data_version(_version);
+    replicate_snapshot_request.__set_src_token(ExecEnv::GetInstance()->token());
+    replicate_snapshot_request.__set_src_tablet_id(_src_tablet_id);
+    replicate_snapshot_request.__set_src_tablet_type(TTabletType::TABLET_TYPE_DISK);
+    replicate_snapshot_request.__set_src_schema_hash(_schema_hash);
+    replicate_snapshot_request.__set_src_visible_version(_src_version);
+    replicate_snapshot_request.__set_src_snapshot_infos({remote_snapshot_info});
+
+    status = _replication_txn_manager->replicate_snapshot(replicate_snapshot_request);
+    ASSERT_OK(status);
+
+    auto txn_log_path = _tablet_manager->txn_log_location(_tablet_id, _transaction_id);
+    auto txn_log_or = _tablet_manager->get_txn_log(txn_log_path, false);
+    ASSERT_OK(txn_log_or.status());
+    EXPECT_FALSE(txn_log_or.value()->op_replication().has_dcg_meta());
+}
+
 INSTANTIATE_TEST_SUITE_P(LakeReplicationTxnManagerTest, LakeReplicationTxnManagerTest,
                          testing::Values(TKeysType::type::AGG_KEYS, TKeysType::type::PRIMARY_KEYS));
 

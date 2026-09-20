@@ -17,6 +17,9 @@
 #include "storage/file_stream_converter.h"
 #include "storage/storage_engine.h"
 
+#include <string>
+#include <vector>
+
 namespace starrocks {
 
 using FileConverterCreatorFunc =
@@ -39,6 +42,12 @@ public:
                                            TSchemaHash remote_schema_hash,
                                            const FileConverterCreatorFunc& file_converters,
                                            DataDir* data_dir = nullptr);
+
+    static StatusOr<std::vector<std::string>> list_remote_snapshot_files(const std::string& host, int32_t http_port,
+                                                                         const std::string& remote_token,
+                                                                         const std::string& remote_snapshot_path,
+                                                                         TTabletId remote_tablet_id,
+                                                                         TSchemaHash remote_schema_hash);
 
     static StatusOr<std::string> download_remote_snapshot_file(const std::string& host, int32_t http_port,
                                                                const std::string& remote_token,

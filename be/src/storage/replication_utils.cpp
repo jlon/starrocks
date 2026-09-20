@@ -308,6 +308,28 @@ Status ReplicationUtils::download_remote_snapshot(const std::string& host, int32
 #endif
 }
 
+StatusOr<std::vector<std::string>> ReplicationUtils::list_remote_snapshot_files(
+        const std::string& host, int32_t http_port, const std::string& remote_token,
+        const std::string& remote_snapshot_path, TTabletId remote_tablet_id, TSchemaHash remote_schema_hash) {
+    if (UNLIKELY(StorageEngine::instance()->bg_worker_stopped())) {
+        return Status::InternalError("Process is going to quit. The list remote snapshot files will stop");
+    }
+
+    std::vector<std::string> file_name_list;
+#ifdef BE_TEST
+    std::string remote_snapshot_dir =
+            strings::Substitute("$0/$1/$2/", remote_snapshot_path, remote_tablet_id, remote_schema_hash);
+    RETURN_IF_ERROR(FileSystem::Default()->get_children(remote_snapshot_dir, &file_name_list));
+#else
+    std::string remote_url_prefix = strings::Substitute(
+            "http://$0$1?token=$2&type=V2&file=$3/$4/$5/", get_host_port(host, http_port), HTTP_REQUEST_PREFIX,
+            remote_token, remote_snapshot_path, remote_tablet_id, remote_schema_hash);
+    std::vector<int64_t> file_size_list;
+    RETURN_IF_ERROR(list_remote_files(remote_url_prefix, &file_name_list, &file_size_list));
+#endif
+    return file_name_list;
+}
+
 StatusOr<std::string> ReplicationUtils::download_remote_snapshot_file(
         const std::string& host, int32_t http_port, const std::string& remote_token,
         const std::string& remote_snapshot_path, TTabletId remote_tablet_id, TSchemaHash remote_schema_hash,
