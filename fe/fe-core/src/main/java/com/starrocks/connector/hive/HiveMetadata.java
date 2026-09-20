@@ -375,20 +375,24 @@ public class HiveMetadata implements ConnectorMetadata {
     public List<RemoteFileInfo> getRemoteFiles(Table table, GetRemoteFilesParams params) {
         List<Partition> partitions = buildGetRemoteFilesPartitions(table, params);
 
-        boolean useCache = true;
-        // if we disable cache explicitly
-        if (!params.isUseCache()) {
-            useCache = false;
-        }
-
         GetRemoteFilesParams updatedParams = params.copy();
-        updatedParams.setUseCache(useCache);
+        updatedParams.setUseCache(params.isUseCache() && useRemoteFileCache());
         return fileOps.getRemoteFiles(table, partitions, updatedParams);
     }
 
     @Override
     public RemoteFileInfoSource getRemoteFilesAsync(Table table, GetRemoteFilesParams params) {
-        return fileOps.getRemoteFilesAsync(table, params, (p) -> this.buildGetRemoteFilesPartitions(table, p));
+        GetRemoteFilesParams updatedParams = params.copy();
+        updatedParams.setUseCache(params.isUseCache() && useRemoteFileCache());
+        ConnectContext context = ConnectContext.get();
+        return fileOps.getRemoteFilesAsync(table, updatedParams, (p) -> {
+            if (context == null) {
+                return buildGetRemoteFilesPartitions(table, p);
+            }
+            try (ConnectContext.ScopeGuard ignored = context.bindScope()) {
+                return buildGetRemoteFilesPartitions(table, p);
+            }
+        });
     }
 
     @Override
@@ -613,15 +617,29 @@ public class HiveMetadata implements ConnectorMetadata {
         hmsOps.addPartitions(table.getCatalogDBName(), table.getCatalogTableName(), Lists.newArrayList(partitionWithStats));
     }
 
-    public static boolean useMetadataCache() {
-        if (ConnectContext.get() == null) {
+    public static boolean useMetastoreCache() {
+        ConnectContext context = ConnectContext.get();
+        if (context == null) {
             return true;
         }
+        if (!useConnectorMetadataCache(context)) {
+            return false;
+        }
+        return context.getSessionVariable().isEnableMetastoreCache();
+    }
 
-        if (ConnectContext.get().getUseConnectorMetadataCache().isEmpty()) {
+    public static boolean useRemoteFileCache() {
+        ConnectContext context = ConnectContext.get();
+        if (context == null) {
             return true;
         }
+        if (!useConnectorMetadataCache(context)) {
+            return false;
+        }
+        return context.getSessionVariable().isEnableRemoteFileCache();
+    }
 
-        return ConnectContext.get().getUseConnectorMetadataCache().get();
+    private static boolean useConnectorMetadataCache(ConnectContext context) {
+        return context.getUseConnectorMetadataCache().orElse(true);
     }
 }

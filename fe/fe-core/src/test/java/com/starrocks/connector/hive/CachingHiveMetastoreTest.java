@@ -25,6 +25,7 @@ import com.starrocks.connector.DatabaseTableName;
 import com.starrocks.connector.MetastoreType;
 import com.starrocks.connector.PartitionUtil;
 import com.starrocks.connector.exception.StarRocksConnectorException;
+import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.expression.StringLiteral;
 import com.starrocks.type.BitmapType;
 import com.starrocks.type.IntegerType;
@@ -156,6 +157,28 @@ public class CachingHiveMetastoreTest {
         Assertions.assertEquals(IntegerType.INT, hiveTable.getPartitionColumns().get(0).getType());
         Assertions.assertEquals(IntegerType.INT, hiveTable.getBaseSchema().get(0).getType());
         Assertions.assertEquals("hive_catalog", hiveTable.getCatalogName());
+    }
+
+    @Test
+    public void testGetTableWithoutMetastoreCacheDoesNotPopulateNestedCaches() {
+        CachingHiveMetastore catalogCache = new CachingHiveMetastore(
+                metastore, executor, executor, expireAfterWriteSec, refreshAfterWriteSec, 1000, false);
+        CachingHiveMetastore queryCache = CachingHiveMetastore.createQueryLevelInstance(catalogCache, 100);
+        ConnectContext context = new ConnectContext();
+        context.getSessionVariable().setEnableMetastoreCache(false);
+        try (ConnectContext.ScopeGuard ignored = context.bindScope()) {
+            queryCache.getTable("db1", "tbl1");
+
+            DatabaseTableName tableName = DatabaseTableName.of("db1", "tbl1");
+            Assertions.assertFalse(queryCache.isTablePresent(tableName));
+            Assertions.assertFalse(catalogCache.isTablePresent(tableName));
+
+            HivePartitionValue partitionValue = HivePartitionValue.of(tableName,
+                    HivePartitionValue.ALL_PARTITION_VALUES);
+            queryCache.getPartitionKeysByValue("db1", "tbl1", HivePartitionValue.ALL_PARTITION_VALUES);
+            Assertions.assertNull(queryCache.partitionKeysCache.getIfPresent(partitionValue));
+            Assertions.assertNull(catalogCache.partitionKeysCache.getIfPresent(partitionValue));
+        }
     }
 
     @Test

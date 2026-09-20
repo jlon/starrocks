@@ -273,6 +273,30 @@ public class VariableMgrTest {
     }
 
     @Test
+    public void testHiveMetadataCacheSessionOverrides() throws Exception {
+        VariableMgr variableMgr = new VariableMgr();
+        SessionVariable sessionVariable = variableMgr.newSessionVariable();
+        Assertions.assertTrue(sessionVariable.isEnableMetastoreCache());
+        Assertions.assertTrue(sessionVariable.isEnableRemoteFileCache());
+
+        SystemVariable metastoreCache = new SystemVariable(SetType.SESSION,
+                SessionVariable.ENABLE_METASTORE_CACHE, new StringLiteral("false"));
+        SystemVariable remoteFileCache = new SystemVariable(SetType.SESSION,
+                SessionVariable.ENABLE_REMOTE_FILE_CACHE, new StringLiteral("false"));
+        variableMgr.setSystemVariable(sessionVariable, metastoreCache, false);
+        variableMgr.setSystemVariable(sessionVariable, remoteFileCache, false);
+        Assertions.assertFalse(sessionVariable.isEnableMetastoreCache());
+        Assertions.assertFalse(sessionVariable.isEnableRemoteFileCache());
+
+        variableMgr.setSystemVariable(sessionVariable,
+                new SystemVariable(SetType.SESSION, SessionVariable.ENABLE_METASTORE_CACHE, null), false);
+        variableMgr.setSystemVariable(sessionVariable,
+                new SystemVariable(SetType.SESSION, SessionVariable.ENABLE_REMOTE_FILE_CACHE, null), false);
+        Assertions.assertTrue(sessionVariable.isEnableMetastoreCache());
+        Assertions.assertTrue(sessionVariable.isEnableRemoteFileCache());
+    }
+
+    @Test
     public void testReadOnly() {
         assertThrows(DdlException.class, () -> {
             VariableMgr variableMgr = new VariableMgr();

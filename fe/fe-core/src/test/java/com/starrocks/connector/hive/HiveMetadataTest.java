@@ -43,6 +43,7 @@ import com.starrocks.connector.PartitionUtil;
 import com.starrocks.connector.RemoteFileBlockDesc;
 import com.starrocks.connector.RemoteFileDesc;
 import com.starrocks.connector.RemoteFileInfo;
+import com.starrocks.connector.RemoteFileInfoSource;
 import com.starrocks.connector.RemoteFileOperations;
 import com.starrocks.connector.RemotePathKey;
 import com.starrocks.connector.exception.StarRocksConnectorException;
@@ -263,6 +264,63 @@ public class HiveMetadataTest {
         Assertions.assertEquals(0, blockDesc.getOffset());
         Assertions.assertEquals(20, blockDesc.getLength());
         Assertions.assertEquals(2, blockDesc.getReplicaHostIds().length);
+    }
+
+    @Test
+    public void testGetRemoteFilesAsyncWithoutMetastoreCacheDoesNotPopulatePartitionCache() {
+        HiveTable hiveTable = (HiveTable) hiveMetadata.getTable(new ConnectContext(), "db1", "table1");
+        String partitionName = "col1=1";
+        HivePartitionName partition = HivePartitionName.of("db1", "table1", partitionName);
+        Assertions.assertTrue(cachingHiveMetastore.getCachedPartitions(Lists.newArrayList(partition)).isEmpty());
+
+        ConnectContext context = new ConnectContext();
+        context.getSessionVariable().setEnableMetastoreCache(false);
+        try (ConnectContext.ScopeGuard ignored = context.bindScope()) {
+            RemoteFileInfoSource source = hiveMetadata.getRemoteFilesAsync(hiveTable,
+                    GetRemoteFilesParams.newBuilder().setPartitionNames(Lists.newArrayList(partitionName)).build());
+            while (source.hasMoreOutput()) {
+                source.getOutput();
+            }
+        }
+
+        Assertions.assertTrue(cachingHiveMetastore.getCachedPartitions(Lists.newArrayList(partition)).isEmpty());
+    }
+
+    @Test
+    public void testGetRemoteFilesWithoutRemoteFileCacheDoesNotPopulateCache() {
+        CachingRemoteFileIO queryCache = CachingRemoteFileIO.createQueryLevelInstance(cachingRemoteFileIO, 0.0);
+        RemoteFileOperations queryFileOps = new RemoteFileOperations(queryCache, executorForPullFiles, executorForPullFiles,
+                false, true, new Configuration());
+        HiveMetadata queryMetadata = new HiveMetadata("hive_catalog", new HdfsEnvironment(), hmsOps, queryFileOps,
+                new HiveStatisticsProvider(hmsOps, queryFileOps), Optional.empty(), executorForHmsRefresh,
+                executorForHmsRefresh, new ConnectorProperties(ConnectorType.HIVE));
+        HiveTable hiveTable = (HiveTable) queryMetadata.getTable(new ConnectContext(), "db1", "table1");
+        String partitionName = "col1=1";
+        RemotePathKey pathKey = RemotePathKey.of(
+                "hdfs://127.0.0.1:10000/hive.db/hive_tbl/" + partitionName, false);
+        Assertions.assertTrue(queryCache.getPresentRemoteFiles(Lists.newArrayList(pathKey)).isEmpty());
+        Assertions.assertTrue(cachingRemoteFileIO.getPresentRemoteFiles(Lists.newArrayList(pathKey)).isEmpty());
+
+        ConnectContext context = new ConnectContext();
+        context.getSessionVariable().setEnableRemoteFileCache(false);
+        try (ConnectContext.ScopeGuard ignored = context.bindScope()) {
+            List<RemoteFileInfo> remoteFileInfos = queryMetadata.getRemoteFiles(hiveTable,
+                    GetRemoteFilesParams.newBuilder().setPartitionNames(Lists.newArrayList(partitionName)).build());
+            Assertions.assertEquals(1, remoteFileInfos.size());
+        }
+
+        Assertions.assertTrue(queryCache.getPresentRemoteFiles(Lists.newArrayList(pathKey)).isEmpty());
+        Assertions.assertTrue(cachingRemoteFileIO.getPresentRemoteFiles(Lists.newArrayList(pathKey)).isEmpty());
+    }
+
+    @Test
+    public void testInsertMetadataCacheBypassOverridesSessionSettings() {
+        ConnectContext context = new ConnectContext();
+        context.setUseConnectorMetadataCache(Optional.of(false));
+        try (ConnectContext.ScopeGuard ignored = context.bindScope()) {
+            Assertions.assertFalse(HiveMetadata.useMetastoreCache());
+            Assertions.assertFalse(HiveMetadata.useRemoteFileCache());
+        }
     }
 
     @Test

@@ -56,6 +56,7 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static com.starrocks.connector.PartitionUtil.toHivePartitionName;
+import static com.starrocks.connector.hive.HiveMetadata.useRemoteFileCache;
 import static com.starrocks.server.CatalogMgr.ResourceMappingCatalog.isResourceMappingCatalog;
 
 public class HudiMetadata implements ConnectorMetadata {
@@ -177,12 +178,24 @@ public class HudiMetadata implements ConnectorMetadata {
     @Override
     public List<RemoteFileInfo> getRemoteFiles(Table table, GetRemoteFilesParams params) {
         List<Partition> partitions = buildGetRemoteFilesPartitions(table, params);
-        return fileOps.getRemoteFiles(table, partitions, params);
+        GetRemoteFilesParams updatedParams = params.copy();
+        updatedParams.setUseCache(params.isUseCache() && useRemoteFileCache());
+        return fileOps.getRemoteFiles(table, partitions, updatedParams);
     }
 
     @Override
     public RemoteFileInfoSource getRemoteFilesAsync(Table table, GetRemoteFilesParams params) {
-        return fileOps.getRemoteFilesAsync(table, params, (p) -> this.buildGetRemoteFilesPartitions(table, p));
+        GetRemoteFilesParams updatedParams = params.copy();
+        updatedParams.setUseCache(params.isUseCache() && useRemoteFileCache());
+        ConnectContext context = ConnectContext.get();
+        return fileOps.getRemoteFilesAsync(table, updatedParams, (p) -> {
+            if (context == null) {
+                return buildGetRemoteFilesPartitions(table, p);
+            }
+            try (ConnectContext.ScopeGuard ignored = context.bindScope()) {
+                return buildGetRemoteFilesPartitions(table, p);
+            }
+        });
     }
 
     @Override

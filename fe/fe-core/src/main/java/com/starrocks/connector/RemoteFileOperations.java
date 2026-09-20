@@ -177,7 +177,7 @@ public class RemoteFileOperations {
     }
 
     public List<RemoteFileInfo> getRemoteFileInfoForStats(Table table, List<Partition> partitions, GetRemoteFilesParams params) {
-        if (enableCatalogLevelCache) {
+        if (enableCatalogLevelCache && params.isUseCache()) {
             return getPresentFilesInCache(partitions);
         } else {
             return getRemoteFiles(table, partitions, params);

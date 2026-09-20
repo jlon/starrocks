@@ -630,6 +630,10 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public static final String ENABLE_HIVE_METADATA_CACHE_WITH_INSERT = "enable_hive_metadata_cache_with_insert";
 
+    public static final String ENABLE_METASTORE_CACHE = "enable_metastore_cache";
+
+    public static final String ENABLE_REMOTE_FILE_CACHE = "enable_remote_file_cache";
+
     public static final String DEFAULT_TABLE_COMPRESSION = "default_table_compression";
 
     // In most cases, the partition statistics obtained from the hive metastore are empty.
@@ -2024,6 +2028,12 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
     @VariableMgr.VarAttr(name = ENABLE_HIVE_METADATA_CACHE_WITH_INSERT)
     private boolean enableHiveMetadataCacheWithInsert = false;
 
+    @VariableMgr.VarAttr(name = ENABLE_METASTORE_CACHE, flag = VariableMgr.SESSION_ONLY)
+    private boolean enableMetastoreCache = true;
+
+    @VariableMgr.VarAttr(name = ENABLE_REMOTE_FILE_CACHE, flag = VariableMgr.SESSION_ONLY)
+    private boolean enableRemoteFileCache = true;
+
     @VariableMgr.VarAttr(name = HIVE_PARTITION_STATS_SAMPLE_SIZE)
     private int hivePartitionStatsSampleSize = 3000;
 
@@ -2624,6 +2634,22 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public boolean isEnableQueryQueue() {
         return enableQueryQueue;
+    }
+
+    public boolean isEnableMetastoreCache() {
+        return enableMetastoreCache;
+    }
+
+    public void setEnableMetastoreCache(boolean enableMetastoreCache) {
+        this.enableMetastoreCache = enableMetastoreCache;
+    }
+
+    public boolean isEnableRemoteFileCache() {
+        return enableRemoteFileCache;
+    }
+
+    public void setEnableRemoteFileCache(boolean enableRemoteFileCache) {
+        this.enableRemoteFileCache = enableRemoteFileCache;
     }
 
     @VariableMgr.VarAttr(name = ENABLE_SCAN_DATACACHE, alias = ENABLE_SCAN_BLOCK_CACHE)

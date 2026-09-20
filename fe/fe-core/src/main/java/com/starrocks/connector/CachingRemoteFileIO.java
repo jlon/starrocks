@@ -95,7 +95,7 @@ public class CachingRemoteFileIO implements RemoteFileIO {
     public Map<RemotePathKey, List<RemoteFileDesc>> getRemoteFiles(RemotePathKey pathKey, boolean useCache) {
         try {
             if (!useCache) {
-                invalidatePartition(pathKey);
+                return getRemoteFilesWithoutCache(pathKey);
             }
             return ImmutableMap.of(pathKey, cache.get(pathKey));
         } catch (UncheckedExecutionException e) {
@@ -103,6 +103,13 @@ public class CachingRemoteFileIO implements RemoteFileIO {
             throwIfInstanceOf(e.getCause(), StarRocksConnectorException.class);
             throw e;
         }
+    }
+
+    private Map<RemotePathKey, List<RemoteFileDesc>> getRemoteFilesWithoutCache(RemotePathKey pathKey) {
+        if (fileIO instanceof CachingRemoteFileIO) {
+            return ((CachingRemoteFileIO) fileIO).getRemoteFiles(pathKey, false);
+        }
+        return fileIO.getRemoteFiles(pathKey);
     }
 
     public List<RemoteFileDesc> loadRemoteFiles(RemotePathKey pathKey) {

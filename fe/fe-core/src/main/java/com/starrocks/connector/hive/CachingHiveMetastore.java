@@ -69,7 +69,7 @@ import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.cache.CacheLoader.asyncReloading;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
-import static com.starrocks.connector.hive.HiveMetadata.useMetadataCache;
+import static com.starrocks.connector.hive.HiveMetadata.useMetastoreCache;
 
 public class CachingHiveMetastore extends CachingMetastore implements IHiveMetastore {
     private static final Logger LOG = LogManager.getLogger(CachingHiveMetastore.class);
@@ -206,6 +206,9 @@ public class CachingHiveMetastore extends CachingMetastore implements IHiveMetas
     }
 
     public List<String> getAllDatabaseNames() {
+        if (!useMetastoreCache()) {
+            return metastore.getAllDatabaseNames();
+        }
         return get(databaseNamesCache, "");
     }
 
@@ -232,6 +235,9 @@ public class CachingHiveMetastore extends CachingMetastore implements IHiveMetas
     }
 
     public List<String> getAllTableNames(String dbName) {
+        if (!useMetastoreCache()) {
+            return metastore.getAllTableNames(dbName);
+        }
         return get(tableNamesCache, dbName);
     }
 
@@ -276,14 +282,11 @@ public class CachingHiveMetastore extends CachingMetastore implements IHiveMetas
 
     @Override
     public List<String> getPartitionKeysByValue(String dbName, String tableName, List<Optional<String>> partitionValues) {
+        if (!useMetastoreCache()) {
+            return metastore.getPartitionKeysByValue(dbName, tableName, partitionValues);
+        }
         DatabaseTableName databaseTableName = DatabaseTableName.of(dbName, tableName);
         HivePartitionValue hivePartitionValue = HivePartitionValue.of(databaseTableName, partitionValues);
-        if (metastore instanceof CachingHiveMetastore) {
-            Table table = getTable(dbName, tableName);
-            if (table.isHiveTable() && !useMetadataCache()) {
-                invalidatePartitionKeys(hivePartitionValue);
-            }
-        }
         // update last access time
         lastAccessTimeMap.put(databaseTableName, System.currentTimeMillis());
         // first check if the all partition keys are cached
@@ -316,6 +319,9 @@ public class CachingHiveMetastore extends CachingMetastore implements IHiveMetas
     }
 
     public Database getDb(String dbName) {
+        if (!useMetastoreCache()) {
+            return metastore.getDb(dbName);
+        }
         return get(databaseCache, dbName);
     }
 
@@ -329,6 +335,9 @@ public class CachingHiveMetastore extends CachingMetastore implements IHiveMetas
     }
 
     public Table getTable(String dbName, String tableName) {
+        if (!useMetastoreCache()) {
+            return loadTableWithoutCache(DatabaseTableName.of(dbName, tableName));
+        }
         return get(tableCache, DatabaseTableName.of(dbName, tableName));
     }
 
@@ -338,26 +347,40 @@ public class CachingHiveMetastore extends CachingMetastore implements IHiveMetas
 
     public Table loadTable(DatabaseTableName databaseTableName) {
         Table table = metastore.getTable(databaseTableName.getDatabaseName(), databaseTableName.getTableName());
+        return enrichTable(databaseTableName, table, true);
+    }
+
+    private Table loadTableWithoutCache(DatabaseTableName databaseTableName) {
+        Table table = metastore.getTable(databaseTableName.getDatabaseName(), databaseTableName.getTableName());
+        return enrichTable(databaseTableName, table, false);
+    }
+
+    private Table enrichTable(DatabaseTableName databaseTableName, Table table, boolean useCache) {
         if (table instanceof HiveTable hiveTable) {
-            String avroSchema = avroSchemaCache.getIfPresent(databaseTableName);
+            String avroSchema = useCache ? avroSchemaCache.getIfPresent(databaseTableName) : null;
             if (avroSchema == null) {
                 Optional<String> schemaOpt = avroSchemaResolver.flatMap(resolver -> resolver.resolve(hiveTable));
                 if (schemaOpt.isPresent()) {
                     avroSchema = schemaOpt.get();
-                    avroSchemaCache.put(databaseTableName, avroSchema);
+                    if (useCache) {
+                        avroSchemaCache.put(databaseTableName, avroSchema);
+                    }
                 }
             }
             if (avroSchema != null) {
                 hiveTable.setAvroSchemaJson(avroSchema);
             }
         }
-        if (table.isHMSExternalTable()) {
+        if (useCache && table.isHMSExternalTable()) {
             hmsExternalTableCache.put(databaseTableName, databaseTableName.toString());
         }
         return table;
     }
 
     public Partition getPartition(String dbName, String tblName, List<String> partitionValues) {
+        if (!useMetastoreCache()) {
+            return metastore.getPartition(dbName, tblName, partitionValues);
+        }
         return get(partitionCache, HivePartitionName.of(dbName, tblName, partitionValues));
     }
 
@@ -394,6 +417,9 @@ public class CachingHiveMetastore extends CachingMetastore implements IHiveMetas
     }
 
     public Map<String, Partition> getPartitionsByNames(String dbName, String tblName, List<String> partitionNames) {
+        if (!useMetastoreCache()) {
+            return metastore.getPartitionsByNames(dbName, tblName, partitionNames);
+        }
         List<HivePartitionName> hivePartitionNames = partitionNames.stream()
                 .map(partitionName -> HivePartitionName.of(dbName, tblName, partitionName))
                 .peek(hivePartitionName -> checkState(hivePartitionName.getPartitionNames().isPresent(),
@@ -428,6 +454,9 @@ public class CachingHiveMetastore extends CachingMetastore implements IHiveMetas
     }
 
     public HivePartitionStats getTableStatistics(String dbName, String tblName) {
+        if (!useMetastoreCache()) {
+            return metastore.getTableStatistics(dbName, tblName);
+        }
         return get(tableStatsCache, DatabaseTableName.of(dbName, tblName));
     }
 
@@ -458,6 +487,9 @@ public class CachingHiveMetastore extends CachingMetastore implements IHiveMetas
 
     @Override
     public Map<String, HivePartitionStats> getPartitionStatistics(Table table, List<String> partitionNames) {
+        if (!useMetastoreCache()) {
+            return metastore.getPartitionStatistics(table, partitionNames);
+        }
         String dbName = (table).getCatalogDBName();
         String tblName = (table).getCatalogTableName();
 
