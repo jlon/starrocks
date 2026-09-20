@@ -768,6 +768,8 @@ public class CatalogRecycleBin extends FrontendDaemon implements Writable, Memor
     protected synchronized void erasePartition(long currentTimeMs) {
         Iterator<Map.Entry<Long, RecyclePartitionInfo>> iterator = idToPartition.entrySet().iterator();
         int currentEraseOpCnt = 0;
+        int submittedDeleteTaskCount = 0;
+        boolean deleteSubmitLimitLogged = false;
         while (iterator.hasNext()) {
             Map.Entry<Long, RecyclePartitionInfo> entry = iterator.next();
             RecyclePartitionInfo partitionInfo = entry.getValue();
@@ -781,8 +783,18 @@ public class CatalogRecycleBin extends FrontendDaemon implements Writable, Memor
             boolean finished = false;
             CompletableFuture<Boolean> future = asyncDeleteForPartitions.get(partitionInfo);
             if (future == null) {
+                if (reachPartitionDeleteSubmitLimit(submittedDeleteTaskCount)) {
+                    if (!deleteSubmitLimitLogged) {
+                        LOG.info("Skip submitting partition delete tasks because current round reaches submit limit, " +
+                                        "pendingTaskCount: {}, submittedTaskCount: {}",
+                                asyncDeleteForPartitions.size(), submittedDeleteTaskCount);
+                        deleteSubmitLimitLogged = true;
+                    }
+                    continue;
+                }
                 asyncDeleteForPartitions.put(partitionInfo,
                         CompletableFuture.supplyAsync(partitionInfo::delete, ASYNC_REMOVE_PARTITION_EXECUTOR));
+                submittedDeleteTaskCount++;
             } else if (future.isDone()) {
                 try {
                     finished = future.get();
@@ -833,6 +845,17 @@ public class CatalogRecycleBin extends FrontendDaemon implements Writable, Memor
                             Config.catalog_recycle_bin_erase_fail_retry_interval_ms);
             }
         } // end for partitions
+    }
+
+    private boolean reachPartitionDeleteSubmitLimit(int submittedDeleteTaskCount) {
+        if (Config.catalog_recycle_bin_erase_max_pending_partition_delete_tasks > 0
+                && asyncDeleteForPartitions.size()
+                        >= Config.catalog_recycle_bin_erase_max_pending_partition_delete_tasks) {
+            return true;
+        }
+        return Config.catalog_recycle_bin_erase_max_new_partition_delete_tasks_per_cycle > 0
+                && submittedDeleteTaskCount
+                        >= Config.catalog_recycle_bin_erase_max_new_partition_delete_tasks_per_cycle;
     }
 
     /**

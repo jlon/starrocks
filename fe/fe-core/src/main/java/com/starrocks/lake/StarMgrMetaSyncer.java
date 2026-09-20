@@ -87,6 +87,33 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
         super("star-mgr-meta-syncer", Config.star_mgr_meta_sync_interval_sec * 1000L);
     }
 
+    @VisibleForTesting
+    static class CleanShardGroupResult {
+        private final boolean emptyGroup;
+        private final long deletedShardCount;
+
+        private CleanShardGroupResult(boolean emptyGroup, long deletedShardCount) {
+            this.emptyGroup = emptyGroup;
+            this.deletedShardCount = Math.max(0L, deletedShardCount);
+        }
+
+        static CleanShardGroupResult empty() {
+            return new CleanShardGroupResult(true, 0L);
+        }
+
+        static CleanShardGroupResult notEmpty(long deletedShardCount) {
+            return new CleanShardGroupResult(false, deletedShardCount);
+        }
+
+        boolean isEmptyGroup() {
+            return emptyGroup;
+        }
+
+        long deletedShardCount() {
+            return deletedShardCount;
+        }
+    }
+
     @Override
     public synchronized void start() {
         super.start();
@@ -150,7 +177,6 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
         // PhysicalPartition. Without unioning them in, deleteUnusedShardAndShardGroup would
         // treat a live PACK shard group as an orphan and reap it (along with its live tablets).
         groupIds.addAll(GlobalStateMgr.getCurrentState().getColocateTableIndex().getAllPackShardGroupIds());
-
         long elapsedMs = System.currentTimeMillis() - startMs;
         if (elapsedMs > SLOW_COLLECTION_WARN_THRESHOLD_MS) {
             LOG.warn("getAllPartitionShardGroupId is slow: elapsed={}ms, dbCount={}, groupCount={}",
@@ -159,11 +185,11 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
         return groupIds;
     }
 
-    public static void dropTabletAndDeleteShard(ComputeResource computeResource,
+    public static long dropTabletAndDeleteShard(ComputeResource computeResource,
                                                 List<Long> shardIds, StarOSAgent starOSAgent,
                                                 boolean isFileBundling) {
         if (shardIds.isEmpty()) {
-            return;
+            return 0L;
         }
         Preconditions.checkNotNull(starOSAgent);
         Map<Long, Set<Long>> shardIdsByBeMap = new HashMap<>();
@@ -291,10 +317,12 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
             try {
                 starOSAgent.deleteShards(shardToDelete);
                 SHARD_DELETE_COUNTER.increase((long) shardToDelete.size());
+                return shardToDelete.size();
             } catch (DdlException e) {
                 LOG.info("Failed to delete shard: {} from starMgr, error: {}", shardToDelete, e.getMessage());
             }
         }
+        return 0L;
     }
 
     private boolean isSafeToDelete(long shardGroupId, ShardGroupInfo shardInfo) {
@@ -348,6 +376,15 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
      */
     private void deleteUnusedShardAndShardGroup() {
         StarOSAgent starOSAgent = GlobalStateMgr.getCurrentState().getStarOSAgent();
+        long cleanupStartMs = System.currentTimeMillis();
+        long cleanedGroupCount = 0L;
+        long deletedShardCount = 0L;
+
+        if (shouldStopShardGroupCleanup(cleanupStartMs, cleanedGroupCount, deletedShardCount)) {
+            LOG.info("Skip shard cleanup round: {}", shardGroupCleanupStopReason(cleanupStartMs,
+                    cleanedGroupCount, deletedShardCount));
+            return;
+        }
 
         // Take this timestamp as reference, all ShardGroups created after this timestamp will be safe for sure.
         long creationExpireTime = System.currentTimeMillis() - Config.shard_group_clean_threshold_sec * 1000L;
@@ -365,6 +402,11 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
 
         long nextShardGroupId = 0;
         do {
+            if (shouldStopShardGroupCleanup(cleanupStartMs, cleanedGroupCount, deletedShardCount)) {
+                LOG.info("Stop shard cleanup round before listing next page: {}", shardGroupCleanupStopReason(
+                        cleanupStartMs, cleanedGroupCount, deletedShardCount));
+                break;
+            }
             StarOSAgent.ListShardGroupResult result;
             try {
                 result = starOSAgent.listShardGroup(nextShardGroupId);
@@ -381,6 +423,11 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
                     .forEach(x -> diffGroupInfoMap.put(x.getGroupId(), x));
 
             for (Map.Entry<Long, ShardGroupInfo> entry : diffGroupInfoMap.entrySet()) {
+                if (shouldStopShardGroupCleanup(cleanupStartMs, cleanedGroupCount, deletedShardCount)) {
+                    LOG.info("Stop shard cleanup round before cleaning next shard group: {}",
+                            shardGroupCleanupStopReason(cleanupStartMs, cleanedGroupCount, deletedShardCount));
+                    return;
+                }
                 long shardGroupId = entry.getKey();
                 ShardGroupInfo shardGroupInfo = entry.getValue();
                 if (!isSafeToDelete(shardGroupId, shardGroupInfo)) {
@@ -403,7 +450,10 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
                         LOG.debug("can not get background compute resource, {}", e.getMessage());
                         // continue, default compute resource is already set
                     }
-                    if (cleanOneGroup(computeResourceLocal, shardGroupId, starOSAgent)) {
+                    CleanShardGroupResult cleanResult = cleanOneGroup(computeResourceLocal, shardGroupId, starOSAgent);
+                    cleanedGroupCount++;
+                    deletedShardCount += cleanResult.deletedShardCount();
+                    if (cleanResult.isEmptyGroup()) {
                         // clear the empty shard group immediately
                         starOSAgent.deleteShardGroup(Collections.singletonList(shardGroupId));
                         SHARD_GROUP_DELETE_COUNTER.increase(1L);
@@ -411,6 +461,44 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
                 }
             }
         } while (nextShardGroupId != 0);
+    }
+
+    private boolean shouldStopShardGroupCleanup(long cleanupStartMs, long cleanedGroupCount, long deletedShardCount) {
+        if (Config.star_mgr_meta_sync_abort_current_round) {
+            return true;
+        }
+        if (Config.star_mgr_meta_sync_max_clean_groups_per_round > 0
+                && cleanedGroupCount >= Config.star_mgr_meta_sync_max_clean_groups_per_round) {
+            return true;
+        }
+        if (Config.star_mgr_meta_sync_max_delete_shards_per_round > 0
+                && deletedShardCount >= Config.star_mgr_meta_sync_max_delete_shards_per_round) {
+            return true;
+        }
+        return Config.star_mgr_meta_sync_max_runtime_ms_per_round > 0
+                && System.currentTimeMillis() - cleanupStartMs >= Config.star_mgr_meta_sync_max_runtime_ms_per_round;
+    }
+
+    private String shardGroupCleanupStopReason(long cleanupStartMs, long cleanedGroupCount, long deletedShardCount) {
+        if (Config.star_mgr_meta_sync_abort_current_round) {
+            return "abort flag is set";
+        }
+        if (Config.star_mgr_meta_sync_max_clean_groups_per_round > 0
+                && cleanedGroupCount >= Config.star_mgr_meta_sync_max_clean_groups_per_round) {
+            return String.format("cleaned shard group count %d reaches limit %d",
+                    cleanedGroupCount, Config.star_mgr_meta_sync_max_clean_groups_per_round);
+        }
+        if (Config.star_mgr_meta_sync_max_delete_shards_per_round > 0
+                && deletedShardCount >= Config.star_mgr_meta_sync_max_delete_shards_per_round) {
+            return String.format("deleted shard count %d reaches limit %d",
+                    deletedShardCount, Config.star_mgr_meta_sync_max_delete_shards_per_round);
+        }
+        if (Config.star_mgr_meta_sync_max_runtime_ms_per_round > 0
+                && System.currentTimeMillis() - cleanupStartMs >= Config.star_mgr_meta_sync_max_runtime_ms_per_round) {
+            return String.format("runtime reaches limit %dms",
+                    Config.star_mgr_meta_sync_max_runtime_ms_per_round);
+        }
+        return "unknown";
     }
 
     /**
@@ -421,18 +509,18 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
      * @param computeResource the compute resource to use for deleting tablets
      * @param groupId         the shard group id to clean
      * @param starOSAgent     the StarOS agent to interact with StarMgr
-     * @return true if the shard group is empty, false otherwise
+     * @return cleanup result containing whether the shard group is empty and how many shards were deleted
      */
     @VisibleForTesting
-    boolean cleanOneGroup(ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
+    CleanShardGroupResult cleanOneGroup(ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
         try {
             List<Long> shardIds = starOSAgent.listShard(groupId);
             if (shardIds.isEmpty()) {
-                return true;
+                return CleanShardGroupResult.empty();
             }
             // delete shard from star manager only, not considering tablet data on be/cn
             if (Config.meta_sync_force_delete_shard_meta) {
-                forceDeleteShards(groupId, starOSAgent, shardIds);
+                return CleanShardGroupResult.notEmpty(forceDeleteShards(groupId, starOSAgent, shardIds));
             } else {
                 // drop meta and data
                 long start = System.currentTimeMillis();
@@ -440,17 +528,18 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
                 // allowing a single BE node to complete the tablet deletion. 
                 // Here, even for tables without file bundle enabled, 
                 // the tablet deletion can still be performed by a single node.
-                dropTabletAndDeleteShard(computeResource, shardIds, starOSAgent, true);
+                long deletedShardCount = dropTabletAndDeleteShard(computeResource, shardIds, starOSAgent, true);
                 LOG.debug("delete shards from starMgr and FE, shard group: {}, cost: {} ms",
                         groupId, (System.currentTimeMillis() - start));
+                return CleanShardGroupResult.notEmpty(deletedShardCount);
             }
         } catch (Exception e) {
             LOG.warn("delete shards from starMgr and FE failed, shard group: {}, {}", groupId, e.getMessage());
         }
-        return false;
+        return CleanShardGroupResult.notEmpty(0L);
     }
 
-    private static void forceDeleteShards(long groupId, StarOSAgent starOSAgent, List<Long> shardIds)
+    private static long forceDeleteShards(long groupId, StarOSAgent starOSAgent, List<Long> shardIds)
             throws DdlException {
         LOG.debug("delete shards from starMgr only, shard group: {}", groupId);
         // before deleting shardIds, let's record the root directory of this shard group first
@@ -473,6 +562,7 @@ public class StarMgrMetaSyncer extends FrontendDaemon {
             LOG.info("shard group {} deleted from starMgr only, you may need to delete remote file path manually," +
                     " file path is: {}", groupId, rootDirectory);
         }
+        return shardIds.size();
     }
 
     // get snapshot of star mgr workers and fe backend/compute node,

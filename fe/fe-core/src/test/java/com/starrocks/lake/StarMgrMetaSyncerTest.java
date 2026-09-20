@@ -144,10 +144,18 @@ public class StarMgrMetaSyncerTest {
     private AtomicLong nextId = new AtomicLong(0);
 
     private long originalCleanConfigValue;
+    private long originalMaxDeleteShardsPerRound;
+    private long originalMaxCleanGroupsPerRound;
+    private long originalMaxRuntimeMsPerRound;
+    private boolean originalAbortCurrentRound;
 
     @BeforeEach
     public void setUp() throws Exception {
         originalCleanConfigValue = Config.shard_group_clean_threshold_sec;
+        originalMaxDeleteShardsPerRound = Config.star_mgr_meta_sync_max_delete_shards_per_round;
+        originalMaxCleanGroupsPerRound = Config.star_mgr_meta_sync_max_clean_groups_per_round;
+        originalMaxRuntimeMsPerRound = Config.star_mgr_meta_sync_max_runtime_ms_per_round;
+        originalAbortCurrentRound = Config.star_mgr_meta_sync_abort_current_round;
         long dbId = 1L;
         long tableId = 2L;
         long partitionId = 3L;
@@ -291,6 +299,11 @@ public class StarMgrMetaSyncerTest {
     @AfterEach
     public void tearDown() {
         Config.shard_group_clean_threshold_sec = originalCleanConfigValue;
+        Config.star_mgr_meta_sync_max_delete_shards_per_round = originalMaxDeleteShardsPerRound;
+        Config.star_mgr_meta_sync_max_clean_groups_per_round = originalMaxCleanGroupsPerRound;
+        Config.star_mgr_meta_sync_max_runtime_ms_per_round = originalMaxRuntimeMsPerRound;
+        Config.star_mgr_meta_sync_abort_current_round = originalAbortCurrentRound;
+        packShardGroupIds.clear();
     }
 
     @Test
@@ -1492,9 +1505,10 @@ public class StarMgrMetaSyncerTest {
             }
 
             @Mock
-            public boolean cleanOneGroup(ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
+            public StarMgrMetaSyncer.CleanShardGroupResult cleanOneGroup(
+                    ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
                 cleanedGroupIds.add(groupId);
-                return false;
+                return StarMgrMetaSyncer.CleanShardGroupResult.notEmpty(0L);
             }
         };
 
@@ -1585,9 +1599,10 @@ public class StarMgrMetaSyncerTest {
             }
 
             @Mock
-            public boolean cleanOneGroup(ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
+            public StarMgrMetaSyncer.CleanShardGroupResult cleanOneGroup(
+                    ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
                 cleanedGroupIds.add(groupId);
-                return false;
+                return StarMgrMetaSyncer.CleanShardGroupResult.notEmpty(0L);
             }
         };
 
@@ -1708,9 +1723,10 @@ public class StarMgrMetaSyncerTest {
             }
 
             @Mock
-            public boolean cleanOneGroup(ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
+            public StarMgrMetaSyncer.CleanShardGroupResult cleanOneGroup(
+                    ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
                 cleanedGroupIds.add(groupId);
-                return false;
+                return StarMgrMetaSyncer.CleanShardGroupResult.notEmpty(0L);
             }
         };
 
@@ -1725,6 +1741,134 @@ public class StarMgrMetaSyncerTest {
         // Assertions.assertEquals(expectedCleanedGroupIds.size(), cleanedGroupIds.size());
         // only groups in expectedCleanedGroupIds should be cleaned
         Assertions.assertEquals(expectedCleanedGroupIds, cleanedGroupIds);
+    }
+
+    @Test
+    public void testDeleteUnusedShardAndShardGroupStopsAtGroupBudget() {
+        Config.shard_group_clean_threshold_sec = 0;
+        Config.star_mgr_meta_sync_max_clean_groups_per_round = 2;
+        Config.star_mgr_meta_sync_max_delete_shards_per_round = 0;
+        Config.star_mgr_meta_sync_max_runtime_ms_per_round = 0;
+        Config.star_mgr_meta_sync_abort_current_round = false;
+
+        List<ShardGroupInfo> shardGroupInfos = new ArrayList<>();
+        for (long groupId = 100; groupId < 105; groupId++) {
+            shardGroupInfos.add(ShardGroupInfo.newBuilder()
+                    .setGroupId(groupId)
+                    .putLabels("tableId", String.valueOf(6L))
+                    .putLabels("dbId", String.valueOf(66L))
+                    .putLabels("partitionId", String.valueOf(666L))
+                    .putLabels("indexId", String.valueOf(6666L))
+                    .putProperties("createTime", String.valueOf(System.currentTimeMillis() - 86400 * 1000))
+                    .build());
+        }
+
+        List<Long> cleanedGroupIds = new ArrayList<>();
+        new MockUp<StarOSAgent>() {
+            @Mock
+            public StarOSAgent.ListShardGroupResult listShardGroup(long startGroupId) {
+                return new StarOSAgent.ListShardGroupResult(shardGroupInfos, 0L);
+            }
+        };
+
+        new MockUp<StarMgrMetaSyncer>() {
+            @Mock
+            public Set<Long> getAllPartitionShardGroupId() {
+                return new HashSet<>();
+            }
+
+            @Mock
+            public StarMgrMetaSyncer.CleanShardGroupResult cleanOneGroup(
+                    ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
+                cleanedGroupIds.add(groupId);
+                return StarMgrMetaSyncer.CleanShardGroupResult.notEmpty(1);
+            }
+        };
+
+        Deencapsulation.invoke(starMgrMetaSyncer, "deleteUnusedShardAndShardGroup");
+        Assertions.assertEquals(2, cleanedGroupIds.size());
+    }
+
+    @Test
+    public void testDeleteUnusedShardAndShardGroupStopsAtShardBudget() {
+        Config.shard_group_clean_threshold_sec = 0;
+        Config.star_mgr_meta_sync_max_clean_groups_per_round = 0;
+        Config.star_mgr_meta_sync_max_delete_shards_per_round = 5;
+        Config.star_mgr_meta_sync_max_runtime_ms_per_round = 0;
+        Config.star_mgr_meta_sync_abort_current_round = false;
+
+        List<ShardGroupInfo> shardGroupInfos = new ArrayList<>();
+        for (long groupId = 200; groupId < 205; groupId++) {
+            shardGroupInfos.add(ShardGroupInfo.newBuilder()
+                    .setGroupId(groupId)
+                    .putLabels("tableId", String.valueOf(6L))
+                    .putLabels("dbId", String.valueOf(66L))
+                    .putLabels("partitionId", String.valueOf(666L))
+                    .putLabels("indexId", String.valueOf(6666L))
+                    .putProperties("createTime", String.valueOf(System.currentTimeMillis() - 86400 * 1000))
+                    .build());
+        }
+
+        List<Long> cleanedGroupIds = new ArrayList<>();
+        new MockUp<StarOSAgent>() {
+            @Mock
+            public StarOSAgent.ListShardGroupResult listShardGroup(long startGroupId) {
+                return new StarOSAgent.ListShardGroupResult(shardGroupInfos, 0L);
+            }
+        };
+
+        new MockUp<StarMgrMetaSyncer>() {
+            @Mock
+            public Set<Long> getAllPartitionShardGroupId() {
+                return new HashSet<>();
+            }
+
+            @Mock
+            public StarMgrMetaSyncer.CleanShardGroupResult cleanOneGroup(
+                    ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
+                cleanedGroupIds.add(groupId);
+                return StarMgrMetaSyncer.CleanShardGroupResult.notEmpty(3);
+            }
+        };
+
+        Deencapsulation.invoke(starMgrMetaSyncer, "deleteUnusedShardAndShardGroup");
+        Assertions.assertEquals(2, cleanedGroupIds.size());
+    }
+
+    @Test
+    public void testDeleteUnusedShardAndShardGroupCanAbortCurrentRound() {
+        Config.shard_group_clean_threshold_sec = 0;
+        Config.star_mgr_meta_sync_max_clean_groups_per_round = 0;
+        Config.star_mgr_meta_sync_max_delete_shards_per_round = 0;
+        Config.star_mgr_meta_sync_max_runtime_ms_per_round = 0;
+        Config.star_mgr_meta_sync_abort_current_round = true;
+
+        List<Long> cleanedGroupIds = new ArrayList<>();
+        new MockUp<StarOSAgent>() {
+            @Mock
+            public StarOSAgent.ListShardGroupResult listShardGroup(long startGroupId) {
+                Assertions.fail("abort should happen before listing shard groups");
+                return new StarOSAgent.ListShardGroupResult(Lists.newArrayList(), 0L);
+            }
+        };
+
+        new MockUp<StarMgrMetaSyncer>() {
+            @Mock
+            public Set<Long> getAllPartitionShardGroupId() {
+                Assertions.fail("abort should happen before collecting FE shard groups");
+                return new HashSet<>();
+            }
+
+            @Mock
+            public StarMgrMetaSyncer.CleanShardGroupResult cleanOneGroup(
+                    ComputeResource computeResource, long groupId, StarOSAgent starOSAgent) {
+                cleanedGroupIds.add(groupId);
+                return StarMgrMetaSyncer.CleanShardGroupResult.notEmpty(1);
+            }
+        };
+
+        Deencapsulation.invoke(starMgrMetaSyncer, "deleteUnusedShardAndShardGroup");
+        Assertions.assertTrue(cleanedGroupIds.isEmpty());
     }
 
     @Test
