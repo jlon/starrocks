@@ -14,6 +14,8 @@
 
 #include "storage/lake/transactions.h"
 
+#include <algorithm>
+
 #include "fs/fs_util.h"
 #include "gen_cpp/lake_types.pb.h"
 #include "gutil/strings/join.h"
@@ -43,6 +45,10 @@ ParallelSet<int64_t> tablet_txns;
 // and need to increase version number of the tablet,
 // the situation happens in create rollup.
 const int64_t EMPTY_TXNLOG_TXNID = -1;
+
+bool is_empty_txn(const starrocks::TxnInfoPB& txn_info) {
+    return txn_info.txn_id() == EMPTY_TXNLOG_TXNID;
+}
 
 } // namespace
 
@@ -184,7 +190,7 @@ StatusOr<std::vector<TxnLogVector>> load_txn_log(TabletManager* tablet_mgr, std:
 StatusOr<TabletMetadataPtr> publish_version(TabletManager* tablet_mgr, const PublishTabletInfo& tablet_info,
                                             int64_t base_version, int64_t new_version, std::span<const TxnInfoPB> txns,
                                             bool skip_write_tablet_metadata) {
-    if (txns.size() == 1 && (txns[0].txn_id() == EMPTY_TXNLOG_TXNID || txns[0].txn_type() == TXN_TABLET_RESHARD)) {
+    if (txns.size() == 1 && (is_empty_txn(txns[0]) || txns[0].txn_type() == TXN_TABLET_RESHARD)) {
         LOG(INFO) << "publish version tablet_info: " << tablet_info << ", txn: " << txns[0].DebugString()
                   << ", base_version: " << base_version << ", new_version: " << new_version;
         // means there is no txnlog and need to increase version number,
@@ -221,27 +227,17 @@ StatusOr<TabletMetadataPtr> publish_version(TabletManager* tablet_mgr, const Pub
     VLOG(2) << "publish version tablet_info: " << tablet_info << ", txns: " << txns
             << ", base_version: " << base_version << ", new_version: " << new_version;
 
-    // If any txn in this batch is marked as no-op publish (admin escape hatch),
-    // a stale "V meta with txn data" left from a previous publish attempt could
-    // leak through the metacache. Actively erase the new_version entry for this
-    // tablet so that:
-    //   (a) the lookup below returns null and we fall into the normal publish
-    //       path which recomputes the metadata from base_version and writes the
-    //       no-op result;
-    //   (b) any concurrent reader (defensive: FE should not direct reads at a
-    //       not-yet-visible version, but mutex-free callers can race) gets a
-    //       clean cache miss rather than the stale entry;
-    //   (c) if this no-op publish itself fails, the cache is left in a clean
-    //       "no V entry" state instead of carrying poisoned data into the next
-    //       retry.
-    bool has_no_op_publish_in_batch =
-            std::any_of(txns.begin(), txns.end(), [](const TxnInfoPB& t) { return t.no_op_publish(); });
+    // A publish without a txn log must recompute the target metadata instead of
+    // accepting a stale cache entry from an earlier publish attempt.
+    bool has_txn_without_log = std::any_of(txns.begin(), txns.end(), [](const TxnInfoPB& txn_info) {
+        return txn_info.no_op_publish() || is_empty_txn(txn_info);
+    });
     auto new_metadata_path = tablet_mgr->tablet_metadata_location(tablet_info.get_tablet_id_in_metadata(), new_version);
-    if (has_no_op_publish_in_batch) {
+    if (has_txn_without_log) {
         tablet_mgr->metacache()->erase(new_metadata_path);
     }
     auto cached_new_metadata = tablet_mgr->metacache()->lookup_tablet_metadata(new_metadata_path);
-    if (cached_new_metadata != nullptr && !has_no_op_publish_in_batch) {
+    if (cached_new_metadata != nullptr && !has_txn_without_log) {
         // The retries may be caused by some tablets failing to publish in a partition
         // set the following log as debug log to prevent excessive logging
         VLOG(1) << "Skipped publish version because target metadata found in cache. tablet_info=" << tablet_info
@@ -322,17 +318,9 @@ StatusOr<TabletMetadataPtr> publish_version(TabletManager* tablet_mgr, const Pub
         bool ignore_txn_log = false;
         StatusOr<std::vector<TxnLogVector>> txn_log_st = Status::NotFound("not loaded");
 
-        if (txns[i].no_op_publish()) {
-            // Admin-issued no-op publish: bypass loading and applying this txn's log
-            // entirely. Falls through to log_applier init and the ignore_txn_log
-            // handling below, which records the txn as an empty contribution and
-            // advances the partition version without producing any data changes.
+        if (is_empty_txn(txns[i]) || txns[i].no_op_publish()) {
             ignore_txn_log = true;
-            LOG(INFO) << "txn " << txns[i].txn_id() << " marked as no-op publish on tablet " << tablet_info;
         } else {
-            // Loading the txn log reads one or more log files from object storage
-            // and is otherwise untraced; a slow/throttled read here would hide in
-            // the total publish cost.
             {
                 TRACE_COUNTER_SCOPE_LATENCY_US("load_txn_log_latency_us");
                 txn_log_st = load_txn_log(tablet_mgr, tablet_info.get_tablet_ids_in_txn_logs(), txns[i]);
@@ -393,8 +381,8 @@ StatusOr<TabletMetadataPtr> publish_version(TabletManager* tablet_mgr, const Pub
                 } else {
                     return new_version_metadata_or_error(txn_log_st.status());
                 }
-            } // close: if (txn_log_st.status().is_not_found())
-        }     // close: else (admin force-skip vs normal path)
+            }
+        }
 
         if (!txn_log_st.ok() && !ignore_txn_log) {
             LOG(WARNING) << "Fail to get txn log: " << txn_log_st.status() << " tablet_info=" << tablet_info
@@ -438,14 +426,13 @@ StatusOr<TabletMetadataPtr> publish_version(TabletManager* tablet_mgr, const Pub
             }
         }
 
-        // txn log ignored: either (a) txnlog not found + compaction force_publish,
-        // (b) admin-issued no-op publish (no_op_publish=true). Either way, advance
-        // version without applying any changes from this txn.
+        // An empty transaction, an admin no-op, or force-publish fallback advances
+        // the version without applying rowset changes.
         if (ignore_txn_log) {
             LOG(INFO) << "txn_log of txn: " << txns[i].txn_id() << " for tablet: " << tablet_info
-                      << " ignored (force_publish=" << txns[i].force_publish()
+                      << " ignored (txn_type=" << txns[i].txn_type() << " force_publish=" << txns[i].force_publish()
                       << " no_op_publish=" << txns[i].no_op_publish() << ")";
-            log_applier->observe_no_op_apply(); // record no rowset changes for this txn
+            log_applier->observe_no_op_apply();
             continue;
         }
 

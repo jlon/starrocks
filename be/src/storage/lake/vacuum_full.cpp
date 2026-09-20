@@ -19,6 +19,7 @@
 
 #include "common/status.h"
 #include "fs/fs.h"
+#include "storage/lake/filenames.h"
 #include "storage/lake/join_path.h"
 #include "storage/lake/metacache.h"
 #include "storage/lake/tablet_manager.h"
@@ -59,11 +60,17 @@ static Status vacuum_expired_tablet_metadata(TabletManager* tablet_mgr, std::str
     const auto metadata_root_location = join_path(root_loc, kMetadataDirectoryName);
     bool has_expired = false;
     for (const auto& name : *meta_files) {
-        auto [tablet_id, version] = parse_tablet_metadata_filename(name);
+        const auto file_name = basename(name);
+        auto parsed = try_parse_tablet_metadata_filename(file_name);
+        if (!parsed.has_value()) {
+            LOG_EVERY_N(WARNING, 100) << "Skip invalid tablet metadata filename: " << name;
+            continue;
+        }
+        auto [tablet_id, version] = *parsed;
         if (!meta_ver_checker(version)) {
             continue;
         }
-        const string path = join_path(metadata_root_location, name);
+        const string path = join_path(metadata_root_location, file_name);
         bool need_clear = false;
         if (has_expired && tablet_id == 0 && version == kInitialVersion) {
             // No need to get metadata for this case, just delete it if has_expired = true.
@@ -89,11 +96,17 @@ static Status vacuum_expired_tablet_metadata(TabletManager* tablet_mgr, std::str
 
     ASSIGN_OR_RETURN(auto fs, FileSystem::CreateSharedFromString(root_loc));
     for (const auto& name : *bundle_meta_files) {
-        auto [tablet_id, version] = parse_tablet_metadata_filename(name);
+        const auto file_name = basename(name);
+        auto parsed = try_parse_tablet_metadata_filename(file_name);
+        if (!parsed.has_value()) {
+            LOG_EVERY_N(WARNING, 100) << "Skip invalid bundle tablet metadata filename: " << name;
+            continue;
+        }
+        auto [tablet_id, version] = *parsed;
         if (!meta_ver_checker(version)) {
             continue;
         }
-        auto path = join_path(metadata_root_location, name);
+        auto path = join_path(metadata_root_location, file_name);
         bool need_clear = true;
         ASSIGN_OR_RETURN(auto metadatas, TabletManager::get_metas_from_bundle_tablet_metadata(path, fs.get()));
         // metadatas parsed from bundle files should alwasy have version >= 2

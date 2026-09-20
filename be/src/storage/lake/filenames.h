@@ -307,6 +307,23 @@ inline std::pair<int64_t, int64_t> parse_tablet_metadata_filename(std::string_vi
     return {tablet_id, version};
 }
 
+inline std::optional<std::pair<int64_t, int64_t>> try_parse_tablet_metadata_filename(std::string_view file_name) {
+    if (!is_tablet_metadata(file_name)) {
+        return {};
+    }
+    if (file_name.size() != kTabletMetadataFilenameLength || file_name[16] != '_') {
+        return {};
+    }
+
+    int64_t tablet_id = 0;
+    int64_t version = 0;
+    if (!parse_fixed_hex_i64(file_name.substr(0, 16), &tablet_id) ||
+        !parse_fixed_hex_i64(file_name.substr(17, 16), &version)) {
+        return {};
+    }
+    return std::make_pair(tablet_id, version);
+}
+
 // Return value: <tablet id, txn id>
 inline std::optional<std::pair<int64_t, int64_t>> try_parse_txn_log_filename(std::string_view file_name) {
     if (!is_txn_log(file_name)) {

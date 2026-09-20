@@ -1200,8 +1200,8 @@ public class PublishVersionDaemon extends FrontendDaemon {
     // separate aggregate publishes would each truncate-write that same bundle and lose one of the two sets.
     //
     // The carry-forward tablets have no txn log for these transactions, so for every real transaction we emit a
-    // matching no-op empty transaction (no_op_publish=true): the BE bypasses log loading and advances the tablet
-    // version without any data change. The count must match the real transactions because the BE requires
+    // matching empty transaction: the BE bypasses log loading and advances the tablet version without any data
+    // change. The count must match the real transactions because the BE requires
     // new_version == base_version + txns.size() for a multi-transaction batch (a batch of pre-rollup compactions
     // can span several versions).
     static void aggregatePublishWithCarryForward(List<Tablet> touchedTablets, List<TxnInfoPB> txnInfos,
@@ -1223,7 +1223,6 @@ public class PublishVersionDaemon extends FrontendDaemon {
             emptyTxnInfo.commitTime = txnInfo.commitTime;
             emptyTxnInfo.txnType = TxnTypePB.TXN_EMPTY;
             emptyTxnInfo.gtid = txnInfo.gtid;
-            emptyTxnInfo.noOpPublish = true;
             carryForwardTxnInfos.add(emptyTxnInfo);
         }
         // The carry-forward tablets have no txn log to delete on success, so do not thread nodeToTablets here.

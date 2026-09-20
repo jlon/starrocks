@@ -104,6 +104,129 @@ protected:
     }
 };
 
+class ListedNameFileSystem final : public FileSystem {
+public:
+    explicit ListedNameFileSystem(std::vector<std::string> names) : _names(std::move(names)) {}
+
+    Type type() const override { return MEMORY; }
+
+    StatusOr<std::unique_ptr<SequentialFile>> new_sequential_file(const SequentialFileOptions&,
+                                                                  const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::new_sequential_file");
+    }
+
+    StatusOr<std::unique_ptr<RandomAccessFile>> new_random_access_file(const RandomAccessFileOptions&,
+                                                                       const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::new_random_access_file");
+    }
+
+    StatusOr<std::unique_ptr<RandomAccessFile>> new_random_access_file(const RandomAccessFileOptions&,
+                                                                       const FileInfo&) override {
+        return Status::NotSupported("ListedNameFileSystem::new_random_access_file");
+    }
+
+    StatusOr<std::unique_ptr<WritableFile>> new_writable_file(const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::new_writable_file");
+    }
+
+    StatusOr<std::unique_ptr<WritableFile>> new_writable_file(const WritableFileOptions&,
+                                                              const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::new_writable_file");
+    }
+
+    Status path_exists(const std::string&) override { return Status::NotSupported("ListedNameFileSystem::path_exists"); }
+
+    Status get_children(const std::string&, std::vector<std::string>*) override {
+        return Status::NotSupported("ListedNameFileSystem::get_children");
+    }
+
+    Status iterate_dir(const std::string&, const std::function<bool(std::string_view)>& cb) override {
+        for (const auto& name : _names) {
+            if (!cb(name)) {
+                break;
+            }
+        }
+        return Status::OK();
+    }
+
+    Status iterate_dir2(const std::string&, const std::function<bool(DirEntry)>&) override {
+        return Status::NotSupported("ListedNameFileSystem::iterate_dir2");
+    }
+
+    Status delete_file(const std::string&) override { return Status::NotSupported("ListedNameFileSystem::delete_file"); }
+
+    Status create_dir(const std::string&) override { return Status::NotSupported("ListedNameFileSystem::create_dir"); }
+
+    Status create_dir_if_missing(const std::string&, bool*) override {
+        return Status::NotSupported("ListedNameFileSystem::create_dir_if_missing");
+    }
+
+    Status create_dir_recursive(const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::create_dir_recursive");
+    }
+
+    Status delete_dir(const std::string&) override { return Status::NotSupported("ListedNameFileSystem::delete_dir"); }
+
+    Status delete_dir_recursive(const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::delete_dir_recursive");
+    }
+
+    Status sync_dir(const std::string&) override { return Status::NotSupported("ListedNameFileSystem::sync_dir"); }
+
+    StatusOr<bool> is_directory(const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::is_directory");
+    }
+
+    Status canonicalize(const std::string&, std::string*) override {
+        return Status::NotSupported("ListedNameFileSystem::canonicalize");
+    }
+
+    StatusOr<uint64_t> get_file_size(const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::get_file_size");
+    }
+
+    StatusOr<uint64_t> get_file_modified_time(const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::get_file_modified_time");
+    }
+
+    Status rename_file(const std::string&, const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::rename_file");
+    }
+
+    Status link_file(const std::string&, const std::string&) override {
+        return Status::NotSupported("ListedNameFileSystem::link_file");
+    }
+
+private:
+    std::vector<std::string> _names;
+};
+
+TEST(LakeVacuumListedNameTest, list_meta_files_normalizes_full_paths) {
+    const std::string metadata_root = "/business/root/db/tablet/meta";
+    const auto normal_meta = tablet_metadata_filename(0x445C0, 0xC02);
+    const auto initial_meta = tablet_initial_metadata_filename();
+    const auto bundle_meta = tablet_metadata_filename(0, 0xC03);
+    ListedNameFileSystem fs({
+            join_path(metadata_root, normal_meta),
+            join_path(metadata_root, initial_meta) + "/",
+            join_path(metadata_root, bundle_meta),
+            join_path(metadata_root, "xxxx_xxxx.meta"),
+            join_path(metadata_root, "not_meta.txt"),
+    });
+
+    ASSIGN_OR_ABORT(auto files, list_meta_files(&fs, metadata_root));
+    std::vector<std::string> meta_files(files.first.begin(), files.first.end());
+    std::vector<std::string> bundle_meta_files(files.second.begin(), files.second.end());
+    std::sort(meta_files.begin(), meta_files.end());
+    std::sort(bundle_meta_files.begin(), bundle_meta_files.end());
+
+    ASSERT_EQ(2, meta_files.size());
+    EXPECT_EQ(initial_meta, meta_files[0]);
+    EXPECT_EQ(normal_meta, meta_files[1]);
+    ASSERT_EQ(1, bundle_meta_files.size());
+    EXPECT_EQ(bundle_meta, bundle_meta_files[0]);
+}
+
 // NOLINTNEXTLINE
 TEST_P(LakeVacuumTest, test_vacuum_1) {
     create_data_file("00000000000159e3_3ea06130-ccac-4110-9de8-4813512c60d4.delvec");

@@ -662,14 +662,13 @@ public class PublishVersionDaemonTest {
                 capturedTablets.get(0).stream().map(Tablet::getId).sorted().collect(Collectors.toList()));
         Assertions.assertSame(txnInfos, capturedTxnInfos.get(0));
 
-        // Second sub-request: the carry-forward tablets with one no-op empty transaction per real transaction.
+        // Second sub-request: the carry-forward tablets with one empty transaction per real transaction.
         Assertions.assertEquals(Lists.newArrayList(201L, 202L),
                 capturedTablets.get(1).stream().map(Tablet::getId).sorted().collect(Collectors.toList()));
         List<TxnInfoPB> carryTxnInfos = capturedTxnInfos.get(1);
         Assertions.assertEquals(txnInfos.size(), carryTxnInfos.size());
         for (int i = 0; i < carryTxnInfos.size(); i++) {
             TxnInfoPB empty = carryTxnInfos.get(i);
-            Assertions.assertTrue(empty.noOpPublish, "carry-forward txn must be a no-op publish");
             Assertions.assertEquals(-1L, empty.txnId, "carry-forward txn must carry the empty txn id");
             Assertions.assertEquals(TxnTypePB.TXN_EMPTY, empty.txnType);
             Assertions.assertFalse(empty.combinedTxnLog);

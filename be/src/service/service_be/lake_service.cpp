@@ -1218,6 +1218,13 @@ void LakeServiceImpl::get_tablet_stats(::google::protobuf::RpcController* contro
     auto max_pending = std::max(10, thread_pool->max_threads() * 2);
     auto timeout_ms = request->has_timeout_ms() ? request->timeout_ms() : kDefaultTimeoutForGetTabletStat;
     auto timeout_deadline = std::chrono::system_clock::now() + std::chrono::milliseconds(timeout_ms);
+    // FE serialization is local to one FE. Guard the whole RPC so multiple FE collectors cannot
+    // enqueue overlapping metadata-fetch batches on the same CN.
+    if (!_tablet_stat_request_sem.try_acquire_until(timeout_deadline)) {
+        cntl->SetFailed("get tablet stats request timed out waiting for the CN request slot");
+        return;
+    }
+    DeferOp release_request_slot([this] { _tablet_stat_request_sem.release(); });
     auto thread_pool_token = ConcurrencyLimitedThreadPoolToken(thread_pool, max_pending);
     auto latch = BThreadCountDownLatch(request->tablet_infos_size());
     bthread::Mutex response_mtx;

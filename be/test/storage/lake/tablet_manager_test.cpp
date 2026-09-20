@@ -1712,8 +1712,8 @@ TEST_F(LakeTabletManagerTest, put_bundle_tablet_metadata_rejects_incomplete_bund
 }
 
 // Regression for the aggregate-publish data-loss bug: an old worker sends a rowset whose segment_metas
-// lack filename, with the real names only in deprecated_segments. put_bundle_tablet_metadata must
-// persist metadata whose segment filename survives (reproduces old-worker -> new-aggregator).
+// are sparse, with the real segment names still carried by RowsetMetadataPB::segments. The bundle write
+// path must preserve the names and extend segment_metas so later readers keep a 1:1 segment/meta mapping.
 TEST_F(LakeTabletManagerTest, put_bundle_preserves_legacy_segment_filenames) {
     auto tablet_id = next_id();
     std::map<int64_t, TabletMetadataPB> metadatas;
@@ -1733,14 +1733,13 @@ TEST_F(LakeTabletManagerTest, put_bundle_preserves_legacy_segment_filenames) {
         c0->set_is_key(true);
         c0->set_is_nullable(false);
     }
-    // Legacy-shaped rowset: segment_metas carries only sort-key fields (no filename); the real name
-    // lives only in deprecated_segments.
+    // Legacy-shaped rowset: segment_metas carries only sort-key fields; the real name lives in segments.
     auto* rs = metadata.add_rowsets();
     rs->set_id(2);
     rs->set_overlapped(false);
     rs->set_num_rows(5);
     rs->add_segment_metas()->set_num_rows(5);
-    rs->add_deprecated_segments("real_seg.dat");
+    rs->add_segments("real_seg.dat");
     metadatas.emplace(tablet_id, metadata);
 
     ASSERT_OK(_tablet_manager->put_bundle_tablet_metadata(metadatas));
@@ -1749,14 +1748,16 @@ TEST_F(LakeTabletManagerTest, put_bundle_preserves_legacy_segment_filenames) {
     ASSERT_TRUE(res.ok()) << res.status().to_string();
     auto got = std::move(res).value();
     ASSERT_EQ(1, got->rowsets_size());
+    ASSERT_EQ(1, got->rowsets(0).segments_size());
     ASSERT_EQ(1, got->rowsets(0).segment_metas_size());
-    EXPECT_EQ("real_seg.dat", got->rowsets(0).segment_metas(0).filename());
+    EXPECT_EQ("real_seg.dat", got->rowsets(0).segments(0));
+    EXPECT_EQ(0, got->rowsets(0).segment_metas(0).segment_idx());
 }
 
-// Layer C (after_load extend) on the aggregate receive path: a sparse legacy rowset
-// (segment_metas_size() < deprecated_segments_size()) must keep ALL segment names. Without the
-// after_load in put_bundle_tablet_metadata, the no-extend before_save would truncate the tail.
-TEST_F(LakeTabletManagerTest, put_bundle_extends_then_preserves_mismatched_legacy_counts) {
+// A sparse legacy rowset must retain every segment name when serialized into bundle metadata.
+// put_bundle_tablet_metadata persists the supplied metadata directly; it must not invent segment metadata
+// that an older producer did not send.
+TEST_F(LakeTabletManagerTest, put_bundle_preserves_sparse_segment_metadata) {
     auto tablet_id = next_id();
     std::map<int64_t, TabletMetadataPB> metadatas;
     TabletMetadataPB metadata;
@@ -1780,8 +1781,8 @@ TEST_F(LakeTabletManagerTest, put_bundle_extends_then_preserves_mismatched_legac
     rs->set_overlapped(false);
     rs->set_num_rows(10);
     rs->add_segment_metas()->set_num_rows(10); // only 1 segment_metas...
-    rs->add_deprecated_segments("s0.dat");     // ...but 2 real segment names
-    rs->add_deprecated_segments("s1.dat");
+    rs->add_segments("s0.dat");                // ...but 2 real segment names
+    rs->add_segments("s1.dat");
     metadatas.emplace(tablet_id, metadata);
 
     ASSERT_OK(_tablet_manager->put_bundle_tablet_metadata(metadatas));
@@ -1790,9 +1791,11 @@ TEST_F(LakeTabletManagerTest, put_bundle_extends_then_preserves_mismatched_legac
     ASSERT_TRUE(res.ok()) << res.status().to_string();
     auto got = std::move(res).value();
     ASSERT_EQ(1, got->rowsets_size());
-    ASSERT_EQ(2, got->rowsets(0).segment_metas_size());
-    EXPECT_EQ("s0.dat", got->rowsets(0).segment_metas(0).filename());
-    EXPECT_EQ("s1.dat", got->rowsets(0).segment_metas(1).filename());
+    ASSERT_EQ(2, got->rowsets(0).segments_size());
+    ASSERT_EQ(1, got->rowsets(0).segment_metas_size());
+    EXPECT_EQ("s0.dat", got->rowsets(0).segments(0));
+    EXPECT_EQ("s1.dat", got->rowsets(0).segments(1));
+    EXPECT_EQ(0, got->rowsets(0).segment_metas(0).segment_idx());
 }
 
 TEST_F(LakeTabletManagerTest, get_single_tablet_metadata_parse_failure) {

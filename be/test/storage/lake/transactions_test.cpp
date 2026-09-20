@@ -17,6 +17,7 @@
 #include "storage/lake/metacache.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/lake/tablet_reshard.h" // PublishTabletInfo full definition
+#include "storage/lake/test_util.h"
 #include "storage/lake/txn_log.h"
 #include "test_util.h"
 #include "testutil/id_generator.h"
@@ -714,6 +715,48 @@ TEST_F(CalNewBaseVersionTest, index_version_beyond_new_version_unloads_index) {
     auto txns = make_txns();
     ASSERT_EQ(1, cal_new_base_version(tablet_id, _tablet_mgr.get(), 1, 3, txns));
     ASSERT_EQ(0, _update_mgr->get_primary_index_data_version(tablet_id));
+}
+
+class EmptyTxnPublishTest : public TestBase {
+public:
+    EmptyTxnPublishTest() : TestBase(kTestDirectory) {}
+
+    void SetUp() override {
+        clear_and_init_test_dir();
+        _tablet_metadata = generate_simple_tablet_metadata(DUP_KEYS);
+        ASSERT_OK(_tablet_mgr->put_tablet_metadata(*_tablet_metadata));
+    }
+
+protected:
+    constexpr static const char* const kTestDirectory = "test_empty_txn_publish";
+    std::shared_ptr<TabletMetadataPB> _tablet_metadata;
+};
+
+TEST_F(EmptyTxnPublishTest, BatchEmptyTransactionsAdvanceVersionWithoutTxnLog) {
+    std::vector<TxnInfoPB> txns;
+    for (const auto& [commit_time, gtid] : std::vector<std::pair<int64_t, int64_t>>{{111, 1001}, {222, 1002}}) {
+        TxnInfoPB txn_info;
+        txn_info.set_txn_id(-1);
+        txn_info.set_txn_type(TXN_EMPTY);
+        txn_info.set_combined_txn_log(false);
+        txn_info.set_commit_time(commit_time);
+        txn_info.set_gtid(gtid);
+        txns.emplace_back(std::move(txn_info));
+    }
+
+    auto result = publish_version(_tablet_mgr.get(), PublishTabletInfo(_tablet_metadata->id()), 1, 3, txns,
+                                  /*skip_write_tablet_metadata=*/false);
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    auto new_metadata = result.value();
+    EXPECT_EQ(3, new_metadata->version());
+    EXPECT_EQ(222, new_metadata->commit_time());
+    EXPECT_EQ(1002, new_metadata->gtid());
+    EXPECT_EQ(_tablet_metadata->rowsets_size(), new_metadata->rowsets_size());
+
+    auto persisted = _tablet_mgr->get_tablet_metadata(_tablet_metadata->id(), 3);
+    ASSERT_TRUE(persisted.ok()) << persisted.status();
+    EXPECT_EQ(3, persisted.value()->version());
 }
 
 } // namespace starrocks::lake

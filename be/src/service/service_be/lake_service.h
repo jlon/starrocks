@@ -18,6 +18,7 @@
 #ifndef __APPLE__
 #include "common/status.h"
 #include "gen_cpp/lake_service.pb.h"
+#include "util/bthreads/semaphore.h"
 
 namespace starrocks {
 
@@ -132,6 +133,7 @@ private:
 
     ExecEnv* _env;
     lake::TabletManager* _tablet_mgr;
+    bthreads::BinarySemaphore _tablet_stat_request_sem{1};
 };
 
 // Get txn_ids string from PublishVersionRequest (compatible with both new and old FE versions)

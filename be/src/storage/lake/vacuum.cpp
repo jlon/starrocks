@@ -1095,10 +1095,19 @@ Status delete_tablets_impl(TabletManager* tablet_mgr, const std::string& root_di
     bool is_range_distribution = false;
 
     RETURN_IF_ERROR(ignore_not_found(fs->iterate_dir(meta_dir, [&](std::string_view name) {
-        if (!is_tablet_metadata(name)) {
+        name = normalize_listed_filename(name);
+        if (name.empty()) {
             return true;
         }
-        auto [tablet_id, version] = parse_tablet_metadata_filename(name);
+
+        auto parsed = try_parse_tablet_metadata_filename(name);
+        if (!parsed.has_value()) {
+            if (is_tablet_metadata(name)) {
+                LOG_EVERY_N(WARNING, 100) << "Skip invalid tablet metadata filename: " << name;
+            }
+            return true;
+        }
+        auto [tablet_id, version] = *parsed;
         // if the tablet is the bundle tablet, we need to record the version.
         // And if the version is equal to kInitialVersion, it means this is the initial tablet meta,
         // not bundle tablet meta.
@@ -1389,11 +1398,19 @@ StatusOr<std::pair<std::list<std::string>, std::list<std::string>>> list_meta_fi
     RETURN_IF_ERROR_WITH_WARN(
             ignore_not_found(fs->iterate_dir(metadata_root_location,
                                              [&](std::string_view name) {
-                                                 if (!is_tablet_metadata(name)) {
+                                                 name = normalize_listed_filename(name);
+                                                 if (name.empty()) {
                                                      return true;
                                                  }
-                                                 auto [tablet_id, version] =
-                                                         parse_tablet_metadata_filename(basename(name));
+                                                 auto parsed = try_parse_tablet_metadata_filename(name);
+                                                 if (!parsed.has_value()) {
+                                                     if (is_tablet_metadata(name)) {
+                                                         LOG_EVERY_N(WARNING, 100)
+                                                                 << "Skip invalid tablet metadata filename: " << name;
+                                                     }
+                                                     return true;
+                                                 }
+                                                 auto [tablet_id, version] = *parsed;
                                                  if (tablet_id == 0 && version != kInitialVersion) {
                                                      // This is a bundle tablet metadata file
                                                      bundle_meta_files.emplace_back(name);
