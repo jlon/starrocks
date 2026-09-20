@@ -301,16 +301,17 @@ public class SelectAnalyzer {
                             AstToStringBuilder.getAliasName(item.getExpr(), false, false) : item.getAlias();
                 }
 
-                analyzeExpression(item.getExpr(), analyzeState, scope);
-                outputExpressionBuilder.add(item.getExpr());
+                Expr analyzedExpr = analyzeExpression(item.getExpr(), analyzeState, scope);
+                item.setExpr(analyzedExpr);
+                outputExpressionBuilder.add(analyzedExpr);
 
-                if (item.getExpr() instanceof SlotRef) {
-                    outputFields.add(new Field(name, item.getExpr().getType(),
-                            ((SlotRef) item.getExpr()).getTblNameWithoutAnalyzed(), item.getExpr(),
-                            true, item.getExpr().isNullable()));
+                if (analyzedExpr instanceof SlotRef) {
+                    outputFields.add(new Field(name, analyzedExpr.getType(),
+                            ((SlotRef) analyzedExpr).getTblNameWithoutAnalyzed(), analyzedExpr,
+                            true, analyzedExpr.isNullable()));
                 } else {
-                    outputFields.add(new Field(name, item.getExpr().getType(), null, item.getExpr(),
-                            true, item.getExpr().isNullable()));
+                    outputFields.add(new Field(name, analyzedExpr.getType(), null, analyzedExpr,
+                            true, analyzedExpr.isNullable()));
                 }
 
                 // outputExprInOrderByScope is used to record which expressions in outputExpression are to be
@@ -908,8 +909,8 @@ public class SelectAnalyzer {
         return orderScope;
     }
 
-    private void analyzeExpression(Expr expr, AnalyzeState analyzeState, Scope scope) {
-        ExpressionAnalyzer.analyzeExpression(expr, analyzeState, scope, session);
+    private Expr analyzeExpression(Expr expr, AnalyzeState analyzeState, Scope scope) {
+        return ExpressionAnalyzer.analyzeExpression(expr, analyzeState, scope, session);
     }
 
     // Use a HashSet to store unique pairs of (name, originExpression)

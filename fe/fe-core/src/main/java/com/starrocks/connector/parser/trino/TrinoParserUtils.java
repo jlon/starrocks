@@ -39,7 +39,7 @@ import static com.starrocks.connector.trino.TrinoParserUnsupportedException.trin
 
 public class TrinoParserUtils {
     public static StatementBase toStatement(String query, long sqlMode) {
-        String trimmedQuery = query.trim();
+        String trimmedQuery = TrinoSqlNormalizer.convertBacktickQuotedIdentifiers(query.trim());
         Statement statement = TrinoParser.parse(trimmedQuery);
         if (statement instanceof Query || statement instanceof Explain || statement instanceof ExplainAnalyze
                 || statement instanceof CreateTableAsSelect || statement instanceof Insert

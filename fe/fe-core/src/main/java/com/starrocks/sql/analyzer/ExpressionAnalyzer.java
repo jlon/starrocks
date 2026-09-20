@@ -39,6 +39,7 @@ import com.starrocks.catalog.UserIdentity;
 import com.starrocks.cluster.ClusterNamespace;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
+import com.starrocks.connector.parser.trino.TrinoCastRewriter;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.qe.SqlModeHelper;
@@ -150,28 +151,28 @@ public class ExpressionAnalyzer {
         this.session = session;
     }
 
-    public void analyze(Expr expression, AnalyzeState analyzeState, Scope scope) {
+    public Expr analyze(Expr expression, AnalyzeState analyzeState, Scope scope) {
         Visitor visitor = new Visitor(analyzeState, session);
-        bottomUpAnalyze(visitor, expression, scope);
+        return bottomUpAnalyze(visitor, expression, scope);
     }
 
-    public void analyzeIgnoreSlot(Expr expression, AnalyzeState analyzeState, Scope scope) {
+    public Expr analyzeIgnoreSlot(Expr expression, AnalyzeState analyzeState, Scope scope) {
         IgnoreSlotVisitor visitor = new IgnoreSlotVisitor(analyzeState, session);
-        bottomUpAnalyze(visitor, expression, scope);
+        return bottomUpAnalyze(visitor, expression, scope);
     }
 
-    public void analyzeWithVisitor(Expr expression, AnalyzeState analyzeState, Scope scope, Visitor visitor) {
-        bottomUpAnalyze(visitor, expression, scope);
+    public Expr analyzeWithVisitor(Expr expression, AnalyzeState analyzeState, Scope scope, Visitor visitor) {
+        return bottomUpAnalyze(visitor, expression, scope);
     }
 
-    public void analyzeWithoutUpdateState(Expr expression, AnalyzeState analyzeState, Scope scope) {
+    public Expr analyzeWithoutUpdateState(Expr expression, AnalyzeState analyzeState, Scope scope) {
         Visitor visitor = new Visitor(analyzeState, session) {
             @Override
             protected void handleResolvedField(SlotRef slot, ResolvedField resolvedField) {
                 // do not put the slotRef in analyzeState
             }
         };
-        bottomUpAnalyze(visitor, expression, scope);
+        return bottomUpAnalyze(visitor, expression, scope);
     }
 
     private boolean isArrayHighOrderFunction(Expr expr) {
@@ -319,8 +320,8 @@ public class ExpressionAnalyzer {
                 if (!(lambdaExpr instanceof LambdaFunctionExpr) || lambdaExpr.getChildren().size() != 3) {
                     throw new SemanticException("lambda in array_sort should be a binary function");
                 }
-                Expr arrayExpr = expression.getChild(1);
-                bottomUpAnalyze(visitor, arrayExpr, scope);
+                Expr arrayExpr = bottomUpAnalyze(visitor, expression.getChild(1), scope);
+                expression.setChild(1, arrayExpr);
                 if (arrayExpr instanceof NullLiteral) {
                     arrayExpr.setType(ArrayType.ARRAY_INT);
                 }
@@ -335,8 +336,7 @@ public class ExpressionAnalyzer {
             } else {
                 // the first child is lambdaFunction, following input arrays
                 for (int i = 1; i < childSize; ++i) {
-                    Expr expr = expression.getChild(i);
-                    bottomUpAnalyze(visitor, expr, scope);
+                    expression.setChild(i, bottomUpAnalyze(visitor, expression.getChild(i), scope));
                 }
 
                 // putting lambda inputs should after analyze
@@ -376,8 +376,8 @@ public class ExpressionAnalyzer {
                         ExprToSql.toSql(child) + ") should have 2 arguments, but there are "
                         + (child.getChildren().size() - 1) + " arguments", child.getPos());
             }
-            Expr expr = expression.getChild(1);
-            bottomUpAnalyze(visitor, expr, scope);
+            Expr expr = bottomUpAnalyze(visitor, expression.getChild(1), scope);
+            expression.setChild(1, expr);
             if (expr instanceof NullLiteral) {
                 expr.setType(AnyMapType.ANY_MAP); // Let it have item type.
             }
@@ -417,7 +417,7 @@ public class ExpressionAnalyzer {
         scope.clearLambdaInputs();
     }
 
-    private void bottomUpAnalyze(Visitor visitor, Expr expression, Scope scope) {
+    private Expr bottomUpAnalyze(Visitor visitor, Expr expression, Scope scope) {
         boolean hasLambdaFunc = false;
         try {
             hasLambdaFunc = ExprUtils.hasLambdaFunction(expression);
@@ -428,15 +428,19 @@ public class ExpressionAnalyzer {
             String originalSQL = ExprToSql.toSql(expression);
             try {
                 analyzeHighOrderFunction(visitor, expression, scope);
-                visitor.visit(expression, scope);
+                Expr nodeToVisit = TrinoCastRewriter.rewriteCastToJson(expression, session);
+                visitor.visit(nodeToVisit, scope);
+                return nodeToVisit;
             } catch (SemanticException e) {
                 throw e.appendOnlyOnceMsg(originalSQL, expression.getPos());
             }
         } else {
-            for (Expr expr : expression.getChildren()) {
-                bottomUpAnalyze(visitor, expr, scope);
+            for (int i = 0; i < expression.getChildren().size(); i++) {
+                expression.setChild(i, bottomUpAnalyze(visitor, expression.getChild(i), scope));
             }
-            visitor.visit(expression, scope);
+            Expr nodeToVisit = TrinoCastRewriter.rewriteCastToJson(expression, session);
+            visitor.visit(nodeToVisit, scope);
+            return nodeToVisit;
         }
     }
 
@@ -2187,9 +2191,9 @@ public class ExpressionAnalyzer {
         }
     }
 
-    public static void analyzeExpression(Expr expression, AnalyzeState state, Scope scope, ConnectContext session) {
+    public static Expr analyzeExpression(Expr expression, AnalyzeState state, Scope scope, ConnectContext session) {
         ExpressionAnalyzer expressionAnalyzer = new ExpressionAnalyzer(session);
-        expressionAnalyzer.analyze(expression, state, scope);
+        return expressionAnalyzer.analyze(expression, state, scope);
     }
 
     public static void analyzeExpressionIgnoreSlot(Expr expression, ConnectContext session) {

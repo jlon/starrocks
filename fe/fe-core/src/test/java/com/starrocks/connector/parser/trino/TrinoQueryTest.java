@@ -135,6 +135,16 @@ public class TrinoQueryTest extends TrinoTestBase {
 
         sql = "select cast(ti as timestamp) from tall";
         assertPlanContains(sql, "CAST(9: ti AS DATETIME)");
+
+        sql = "select cast(json_parse('{\"RESULT\":\"false\"}') as map<varchar,varchar>)['RESULT']";
+        assertPlanContains(sql, "CAST(parse_json('{\"RESULT\":\"false\"}') AS MAP<VARCHAR(65533),VARCHAR(65533)>");
+
+        sql = "select cast(json_parse('{\"RESULT\":\"false\",\"REASON\":\"2104\"}') "
+                + "as map<varchar,varchar>)['RESULT'] = 'false' "
+                + "and cast(json_parse('{\"RESULT\":\"false\",\"REASON\":\"2104\"}') "
+                + "as map<varchar,varchar>)['REASON'] like '%2104%'";
+        assertPlanContains(sql,
+                "CAST(parse_json('{\"RESULT\":\"false\",\"REASON\":\"2104\"}') AS MAP<VARCHAR(65533),VARCHAR(65533)>");
     }
 
     @Test

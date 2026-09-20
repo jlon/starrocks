@@ -101,6 +101,7 @@ import com.starrocks.type.FunctionType;
 import com.starrocks.type.HLLType;
 import com.starrocks.type.IntegerType;
 import com.starrocks.type.JsonType;
+import com.starrocks.type.MapType;
 import com.starrocks.type.NullType;
 import com.starrocks.type.PercentileType;
 import com.starrocks.type.ScalarType;
@@ -1467,6 +1468,10 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
         } else if (typeName.equals("array")) {
             TypeParameter typeParam = (TypeParameter) dataType.getArguments().get(0);
             return new ArrayType(getType(typeParam.getValue()));
+        } else if (typeName.equals("map")) {
+            TypeParameter keyParam = (TypeParameter) dataType.getArguments().get(0);
+            TypeParameter valueParam = (TypeParameter) dataType.getArguments().get(1);
+            return new MapType(getType(keyParam.getValue()), getType(valueParam.getValue()));
         } else {
             // this contains datetime/date/numeric type
             return getTypeByName(typeName);
