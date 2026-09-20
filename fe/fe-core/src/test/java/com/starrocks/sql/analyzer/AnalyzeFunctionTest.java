@@ -230,6 +230,36 @@ public class AnalyzeFunctionTest {
                 "select timestampdiff(minute, '2020-01-01 00:00:00', '2020-01-03 00:00:00')");
         Assertions.assertEquals("SELECT timestampdiff(MINUTE, '2020-01-01 00:00:00', '2020-01-03 00:00:00')",
                 AstToStringBuilder.toString(queryStatement.getQueryRelation()));
+
+        String originDialect = getConnectContext().getSessionVariable().getSqlDialect();
+        try {
+            getConnectContext().getSessionVariable().setSqlDialect("trino");
+            queryStatement = (QueryStatement) analyzeSuccess("select date_add(current_date(), 1)");
+            com.starrocks.sql.ast.SelectRelation selectRelation =
+                    (com.starrocks.sql.ast.SelectRelation) queryStatement.getQueryRelation();
+            com.starrocks.sql.ast.expression.Expr outputExpr = selectRelation.getOutputExpression().get(0);
+            Assertions.assertInstanceOf(com.starrocks.sql.ast.expression.CastExpr.class, outputExpr);
+            Assertions.assertTrue(outputExpr.getType().isDate());
+
+            // The bare keyword form (no parentheses) must also return DATE, matching
+            // the parenthesised form. date_add(current_date, 1) -> DATE under trino.
+            queryStatement = (QueryStatement) analyzeSuccess("select date_add(current_date, 1)");
+            selectRelation =
+                    (com.starrocks.sql.ast.SelectRelation) queryStatement.getQueryRelation();
+            outputExpr = selectRelation.getOutputExpression().get(0);
+            Assertions.assertInstanceOf(com.starrocks.sql.ast.expression.CastExpr.class, outputExpr);
+            Assertions.assertTrue(outputExpr.getType().isDate());
+
+            // Same for date_sub.
+            queryStatement = (QueryStatement) analyzeSuccess("select date_sub(current_date, 1)");
+            selectRelation =
+                    (com.starrocks.sql.ast.SelectRelation) queryStatement.getQueryRelation();
+            outputExpr = selectRelation.getOutputExpression().get(0);
+            Assertions.assertInstanceOf(com.starrocks.sql.ast.expression.CastExpr.class, outputExpr);
+            Assertions.assertTrue(outputExpr.getType().isDate());
+        } finally {
+            getConnectContext().getSessionVariable().setSqlDialect(originDialect);
+        }
     }
 
     @Test

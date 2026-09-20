@@ -415,15 +415,17 @@ public class SelectAnalyzer {
                 // "select * from t order by 1", then this FieldReference cannot be parsed in OrderByScope,
                 // but should be parsed in sourceScope
                 if (isDistinct) {
-                    analyzeExpression(expression, analyzeState, orderByScope);
+                    expression = analyzeExpression(expression, analyzeState, orderByScope);
                 } else {
-                    analyzeExpression(expression, analyzeState, orderByScope.getParent());
+                    expression = analyzeExpression(expression, analyzeState, orderByScope.getParent());
                 }
             } else {
                 ExpressionAnalyzer expressionAnalyzer = new ExpressionAnalyzer(session);
-                expressionAnalyzer.analyzeWithoutUpdateState(expression, analyzeState, orderByScope);
+                // Capture the rewritten expression: trino_zero_based_subscript may replace the root
+                // CollectionElementExpr with a new node.
+                Expr probed = expressionAnalyzer.analyzeWithoutUpdateState(expression, analyzeState, orderByScope);
                 List<Expr> aggregations = Lists.newArrayList();
-                expression.collectAll(e -> ExprUtils.isAggregate(e), aggregations);
+                probed.collectAll(ExprUtils::isAggregate, aggregations);
                 if (isDistinct && !aggregations.isEmpty()) {
                     throw new SemanticException("for SELECT DISTINCT, ORDER BY expressions must appear in select list",
                             expression.getPos());
@@ -432,7 +434,7 @@ public class SelectAnalyzer {
                 if (!aggregations.isEmpty()) {
                     aggregations.forEach(e -> analyzeExpression(e, analyzeState, orderByScope.getParent()));
                 }
-                analyzeExpression(expression, analyzeState, orderByScope);
+                expression = analyzeExpression(probed, analyzeState, orderByScope);
             }
 
             if (!expression.getType().canOrderBy()) {
@@ -551,7 +553,8 @@ public class SelectAnalyzer {
                         RewriteAliasVisitor visitor =
                                 new RewriteAliasVisitor(sourceScope, outputScope, outputExpressions, session);
                         groupingExpr = groupingExpr.accept(visitor, null);
-                        analyzeExpression(groupingExpr, analyzeState, sourceScope);
+                        // Must use rewritten expression (e.g. trino_zero_based_subscript), same as SELECT list.
+                        groupingExpr = analyzeExpression(groupingExpr, analyzeState, sourceScope);
                     }
 
                     if (!groupingExpr.getType().canGroupBy()) {
@@ -659,8 +662,8 @@ public class SelectAnalyzer {
             RewriteAliasVisitor visitor =
                     new RewriteAliasVisitor(sourceScope, outputScope, outputExpressions, session);
             Expr rewrite = e.accept(visitor, null);
-            analyzeExpression(rewrite, analyzeState, sourceScope);
-            return rewrite;
+            // Must use rewritten expression (e.g. trino_zero_based_subscript), same as SELECT list.
+            return analyzeExpression(rewrite, analyzeState, sourceScope);
         }).collect(Collectors.toList());
     }
 
@@ -674,7 +677,8 @@ public class SelectAnalyzer {
 
             AnalyzerUtils.verifyNoWindowFunctions(predicate, "HAVING");
             AnalyzerUtils.verifyNoGroupingFunctions(predicate, "HAVING");
-            analyzeExpression(predicate, analyzeState, sourceScope);
+            // Must use rewritten expression (e.g. trino_zero_based_subscript), same as SELECT list.
+            predicate = analyzeExpression(predicate, analyzeState, sourceScope);
 
             if (!predicate.getType().matchesType(BooleanType.BOOLEAN) && !predicate.getType().matchesType(NullType.NULL)) {
                 throw new SemanticException("HAVING clause must evaluate to a boolean: actual type %s",
@@ -1057,4 +1061,3 @@ public class SelectAnalyzer {
         return result;
     }
 }
-

@@ -39,7 +39,7 @@ import static com.starrocks.connector.trino.TrinoParserUnsupportedException.trin
 
 public class TrinoParserUtils {
     public static StatementBase toStatement(String query, long sqlMode) {
-        String trimmedQuery = TrinoSqlNormalizer.convertBacktickQuotedIdentifiers(query.trim());
+        String trimmedQuery = TrinoSqlNormalizer.normalize(query.trim());
         Statement statement = TrinoParser.parse(trimmedQuery);
         if (statement instanceof Query || statement instanceof Explain || statement instanceof ExplainAnalyze
                 || statement instanceof CreateTableAsSelect || statement instanceof Insert
@@ -60,7 +60,7 @@ public class TrinoParserUtils {
      * @return the wrapped or original expr, after applying appropriate output type conversions
      */
     public static Expr alignWithInputDatetimeType(TimestampArithmeticExpr expr) {
-        if (isDateType(expr.getChild(0))) {
+        if (isDateLikeInput(expr.getChild(0))) {
             return new CastExpr(DateType.DATE, expr);
         }
         return expr;
@@ -69,7 +69,7 @@ public class TrinoParserUtils {
     /**
      * Functions that return DATE as the result type
      */
-    private static Set<String> DATE_RETURNING_FUNCTIONS = new HashSet<>();
+    private static final Set<String> DATE_RETURNING_FUNCTIONS = new HashSet<>();
     static {
         DATE_RETURNING_FUNCTIONS.add(FunctionSet.DATE);
         DATE_RETURNING_FUNCTIONS.add(FunctionSet.LAST_DAY);
@@ -84,7 +84,7 @@ public class TrinoParserUtils {
         DATE_RETURNING_FUNCTIONS.add(FunctionSet.FROM_DAYS);
         DATE_RETURNING_FUNCTIONS.add(FunctionSet.STR2DATE);
     }
-    private static boolean isDateType(Expr expr) {
+    public static boolean isDateLikeInput(Expr expr) {
         // type of expr could be Type.INVALID till now, hence we need to examine many other possible cases
         if (expr.getType().isDate()) {
             return true;

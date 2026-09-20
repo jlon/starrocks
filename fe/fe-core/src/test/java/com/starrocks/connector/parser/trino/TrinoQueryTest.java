@@ -472,6 +472,9 @@ public class TrinoQueryTest extends TrinoTestBase {
         assertPlanContains(sql, "1:Project\n" +
                 "  |  <slot 5> : 4: c3['10']");
 
+        sql = "select c3['not_exist_key'] from test_map";
+        analyzeSuccess(sql);
+
         analyzeFail("select c3[\"10\"] from test_map");
     }
 
@@ -805,6 +808,10 @@ public class TrinoQueryTest extends TrinoTestBase {
         sql = "select regexp_like('abc123','abc*');";
         assertPlanContains(sql, "regexp('abc123', 'abc*')");
 
+        // Hive/Spark RLIKE operator is normalized to regexp_like in Trino dialect.
+        sql = "select 'abc123' RLIKE 'abc*';";
+        assertPlanContains(sql, "regexp('abc123', 'abc*')");
+
         sql = "select regexp_extract('1a 2b 14m', '\\d+');";
         assertPlanContains(sql, "if(regexp_extract('1a 2b 14m', '\\\\d+', 0) = '', NULL, " +
                 "regexp_extract('1a 2b 14m', '\\\\d+', 0))");
@@ -816,6 +823,15 @@ public class TrinoQueryTest extends TrinoTestBase {
         sql = "select regexp_extract('1abb 2b 14m', '[a-z]+', 1);";
         assertPlanContains(sql, "<slot 2> : if(regexp_extract('1abb 2b 14m', '[a-z]+', 1) = '', NULL, " +
                 "regexp_extract('1abb 2b 14m', '[a-z]+', 1))");
+    }
+
+    @Test
+    public void testHiveArrayConstructorCompat() throws Exception {
+        String sql = "select array_intersect(split('a_b', '_'), ARRAY('a'))";
+        assertPlanContains(sql, "array_intersect(split('a_b', '_'), ['a'])");
+
+        sql = "select ARRAY('42260')[1]";
+        assertPlanContains(sql, "['42260']");
     }
 
     @Test
@@ -1273,5 +1289,11 @@ public class TrinoQueryTest extends TrinoTestBase {
     public void testRegexpReplace() throws Exception {
         String sql = "select regexp_replace('123', '321')";
         assertPlanContains(sql, "<slot 2> : '123'");
+    }
+
+    @Test
+    public void testUnresolvableColumnErrorContainsLineNumber() {
+        analyzeFail("select t0.missing_col from t0", "at line 1, column");
+        analyzeFail("select v1\nfrom t0\nwhere missing_col = 1", "at line 3, column");
     }
 }

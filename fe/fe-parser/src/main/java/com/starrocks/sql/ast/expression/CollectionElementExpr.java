@@ -20,8 +20,13 @@ import com.starrocks.type.Type;
 
 public class CollectionElementExpr extends Expr {
 
-    // For trino and presto, access out of bound in map/array, it will throw error msg
+    // When true, missing map keys or out-of-range array indexes return an error at runtime.
+    // Trino/Presto return NULL for these cases, so the Trino parser sets this to false.
     private final boolean checkIsOutOfBounds;
+
+    // Set once trino_zero_based_subscript has shifted the index. Expressions may be analyzed more
+    // than once (SelectAnalyzer re-analyzes aggregations), and the shift must not be applied twice.
+    private boolean zeroBasedSubscriptRewritten;
 
     public CollectionElementExpr(Expr expr, Expr subscript, boolean checkIsOutOfBounds) {
         super(NodePosition.ZERO);
@@ -45,6 +50,7 @@ public class CollectionElementExpr extends Expr {
     public CollectionElementExpr(CollectionElementExpr other) {
         super(other);
         this.checkIsOutOfBounds = other.checkIsOutOfBounds;
+        this.zeroBasedSubscriptRewritten = other.zeroBasedSubscriptRewritten;
     }
 
 
@@ -69,5 +75,13 @@ public class CollectionElementExpr extends Expr {
 
     public boolean isCheckIsOutOfBounds() {
         return checkIsOutOfBounds;
+    }
+
+    public boolean isZeroBasedSubscriptRewritten() {
+        return zeroBasedSubscriptRewritten;
+    }
+
+    public void setZeroBasedSubscriptRewritten(boolean zeroBasedSubscriptRewritten) {
+        this.zeroBasedSubscriptRewritten = zeroBasedSubscriptRewritten;
     }
 }

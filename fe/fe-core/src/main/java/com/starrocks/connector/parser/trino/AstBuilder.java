@@ -176,6 +176,7 @@ import io.trino.sql.tree.Limit;
 import io.trino.sql.tree.LogicalExpression;
 import io.trino.sql.tree.LongLiteral;
 import io.trino.sql.tree.Node;
+import io.trino.sql.tree.NodeLocation;
 import io.trino.sql.tree.NotExpression;
 import io.trino.sql.tree.NullIfExpression;
 import io.trino.sql.tree.NumericParameter;
@@ -302,6 +303,19 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
 
     private ParseNode processOptional(Optional<? extends Node> node, ParseTreeContext context) {
         return node.map(value -> process(value, context)).orElse(null);
+    }
+
+    private static NodePosition createPos(Node node) {
+        if (node == null) {
+            return NodePosition.ZERO;
+        }
+        return node.getLocation()
+                .map(AstBuilder::toNodePosition)
+                .orElse(NodePosition.ZERO);
+    }
+
+    private static NodePosition toNodePosition(NodeLocation location) {
+        return new NodePosition(location.getLineNumber(), location.getColumnNumber() - 1);
     }
 
     @Override
@@ -767,7 +781,7 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
     protected ParseNode visitSubscriptExpression(SubscriptExpression node, ParseTreeContext context) {
         Expr value = (Expr) visit(node.getBase(), context);
         Expr index = (Expr) visit(node.getIndex(), context);
-        return new CollectionElementExpr(value, index, true);
+        return new CollectionElementExpr(value, index, false);
     }
 
     @Override
@@ -899,7 +913,7 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
     protected ParseNode visitIdentifier(Identifier node, ParseTreeContext context) {
         List<String> parts = new ArrayList<>();
         parts.add(node.getValue());
-        QualifiedName qualifiedName = QualifiedName.of(parts);
+        QualifiedName qualifiedName = QualifiedName.of(parts, createPos(node));
         return new SlotRef(qualifiedName);
     }
 
@@ -911,11 +925,12 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
         if (node.getField().isPresent()) {
             fieldName = node.getField().get().getValue();
         }
+        NodePosition pos = createPos(node);
         if (base instanceof SlotRef) {
             SlotRef slotRef = (SlotRef) base;
             List<String> parts = new ArrayList<>(slotRef.getQualifiedName().getParts());
             parts.add(fieldName);
-            return new SlotRef(QualifiedName.of(parts));
+            return new SlotRef(QualifiedName.of(parts, pos));
         } else if (base instanceof SubfieldExpr) {
             // Merge multi-level subfield access
             SubfieldExpr subfieldExpr = (SubfieldExpr) base;
@@ -924,9 +939,9 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
                 builder.add(tmpFieldName);
             }
             builder.add(fieldName);
-            return new SubfieldExpr(subfieldExpr.getChild(0), builder.build());
+            return new SubfieldExpr(subfieldExpr.getChild(0), builder.build(), pos);
         } else {
-            return new SubfieldExpr(base, ImmutableList.of(fieldName));
+            return new SubfieldExpr(base, ImmutableList.of(fieldName), pos);
         }
     }
 

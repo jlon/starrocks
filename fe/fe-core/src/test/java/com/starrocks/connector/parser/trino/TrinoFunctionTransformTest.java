@@ -83,7 +83,15 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
         assertPlanContains(sql, "array_generate(1, 5)");
 
         sql = "select sequence(1, cardinality(split('1,2,3', ',')))";
-        assertPlanContains(sql, "array_generate(1, cardinality(split('1,2,3', ',')))");
+        analyzeSuccess(sql);
+        assertPlanContains(sql, "array_generate(1, cardinality(split('1,2,3', ',')), 1)");
+
+        sql = "select sequence(1, cardinality(split(ta, ','))) from tall";
+        analyzeSuccess(sql);
+
+        sql = "select sequence(9, 6)";
+        analyzeSuccess(sql);
+        assertPlanContains(sql, "array_generate(9, 6");
 
         sql = "select sequence(1, 10, 2)";
         assertPlanContains(sql, "array_generate(1, 10, 2)");
