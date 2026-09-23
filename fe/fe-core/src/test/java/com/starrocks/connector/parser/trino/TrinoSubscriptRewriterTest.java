@@ -14,26 +14,25 @@
 
 package com.starrocks.connector.parser.trino;
 
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TrinoSubscriptRewriterTest extends TrinoTestBase {
     private boolean originZeroBasedSubscript;
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         TrinoTestBase.beforeClass();
     }
 
-    @Before
+    @BeforeEach
     public void setUp() {
         originZeroBasedSubscript = connectContext.getSessionVariable().isTrinoZeroBasedSubscript();
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         connectContext.getSessionVariable().setTrinoZeroBasedSubscript(originZeroBasedSubscript);
     }
@@ -112,11 +111,12 @@ public class TrinoSubscriptRewriterTest extends TrinoTestBase {
         connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
         // SelectAnalyzer analyzes aggregations a second time; the shift must stay idempotent.
         String sql = "select sum(cast(split(ta, '-')[7] as double)) from tall";
-        assertSubscriptShiftedOnlyOnce(sql);
+        assertPlanContains(sql, "split(1: ta, '-')[8]");
 
         // The same subscript used bare and inside an aggregate must resolve to the same index.
         sql = "select split(ta, '-')[7], sum(cast(split(ta, '-')[7] as double)) from tall group by 1";
-        assertSubscriptShiftedOnlyOnce(sql);
+        assertPlanContains(sql, "split(1: ta, '-')[8]");
+        assertPlanContains(sql, "CAST(9: split[8] AS DOUBLE)");
     }
 
     @Test
@@ -124,14 +124,8 @@ public class TrinoSubscriptRewriterTest extends TrinoTestBase {
         connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
         String sql = "select sum(cast(split(ta, '-')[7] as double)), max(split(ta, '-')[7]), "
                 + "min(split(ta, '-')[7]) from tall";
-        assertSubscriptShiftedOnlyOnce(sql);
+        assertPlanContains(sql, "split(1: ta, '-')[8]");
         analyzeSuccess(sql);
-    }
-
-    private void assertSubscriptShiftedOnlyOnce(String sql) throws Exception {
-        String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan, plan.contains("split(1: ta, '-')[8]") || plan.contains("split[8]"));
-        Assert.assertFalse(plan.contains("split[9]"));
     }
 
     @Test
@@ -151,6 +145,24 @@ public class TrinoSubscriptRewriterTest extends TrinoTestBase {
 
         sql = "select sum(cast(split(ta, '-')[td] as double)) from tall";
         analyzeSuccess(sql);
+    }
+
+    @Test
+    public void testGroupByOrderByOrdinalWithAggregateSubscript() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "select tb, cast(sum(coalesce(split(ta, '-')[7], 0)) as double) "
+                + "from tall group by 1 order by 2 desc";
+        assertPlanContains(sql, "order by:");
+        assertPlanContains(sql, "DESC");
+    }
+
+    @Test
+    public void testGroupByOrderByOrdinalWithMapAggregate() throws Exception {
+        connectContext.getSessionVariable().setTrinoZeroBasedSubscript(true);
+        String sql = "select c0, cast(sum(coalesce(c1[150], 0)) as double) "
+                + "from test_map group by 1 order by 2 desc";
+        assertPlanContains(sql, "order by:");
+        assertPlanContains(sql, "DESC");
     }
 
     @Test

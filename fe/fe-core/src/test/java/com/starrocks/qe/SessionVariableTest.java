@@ -47,6 +47,16 @@ public class SessionVariableTest {
     }
 
     @Test
+    public void testShieldAppGroup() {
+        SessionVariable sessionVariable = new SessionVariable();
+        sessionVariable.setShieldAppGroup("bdp");
+
+        Assertions.assertEquals("bdp", sessionVariable.getShieldAppGroup());
+        Assertions.assertTrue(sessionVariable.getNonDefaultVariables()
+                .containsKey(SessionVariable.SHIELD_APP_GROUP));
+    }
+
+    @Test
     public void testSetChooseMode() {
         SessionVariable sessionVariable = new SessionVariable();
         sessionVariable.setChooseExecuteInstancesMode("adaptive_increase");

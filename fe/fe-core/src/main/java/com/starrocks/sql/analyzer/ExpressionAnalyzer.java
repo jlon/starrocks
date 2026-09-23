@@ -465,9 +465,11 @@ public class ExpressionAnalyzer {
     }
 
     private Expr applyTrinoDialectRewrites(Visitor visitor, Expr expression, Scope scope) {
-        Expr rewritten = TrinoCastRewriter.rewriteCastToJson(expression, session);
-        Expr shifted = TrinoSubscriptRewriter.rewrite(rewritten, session);
-        if (shifted != rewritten) {
+        Expr nodeToVisit = TrinoCastRewriter.rewriteCastToJson(expression, session);
+        Expr shifted = TrinoSubscriptRewriter.rewrite(nodeToVisit, session);
+        if (shifted != nodeToVisit) {
+            // The zero-based shift builds a brand new index expression, which still needs analyzing
+            // before the collection element itself can be typed.
             shifted.setChild(1, bottomUpAnalyze(visitor, shifted.getChild(1), scope));
         }
         return shifted;

@@ -741,6 +741,33 @@ public class ListPartitionPrunerTest {
     }
 
     @Test
+    public void testGetEffectivePartitionPredicateWithCastIntColumn() {
+        Column daynoCol = new Column("dayno", IntegerType.INT);
+        Column hourCol = new Column("hour", IntegerType.INT);
+        ColumnRefOperator daynoRef = new ColumnRefOperator(12, IntegerType.INT, "dayno", true);
+        ColumnRefOperator hourRef = new ColumnRefOperator(13, IntegerType.INT, "hour", true);
+
+        Map<Column, ColumnRefOperator> columnMetaToColRefMap = Maps.newHashMap();
+        columnMetaToColRefMap.put(daynoCol, daynoRef);
+        columnMetaToColRefMap.put(hourCol, hourRef);
+
+        LogicalHiveScanOperator scanOperator = new LogicalHiveScanOperator(new HiveTable(), Maps.newHashMap(),
+                columnMetaToColRefMap, Operator.DEFAULT_LIMIT, null);
+
+        ScalarOperator predicate = new BinaryPredicateOperator(BinaryType.EQ,
+                new CastOperator(VarcharType.VARCHAR, daynoRef),
+                ConstantOperator.createVarchar("20260913"));
+
+        // A cast-wrapped partition column must be ignored here instead of crashing: the by-value fallback
+        // would otherwise look up a partition value formatted from a mismatched constant type.
+        List<Optional<ScalarOperator>> result = OptExternalPartitionPruner.getEffectivePartitionPredicate(scanOperator,
+                ImmutableList.of(daynoCol, hourCol), predicate);
+        Assertions.assertEquals(2, result.size());
+        Assertions.assertFalse(result.get(0).isPresent());
+        Assertions.assertFalse(result.get(1).isPresent());
+    }
+
+    @Test
     public void testBuildHmsPartitionFilterRangeAndIn() {
         Column daynoCol = new Column("dayno", VarcharType.VARCHAR);
         Column hourCol = new Column("hour", IntegerType.INT);
@@ -780,7 +807,8 @@ public class ListPartitionPrunerTest {
                 ConstantOperator.createVarchar("20260726"));
         filter = OptExternalPartitionPruner.buildHmsPartitionFilter(
                 scanOperator, ImmutableList.of(daynoCol, hourCol), castRange);
-        Assertions.assertFalse(filter.isPresent());
+        Assertions.assertTrue(filter.isPresent());
+        Assertions.assertEquals("dayno >= '20260726'", filter.get());
 
         ScalarOperator quoteLiteral = new BinaryPredicateOperator(BinaryType.EQ, daynoRef,
                 ConstantOperator.createVarchar("a'b"));
@@ -789,11 +817,61 @@ public class ListPartitionPrunerTest {
         Assertions.assertTrue(filter.isPresent());
         Assertions.assertEquals("dayno = 'a''b'", filter.get());
 
-        ScalarOperator numericLiteral = new BinaryPredicateOperator(BinaryType.EQ, daynoRef,
+        ScalarOperator intDaynoEq = new BinaryPredicateOperator(BinaryType.EQ, daynoRef,
+                ConstantOperator.createInt(20260728));
+        filter = OptExternalPartitionPruner.buildHmsPartitionFilter(
+                scanOperator, ImmutableList.of(daynoCol, hourCol), intDaynoEq);
+        Assertions.assertTrue(filter.isPresent());
+        Assertions.assertEquals("dayno = '20260728'", filter.get());
+
+        ScalarOperator castDaynoEq = new BinaryPredicateOperator(BinaryType.EQ, daynoRef,
+                new CastOperator(VarcharType.VARCHAR, ConstantOperator.createInt(20260728)));
+        filter = OptExternalPartitionPruner.buildHmsPartitionFilter(
+                scanOperator, ImmutableList.of(daynoCol, hourCol), castDaynoEq);
+        Assertions.assertTrue(filter.isPresent());
+        Assertions.assertEquals("dayno = '20260728'", filter.get());
+
+        ScalarOperator intDaynoIn = new InPredicateOperator(daynoRef,
+                ConstantOperator.createInt(20260725),
                 ConstantOperator.createInt(20260726));
         filter = OptExternalPartitionPruner.buildHmsPartitionFilter(
-                scanOperator, ImmutableList.of(daynoCol, hourCol), numericLiteral);
-        Assertions.assertFalse(filter.isPresent());
+                scanOperator, ImmutableList.of(daynoCol, hourCol), intDaynoIn);
+        Assertions.assertTrue(filter.isPresent());
+        Assertions.assertEquals("(dayno = '20260725' OR dayno = '20260726')", filter.get());
+    }
+
+    @Test
+    public void testStringPartitionColumnWithNumericLiteral() throws AnalysisException {
+        ColumnRefOperator daynoColumn = new ColumnRefOperator(30, VarcharType.VARCHAR, "dayno", true);
+        ConcurrentNavigableMap<LiteralExpr, Set<Long>> daynoPartitionValuesMap = new ConcurrentSkipListMap<>();
+        daynoPartitionValuesMap.put(new StringLiteral("20260727"), Sets.newHashSet(0L));
+        daynoPartitionValuesMap.put(new StringLiteral("20260728"), Sets.newHashSet(1L));
+        daynoPartitionValuesMap.put(new StringLiteral("20260729"), Sets.newHashSet(2L));
+
+        columnToPartitionValuesMap = Maps.newConcurrentMap();
+        columnToPartitionValuesMap.put(daynoColumn, daynoPartitionValuesMap);
+        columnToNullPartitions = Maps.newHashMap();
+        columnToNullPartitions.put(daynoColumn, Sets.newHashSet());
+
+        conjuncts = Lists.newArrayList();
+        pruner = new ListPartitionPruner(columnToPartitionValuesMap, columnToNullPartitions, conjuncts, null, null);
+
+        conjuncts.add(new BinaryPredicateOperator(BinaryType.EQ, daynoColumn,
+                ConstantOperator.createInt(20260728)));
+        Assertions.assertEquals(Lists.newArrayList(1L), pruner.prune());
+
+        conjuncts.clear();
+        conjuncts.add(new InPredicateOperator(daynoColumn,
+                ConstantOperator.createInt(20260727),
+                ConstantOperator.createInt(20260729)));
+        Assertions.assertEquals(Lists.newArrayList(0L, 2L), pruner.prune());
+
+        conjuncts.clear();
+        conjuncts.add(new BinaryPredicateOperator(BinaryType.GE, daynoColumn,
+                ConstantOperator.createInt(20260728)));
+        conjuncts.add(new BinaryPredicateOperator(BinaryType.LE, daynoColumn,
+                ConstantOperator.createInt(20260728)));
+        Assertions.assertEquals(Lists.newArrayList(1L), pruner.prune());
     }
 
     @Test

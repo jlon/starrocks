@@ -1,0 +1,97 @@
+# India-only StarRocks K8s image: same as Dockerfile.starrocks-k8s, plus ChubaoFS mount.
+# Do not use this Dockerfile for CN / other regions.
+#
+# Build from repo root:
+#   ./deploy/build.sh --target k8s-india --artifact-source local
+#
+ARG LOCAL_REPO_PATH=.
+ARG WITH_DEBUG_INFO=false
+ARG STARROCKS_ROOT=/opt/starrocks
+ARG USER=starrocks
+ARG RUN_AS_USER=root
+ARG GROUP=starrocks
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ARG REGION=india
+
+FROM busybox:latest AS artifacts
+ARG LOCAL_REPO_PATH
+COPY ${LOCAL_REPO_PATH}/output/fe /release/fe_artifacts/fe
+COPY ${LOCAL_REPO_PATH}/output/be /release/be_artifacts/be
+ARG WITH_DEBUG_INFO
+RUN if [ "${WITH_DEBUG_INFO}" = "false" ]; then rm -f /release/be_artifacts/be/lib/starrocks_be.debuginfo 2>/dev/null || true; fi
+
+FROM ubuntu:22.04
+ARG STARROCKS_ROOT
+ARG USER
+ARG RUN_AS_USER
+ARG GROUP
+ARG GIT_COMMIT
+ARG BUILD_TIME
+ARG REGION
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+        openjdk-17-jdk mysql-client curl wget vim tree net-tools less tzdata locales netcat \
+        binutils-dev pigz inotify-tools python3 python3-requests \
+        fuse procps cron && \
+    ln -sf /usr/bin/python3 /usr/bin/python && \
+    ln -fs /usr/share/zoneinfo/UTC /etc/localtime && \
+    dpkg-reconfigure -f noninteractive tzdata && \
+    locale-gen en_US.UTF-8 && \
+    sed -i '/user_allow_other/s/^#\s*//' /etc/fuse.conf && \
+    grep -q '^user_allow_other' /etc/fuse.conf || echo 'user_allow_other' >> /etc/fuse.conf && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN touch /.dockerenv ; ARCH=`uname -m` && cd /lib/jvm && \
+    if [ "$ARCH" = "aarch64" ] ; then ln -s java-17-openjdk-arm64 java-17-openjdk ; else ln -s java-17-openjdk-amd64 java-17-openjdk ; fi
+ENV JAVA_HOME=/lib/jvm/java-17-openjdk
+ENV STARROCKS_REGION=india
+
+WORKDIR ${STARROCKS_ROOT}
+
+RUN groupadd --gid 1000 ${GROUP} && \
+    useradd --no-create-home --uid 1000 --gid 1000 --shell /usr/sbin/nologin ${USER} && \
+    chown -R ${USER}:${GROUP} ${STARROCKS_ROOT}
+
+USER ${USER}
+
+COPY --from=artifacts --chown=${USER}:${GROUP} /release/fe_artifacts/ ${STARROCKS_ROOT}/
+COPY --from=artifacts --chown=${USER}:${GROUP} /release/be_artifacts/ ${STARROCKS_ROOT}/
+
+COPY --chown=${USER}:${GROUP} docker/dockerfiles/fe/*.sh ${STARROCKS_ROOT}/
+COPY --chown=${USER}:${GROUP} docker/dockerfiles/be/*.sh ${STARROCKS_ROOT}/
+
+USER root
+RUN set -eux; \
+    for f in fe_entrypoint cn_entrypoint be_entrypoint fe_prestop cn_prestop be_prestop; do \
+      if [ -f "${STARROCKS_ROOT}/${f}.sh" ]; then mv "${STARROCKS_ROOT}/${f}.sh" "${STARROCKS_ROOT}/${f}.orig.sh"; fi; \
+    done
+COPY --chown=${USER}:${GROUP} deploy/monitor/register_to_consul.py ${STARROCKS_ROOT}/
+COPY --chown=${USER}:${GROUP} deploy/monitor/unregister_to_consul.py ${STARROCKS_ROOT}/
+COPY --chown=${USER}:${GROUP} deploy/monitor/fe_prestop.sh ${STARROCKS_ROOT}/fe_prestop.sh
+COPY --chown=${USER}:${GROUP} deploy/monitor/cn_prestop.sh ${STARROCKS_ROOT}/cn_prestop.sh
+COPY --chown=${USER}:${GROUP} deploy/monitor/be_prestop.sh ${STARROCKS_ROOT}/be_prestop.sh
+COPY --chown=${USER}:${GROUP} deploy/india/mount-chubaofs.sh ${STARROCKS_ROOT}/india/mount-chubaofs.sh
+COPY --chown=${USER}:${GROUP} deploy/india/fe_entrypoint.sh ${STARROCKS_ROOT}/fe_entrypoint.sh
+COPY --chown=${USER}:${GROUP} deploy/india/cn_entrypoint.sh ${STARROCKS_ROOT}/cn_entrypoint.sh
+COPY --chown=${USER}:${GROUP} deploy/india/be_entrypoint.sh ${STARROCKS_ROOT}/be_entrypoint.sh
+
+RUN set -eux; \
+    mkdir -p /home/service/var/chubaofs \
+             /home/service/var/logs/cfs/log \
+             /home/service/app/cfs/ostream-flink \
+             ${STARROCKS_ROOT}/fe/meta ${STARROCKS_ROOT}/be/storage; \
+    wget -q https://ocs-cn-south.oppoer.me/chubaofs-resource/cfsbin/cfs-client \
+        -O /home/service/app/cfs/ostream-flink/cfs-client; \
+    chmod +x /home/service/app/cfs/ostream-flink/cfs-client \
+             ${STARROCKS_ROOT}/*.sh ${STARROCKS_ROOT}/*.orig.sh \
+             ${STARROCKS_ROOT}/india/mount-chubaofs.sh; \
+    ln -sfT be ${STARROCKS_ROOT}/cn; \
+    printf 'region=%s\ngit_commit=%s\nbuild_time=%s\n' "${REGION}" "${GIT_COMMIT}" "${BUILD_TIME}" \
+        > ${STARROCKS_ROOT}/IMAGE_INFO
+
+LABEL starrocks.region=india \
+      starrocks.git_commit="${GIT_COMMIT}" \
+      starrocks.build_time="${BUILD_TIME}"
+
+USER ${RUN_AS_USER}

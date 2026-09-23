@@ -51,6 +51,7 @@ public final class TrinoSqlNormalizer {
         String normalized = convertBacktickQuotedIdentifiers(sql);
         normalized = rewriteRlike(normalized);
         normalized = rewriteArrayConstructor(normalized);
+        normalized = rewriteLateralViewExplode(normalized);
         return normalized;
     }
 
@@ -156,6 +157,66 @@ public final class TrinoSqlNormalizer {
     }
 
     /**
+     * Rewrite Hive/Spark {@code LATERAL VIEW explode(expr) alias AS col}
+     * into Trino {@code CROSS JOIN UNNEST(expr) AS alias(col)}.
+     */
+    public static String rewriteLateralViewExplode(String sql) {
+        if (sql == null || sql.isEmpty()) {
+            return sql;
+        }
+        String lower = sql.toLowerCase(Locale.ROOT);
+        if (!lower.contains("lateral")) {
+            return sql;
+        }
+
+        StringBuilder out = new StringBuilder(sql.length() + 64);
+        int i = 0;
+        int n = sql.length();
+        while (i < n) {
+            char c = sql.charAt(i);
+            switch (c) {
+                case '\'':
+                    i = appendQuotedContent(sql, i, out, '\'');
+                    break;
+                case '"':
+                    i = appendQuotedContent(sql, i, out, '"');
+                    break;
+                case '-':
+                    if (i + 1 < n && sql.charAt(i + 1) == '-') {
+                        i = appendLineComment(sql, i, out);
+                    } else {
+                        out.append(c);
+                        i++;
+                    }
+                    break;
+                case '/':
+                    if (i + 1 < n && sql.charAt(i + 1) == '*') {
+                        i = appendBlockComment(sql, i, out);
+                    } else {
+                        out.append(c);
+                        i++;
+                    }
+                    break;
+                default:
+                    if (isIdentStart(c) && isKeywordAt(sql, i, "lateral")) {
+                        int next = rewriteOneLateralViewExplode(sql, i, out);
+                        if (next > i) {
+                            i = next;
+                        } else {
+                            out.append(c);
+                            i++;
+                        }
+                    } else {
+                        out.append(c);
+                        i++;
+                    }
+                    break;
+            }
+        }
+        return out.toString();
+    }
+
+    /**
      * Rewrite Hive/Spark {@code ARRAY(...)} value constructors into Trino {@code ARRAY[...]}.
      * Type specs such as {@code CAST(x AS ARRAY(INTEGER))} are preserved.
      */
@@ -207,6 +268,80 @@ public final class TrinoSqlNormalizer {
             }
         }
         return out.toString();
+    }
+
+    private static int rewriteOneLateralViewExplode(String sql, int lateralStart, StringBuilder out) {
+        int n = sql.length();
+        if (!isKeywordAt(sql, lateralStart, "lateral")) {
+            return lateralStart;
+        }
+
+        int j = skipWhitespace(sql, lateralStart + 7);
+        if (!isKeywordAt(sql, j, "view")) {
+            return lateralStart;
+        }
+        j = skipWhitespace(sql, j + 4);
+        if (isKeywordAt(sql, j, "outer")) {
+            return lateralStart;
+        }
+        if (!isKeywordAt(sql, j, "explode")) {
+            return lateralStart;
+        }
+        j = skipWhitespace(sql, j + 7);
+        if (j >= n || sql.charAt(j) != '(') {
+            return lateralStart;
+        }
+        int closeParen = findMatchingParen(sql, j);
+        if (closeParen < 0) {
+            return lateralStart;
+        }
+        String expr = sql.substring(j + 1, closeParen);
+        j = skipWhitespace(sql, closeParen + 1);
+
+        int aliasStart = j;
+        int aliasEnd = scanSqlIdentEnd(sql, j);
+        if (aliasEnd <= aliasStart) {
+            return lateralStart;
+        }
+        String alias = sql.substring(aliasStart, aliasEnd);
+        j = skipWhitespace(sql, aliasEnd);
+        if (!isKeywordAt(sql, j, "as")) {
+            return lateralStart;
+        }
+        j = skipWhitespace(sql, j + 2);
+
+        int colStart = j;
+        int colEnd = scanSqlIdentEnd(sql, j);
+        if (colEnd <= colStart) {
+            return lateralStart;
+        }
+        String col = sql.substring(colStart, colEnd);
+        j = skipWhitespace(sql, colEnd);
+        if (j < n && sql.charAt(j) == ',') {
+            return lateralStart;
+        }
+
+        if (out.length() > 0 && needsSpaceBeforeExpr(out)) {
+            out.append(' ');
+        }
+        out.append("CROSS JOIN UNNEST(").append(expr).append(") AS ")
+                .append(alias).append('(').append(col).append(')');
+        return j;
+    }
+
+    private static int scanSqlIdentEnd(String sql, int start) {
+        int i = skipWhitespace(sql, start);
+        if (i >= sql.length()) {
+            return start;
+        }
+        char c = sql.charAt(i);
+        if (c == '"') {
+            return skipQuoted(sql, i, '"');
+        }
+        if (!isIdentStart(c)) {
+            return start;
+        }
+        return scanIdentEnd(sql, i);
     }
 
     private static int rewriteOneRlike(String sql, int rlikeStart, StringBuilder out) {
@@ -292,7 +427,7 @@ public final class TrinoSqlNormalizer {
             // ARRAY() is an empty constructor in Hive.
             return false;
         }
-        if (startsWithStringOrNumberLiteral(trimmed)) {
+        if (containsStringOrNumberLiteralStart(trimmed)) {
             return false;
         }
         // Multi-arg value constructors: ARRAY(a, b)
@@ -311,20 +446,34 @@ public final class TrinoSqlNormalizer {
         return ARRAY_TYPE_NAMES.contains(first);
     }
 
-    private static boolean startsWithStringOrNumberLiteral(String s) {
-        int start = skipWhitespace(s, 0);
-        if (start == s.length()) {
-            return false;
+    private static boolean containsStringOrNumberLiteralStart(String s) {
+        int i = 0;
+        int n = s.length();
+        while (i < n) {
+            char c = s.charAt(i);
+            if (c == '\'' || c == '"') {
+                return true;
+            }
+            if (c == '-' || c == '+') {
+                int k = skipWhitespace(s, i + 1);
+                if (k < n && Character.isDigit(s.charAt(k))) {
+                    return true;
+                }
+            }
+            if (Character.isDigit(c)) {
+                return true;
+            }
+            if (isIdentStart(c)) {
+                // skip identifier
+                i++;
+                while (i < n && isIdentPart(s.charAt(i))) {
+                    i++;
+                }
+                continue;
+            }
+            i++;
         }
-        char c = s.charAt(start);
-        if (c == '\'' || c == '"') {
-            return true;
-        }
-        if (c == '-' || c == '+') {
-            int numberStart = skipWhitespace(s, start + 1);
-            return numberStart < s.length() && Character.isDigit(s.charAt(numberStart));
-        }
-        return Character.isDigit(c);
+        return false;
     }
 
     private static boolean hasTopLevelComma(String s) {

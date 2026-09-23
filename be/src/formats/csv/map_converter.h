@@ -34,10 +34,16 @@ public:
     bool read_quoted_string(Column* column, const Slice& s, const Options& options) const override;
 
 private:
-    bool validate(const Slice& s) const;
-    bool split_map_key_value(Slice s, std::vector<Slice>& keys, std::vector<Slice>& values) const;
+    bool validate(const Slice& s, const Options& options) const;
+    bool split_map_key_value(Slice s, std::vector<Slice>& keys, std::vector<Slice>& values,
+                             const Options& options) const;
+    // Parse Hive LazySimpleSerDe map format, mirroring LazyMap.parse().
+    static bool split_hive_lazy_map(Slice s, char item_separator, char key_value_separator,
+                                    std::vector<Slice>& keys, std::vector<Slice>& values);
     std::unique_ptr<Converter> _key_converter;
     std::unique_ptr<Converter> _value_converter;
+    // Used only by the default (CSV/broker load) format. The Hive text format reads its
+    // delimiters from Options instead.
     char _map_delimiter;
     char _kv_delimiter;
 };

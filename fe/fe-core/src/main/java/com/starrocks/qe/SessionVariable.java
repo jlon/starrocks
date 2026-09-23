@@ -822,6 +822,7 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public static final String CUSTOM_SESSION_NAME = "custom_session_name";
     public static final int CUSTOM_SESSION_NAME_MAX_LENGTH = 64;
+    public static final String SHIELD_APP_GROUP = "shield_app_group";
 
     // Flag to control whether to proxy follower's query statement to leader/follower.
     public enum FollowerQueryForwardMode {
@@ -904,6 +905,8 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
     public static final String BIG_QUERY_PROFILE_THRESHOLD = "big_query_profile_threshold";
 
     public static final String SQL_DIALECT = "sql_dialect";
+
+    public static final String ENABLE_MAP_VALUE_RAW_OUTPUT = "enable_map_value_raw_output";
 
     // Rewrite array[n] and split()[n] with 0-based index for Spark/Hive SQL migration under Trino dialect.
     public static final String TRINO_ZERO_BASED_SUBSCRIPT = "trino_zero_based_subscript";
@@ -2876,6 +2879,9 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
     @VarAttr(name = SQL_DIALECT)
     private String sqlDialect = "StarRocks";
 
+    @VarAttr(name = ENABLE_MAP_VALUE_RAW_OUTPUT)
+    private boolean enableMapValueRawOutput = false;
+
     @VarAttr(name = TRINO_ZERO_BASED_SUBSCRIPT)
     private boolean trinoZeroBasedSubscript = false;
 
@@ -3422,6 +3428,9 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     @VarAttr(name = CUSTOM_SESSION_NAME, flag = VariableMgr.SESSION_ONLY)
     private String customSessionName = "";
+
+    @VarAttr(name = SHIELD_APP_GROUP, flag = VariableMgr.SESSION_ONLY)
+    private String shieldAppGroup = "";
 
     @VarAttr(name = ENABLE_REWRITE_UNNEST_BITMAP_TO_ARRAY)
     private boolean enableRewriteUnnestBitmapToArray = true;
@@ -5316,6 +5325,14 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
         this.sqlDialect = dialect;
     }
 
+    public boolean isEnableMapValueRawOutput() {
+        return enableMapValueRawOutput;
+    }
+
+    public void setEnableMapValueRawOutput(boolean enableMapValueRawOutput) {
+        this.enableMapValueRawOutput = enableMapValueRawOutput;
+    }
+
     public boolean isTrinoZeroBasedSubscript() {
         return trinoZeroBasedSubscript;
     }
@@ -5801,6 +5818,14 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public void setCustomSessionName(String customSessionName) {
         this.customSessionName = customSessionName;
+    }
+
+    public String getShieldAppGroup() {
+        return shieldAppGroup;
+    }
+
+    public void setShieldAppGroup(String shieldAppGroup) {
+        this.shieldAppGroup = shieldAppGroup;
     }
 
     public int getConnectorRemoteFileAsyncQueueSize() {
@@ -6309,7 +6334,7 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
         tResult.setEnable_hash_join_range_direct_mapping_opt(enableHashJoinRangeDirectMappingOpt);
         tResult.setEnable_hash_join_linear_chained_opt(enableHashJoinLinearChainedOpt);
         tResult.setEnable_hash_join_serialize_fixed_size_string(enableHashJoinSerializeFixedSizeString);
-
+        tResult.setEnable_map_value_raw_output(enableMapValueRawOutput);
         return tResult;
     }
 

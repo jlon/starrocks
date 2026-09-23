@@ -325,7 +325,7 @@ public class AuthorizerStmtVisitor implements AstVisitorExtendInterface<Void, Co
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(tableName.getCatalog(),
                         context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                        PrivilegeType.INSERT.name(), ObjectType.TABLE.name(), tableName.getTbl());
+                        PrivilegeType.INSERT.name(), ObjectType.TABLE.name(), tableName.toString());
             }
         }
 
@@ -346,7 +346,7 @@ public class AuthorizerStmtVisitor implements AstVisitorExtendInterface<Void, Co
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(tableName.getCatalog(),
                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                    PrivilegeType.DELETE.name(), ObjectType.TABLE.name(), tableName.getTbl());
+                    PrivilegeType.DELETE.name(), ObjectType.TABLE.name(), tableName.toString());
         }
         checkSelectTableAction(context, statement.getQueryStatement(), Lists.newArrayList(tableName));
         return null;
@@ -365,7 +365,7 @@ public class AuthorizerStmtVisitor implements AstVisitorExtendInterface<Void, Co
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(tableName.getCatalog(),
                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                    PrivilegeType.UPDATE.name(), ObjectType.TABLE.name(), tableName.getTbl());
+                    PrivilegeType.UPDATE.name(), ObjectType.TABLE.name(), tableName.toString());
         }
         TableName tableNameForSelect = TableName.fromTableRef(tableRef);
         checkSelectTableAction(context, statement.getQueryStatement(), Lists.newArrayList(tableNameForSelect));

@@ -14,6 +14,7 @@
 
 package com.starrocks.connector.parser.trino;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -147,6 +148,30 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
 
         sql = "select from_unixtime(1724049401, 'America/Bogota');";
         assertPlanContains(sql, "2024-08-19 01:36:41");
+
+        // Hive/Spark style: 2nd arg is format string, not timezone.
+        sql = "select from_unixtime(substr('1786230073414', 1, 10), 'yyyy-MM-dd HH:mm:ss');";
+        assertPlanContains(sql, "2026-08-09 07:01:13");
+
+        // Hive/Spark Java-style input format is rewritten for the StarRocks runtime.
+        sql = "select unix_timestamp(cast('2026091015' as string), 'yyyyMMddHH');";
+        assertPlanContains(sql, "1789023600");
+
+        sql = "select unix_timestamp(ta, 'yyyyMMddHH') from tall;";
+        assertPlanContains(sql, "unix_timestamp(1: ta, '%Y%m%d%H')");
+
+        sql = "select unix_timestamp(ta, 'yyyyMMddHHmmss') from tall;";
+        assertPlanContains(sql, "unix_timestamp(1: ta, '%Y%m%d%H%i%s')");
+
+        sql = "select unix_timestamp(ta, 'yyyy/MM/dd HH:mm:ss') from tall;";
+        assertPlanContains(sql, "unix_timestamp(1: ta, '%Y/%m/%d %H:%i:%s')");
+
+        sql = "select unix_timestamp(ta, 'yyyy-MM-dd HH:mm:ss.SSS') from tall;";
+        assertPlanContains(sql, "unix_timestamp(1: ta, '%Y-%m-%d %H:%i:%s.%f')");
+
+        // Formats outside the explicit compatibility list must not be partially rewritten.
+        sql = "select unix_timestamp(ta, 'yyyy-MM') from tall;";
+        assertPlanContains(sql, "unix_timestamp(1: ta, 'yyyy-MM')");
 
         sql = "select from_unixtime(1724049401, 1, 1);";
         assertPlanContains(sql, "2024-08-19 15:37:41");
@@ -308,6 +333,23 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
 
         sql = "select date_add('millisecond', -100, TIMESTAMP '2014-03-08 09:00:00');";
         assertPlanContains(sql, "2014-03-08 08:59:59.900000");
+
+        // Hive/Spark 2-arg date_add/date_sub always return DATE, stripping time.
+        sql = "select date_sub(TIMESTAMP '2014-03-08 09:00:00', 1);";
+        String twoArgSubPlan = getFragmentPlan(sql);
+        Assertions.assertTrue(twoArgSubPlan.contains("2014-03-07"), twoArgSubPlan);
+        Assertions.assertFalse(twoArgSubPlan.contains("09:00:00"), twoArgSubPlan);
+
+        sql = "select date_add(TIMESTAMP '2014-03-08 09:00:00', 1);";
+        String twoArgAddPlan = getFragmentPlan(sql);
+        Assertions.assertTrue(twoArgAddPlan.contains("2014-03-09"), twoArgAddPlan);
+        Assertions.assertFalse(twoArgAddPlan.contains("09:00:00"), twoArgAddPlan);
+
+        sql = "select date_sub(th, 1) from tall;";
+        assertPlanContains(sql, "cast(days_sub(");
+
+        sql = "select cast(regexp_replace(cast(date_sub(TIMESTAMP '2014-03-08 09:00:00', 1) as varchar), '-', '') as int);";
+        assertPlanContains(sql, "20140307");
     }
 
     @Test
@@ -431,6 +473,12 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
     public void testMathFnTransform() throws Exception {
         String sql = "select truncate(19.25)";
         assertPlanContains(sql, "truncate(19.25, 0)");
+
+        sql = "select from_base('ff', 16)";
+        assertPlanContains(sql, "255");
+
+        sql = "select from_base(ta, 16) from tall";
+        assertPlanContains(sql, "CAST(conv(1: ta, 16, 10) AS BIGINT)");
     }
 
     @Test

@@ -318,7 +318,7 @@ public class NativeAccessController implements AccessController {
                     context.getCurrentUserIdentity(), context.getGroups(), context.getCurrentRoleIds());
             boolean checkResult = manager.checkAction(collection, objectType, privilegeType, objectTokens);
             if (!checkResult) {
-                throw new AccessDeniedException();
+                throw new AccessDeniedException(buildAccessDeniedMessage(privilegeType, objectType, objectTokens));
             }
         } catch (PrivObjNotFoundException e) {
             LOG.info("Object not found when checking action[{}] on {} {}, message: {}",
@@ -328,7 +328,7 @@ public class NativeAccessController implements AccessController {
             LOG.warn("caught exception when checking action[{}] on {} {}",
                     privilegeType, objectType.name().replace("_", " "),
                     getFullyQualifiedNameFromListAllowNull(objectTokens), e);
-            throw new AccessDeniedException();
+            throw new AccessDeniedException(buildAccessDeniedMessage(privilegeType, objectType, objectTokens));
         }
     }
 
@@ -341,6 +341,21 @@ public class NativeAccessController implements AccessController {
                 .collect(Collectors.joining("."));
     }
 
+    /**
+     * Build an access-denied message that names the privilege, the object type, and the
+     * fully-qualified object (e.g. catalog.db.tbl). Matches the canonical ERR_ACCESS_DENIED
+     * prefix so callers (e.g. RestBaseAction#getErrorRespWhenUnauthorized) surface the object
+     * instead of a generic "Access denied for user".
+     */
+    private static String buildAccessDeniedMessage(PrivilegeType privilegeType, ObjectType objectType,
+                                                   List<String> objectTokens) {
+        String privilegeName = privilegeType == null ? PrivilegeType.ANY.name() : privilegeType.name();
+        return "Access denied; you need (at least one of) the " + privilegeName
+                + " privilege(s) on " + objectType.name() + " "
+                + getFullyQualifiedNameFromListAllowNull(objectTokens)
+                + " for this operation";
+    }
+
     protected static void checkAnyActionOnObject(ConnectContext context, ObjectType objectType,
                                                  List<String> objectTokens) throws AccessDeniedException {
         AuthorizationMgr manager = GlobalStateMgr.getCurrentState().getAuthorizationMgr();
@@ -350,7 +365,7 @@ public class NativeAccessController implements AccessController {
             PEntryObject pEntryObject = manager.provider.generateObject(objectType, objectTokens);
             boolean checkResult = manager.provider.searchAnyActionOnObject(objectType, pEntryObject, collection);
             if (!checkResult) {
-                throw new AccessDeniedException();
+                throw new AccessDeniedException(buildAccessDeniedMessage(PrivilegeType.ANY, objectType, objectTokens));
             }
         } catch (PrivObjNotFoundException e) {
             LOG.debug("Object not found when checking any action on {} {}, message: {}",
@@ -358,7 +373,7 @@ public class NativeAccessController implements AccessController {
         } catch (PrivilegeException e) {
             LOG.warn("caught exception when checking any action on {} {}",
                     objectType.name(), getFullyQualifiedNameFromListAllowNull(objectTokens), e);
-            throw new AccessDeniedException();
+            throw new AccessDeniedException(buildAccessDeniedMessage(PrivilegeType.ANY, objectType, objectTokens));
         }
     }
 

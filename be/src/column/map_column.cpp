@@ -19,6 +19,7 @@
 
 #include "column/column_helper.h"
 #include "column/column_view/column_view.h"
+#include "column/const_column.h"
 #include "column/datum.h"
 #include "column/fixed_length_column.h"
 #include "column/nullable_column.h"
@@ -525,11 +526,27 @@ int64_t MapColumn::xor_checksum(uint32_t from, uint32_t to) const {
     return (xor_checksum ^ _values->xor_checksum(element_from, element_to));
 }
 
+namespace {
+
+bool is_string_type_column(const Column* column) {
+    while (column->is_constant()) {
+        column = down_cast<const ConstColumn*>(column)->data_column().get();
+    }
+    if (column->is_nullable()) {
+        column = down_cast<const NullableColumn*>(column)->data_column().get();
+    }
+    return column->is_binary();
+}
+
+} // namespace
+
 void MapColumn::put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx, bool is_binary_protocol) const {
     DCHECK_LT(idx, size());
     const auto offsets_data = _offsets->immutable_data();
     const size_t offset = offsets_data[idx];
     const size_t map_size = offsets_data[idx + 1] - offset;
+
+    const bool raw_string_value = buf->map_value_raw_output() && is_string_type_column(_values.get());
 
     buf->begin_push_bracket();
     auto* keys = _keys.get();
@@ -537,13 +554,25 @@ void MapColumn::put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx, bool is_bi
     if (map_size > 0) {
         keys->put_mysql_row_buffer(buf, offset);
         buf->separator(':');
+        if (raw_string_value) {
+            buf->begin_map_value();
+        }
         values->put_mysql_row_buffer(buf, offset);
+        if (raw_string_value) {
+            buf->end_map_value();
+        }
     }
     for (size_t i = 1; i < map_size; i++) {
         buf->separator(',');
         keys->put_mysql_row_buffer(buf, offset + i);
         buf->separator(':');
+        if (raw_string_value) {
+            buf->begin_map_value();
+        }
         values->put_mysql_row_buffer(buf, offset + i);
+        if (raw_string_value) {
+            buf->end_map_value();
+        }
     }
     buf->finish_push_bracket();
 }

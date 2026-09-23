@@ -226,6 +226,15 @@ public class NormalizePredicateRule extends BottomUpScalarOperatorRewriteRule {
      * left  1  a  b
      * After rule:
      * left = 1 OR left = a OR left = b
+     *
+     * Only true literals (isConstantRef) are kept in the InPredicate, because BE's
+     * VectorizedInPredicate requires every IN-list value to evaluate to a constant column.
+     * A deterministic function with all-constant arguments (e.g. a UDF call) reports
+     * isConstant()==true but has no FE-side evaluator, so FoldConstantsRule can never fold it
+     * into a literal. Such a value must be rewritten to an equality predicate (lhs = expr),
+     * which BE evaluates per-row without the const requirement -- otherwise it reaches BE as a
+     * non-const InPredicate child and fails with "VectorizedInPredicate value not const".
+     * FoldConstantsRule is run before this rule so foldable expressions already became literals.
      */
     @Override
     public ScalarOperator visitInPredicate(InPredicateOperator predicate, ScalarOperatorRewriteContext context) {
@@ -233,7 +242,7 @@ public class NormalizePredicateRule extends BottomUpScalarOperatorRewriteRule {
         if (predicate.isSubquery()) {
             return predicate;
         }
-        if (rhs.stream().allMatch(ScalarOperator::isConstant)) {
+        if (rhs.stream().allMatch(ScalarOperator::isConstantRef)) {
             return predicate;
         }
 
@@ -241,7 +250,10 @@ public class NormalizePredicateRule extends BottomUpScalarOperatorRewriteRule {
         ScalarOperator lhs = predicate.getChild(0);
         boolean isIn = !predicate.isNotIn();
 
-        List<ScalarOperator> constants = predicate.getChildren().stream().skip(1).filter(ScalarOperator::isConstant)
+        // Only true literals (already folded) can stay in the InPredicate; non-foldable constant
+        // expressions (e.g. UDF calls) are pushed to equality predicates below.
+        List<ScalarOperator> constants = predicate.getChildren().stream().skip(1)
+                .filter(ScalarOperator::isConstantRef)
                 .collect(Collectors.toList());
         if (constants.size() == 1) {
             BinaryType op =
@@ -252,7 +264,8 @@ public class NormalizePredicateRule extends BottomUpScalarOperatorRewriteRule {
             result.add(new InPredicateOperator(predicate.isNotIn(), constants));
         }
 
-        predicate.getChildren().stream().skip(1).filter(ScalarOperator::isVariable).forEach(child -> {
+        // Everything that is not a true literal: column refs AND non-foldable constant expressions.
+        predicate.getChildren().stream().skip(1).filter(child -> !child.isConstantRef()).forEach(child -> {
             BinaryPredicateOperator newOp;
             if (isIn) {
                 newOp = new BinaryPredicateOperator(BinaryType.EQ, lhs, child);

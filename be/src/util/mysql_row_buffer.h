@@ -39,6 +39,7 @@
 #include "types/timestamp_value.h"
 #include "util/raw_container.h"
 #include "util/slice.h"
+#include "gutil/macros.h"
 
 namespace starrocks {
 
@@ -111,6 +112,14 @@ public:
     void begin_push_bracket() { _enter_scope('{'); }
     void finish_push_bracket() { _leave_scope('}'); }
 
+    void set_map_value_raw_output(bool v) { _map_value_raw_output = v; }
+    bool map_value_raw_output() const { return _map_value_raw_output; }
+    void begin_map_value() { ++_map_value_depth; }
+    void end_map_value() {
+        DCHECK_GT(_map_value_depth, 0);
+        --_map_value_depth;
+    }
+
     void separator(char c);
 
     int length() const { return _data.size(); }
@@ -144,6 +153,8 @@ private:
     // 0 means top-level; > 0 means inside at least one nested type.
     uint32_t _nesting_level = 0;
     uint32_t _array_offset = 0;
+    uint32_t _map_value_depth = 0;
+    bool _map_value_raw_output = false;
 
     bool _is_binary_format = false;
     // used for calculate null position if is_binary_format = true

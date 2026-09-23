@@ -533,6 +533,52 @@ public class ScalarOperatorFunctionsTest {
                         ConstantOperator.createVarchar("2022-10-18 01:02:03"),
                         ConstantOperator.createVarchar("%Y-%m-%d %H:%s")).getDatetime(),
                 "Unable to obtain LocalDateTime");
+
+        // Java SimpleDateFormat style format strings (the Hive/Spark convention) must
+        // parse to the same value as the equivalent strptime pattern. Note
+        // LocalDateTime.toString() drops a zero seconds field, hence "T00:00".
+        assertEquals("2013-05-17T00:00", ScalarOperatorFunctions.dateParse(
+                        ConstantOperator.createVarchar("20130517"),
+                        ConstantOperator.createVarchar("yyyyMMdd")).getDatetime().toString());
+        assertEquals("2013-05-17T00:00", ScalarOperatorFunctions.dateParse(
+                        ConstantOperator.createVarchar("2013-05-17"),
+                        ConstantOperator.createVarchar("yyyy-MM-dd")).getDatetime().toString());
+        assertEquals("2013-05-17T12:35:10", ScalarOperatorFunctions.dateParse(
+                        ConstantOperator.createVarchar("2013-05-17 12:35:10"),
+                        ConstantOperator.createVarchar("yyyy-MM-dd HH:mm:ss")).getDatetime().toString());
+    }
+
+    @Test
+    public void unixTimestampStringFormat() {
+        // The Java SimpleDateFormat style ("yyyyMMdd") and the strptime style
+        // ("%Y%m%d") must yield identical epoch seconds for the same date. The
+        // comparison is time-zone agnostic since both go through the same path.
+        long strptime = ScalarOperatorFunctions.unixTimestamp(
+                ConstantOperator.createVarchar("20260724"),
+                ConstantOperator.createVarchar("%Y%m%d")).getBigint();
+        long javaNodash = ScalarOperatorFunctions.unixTimestamp(
+                ConstantOperator.createVarchar("20260724"),
+                ConstantOperator.createVarchar("yyyyMMdd")).getBigint();
+        long javaDash = ScalarOperatorFunctions.unixTimestamp(
+                ConstantOperator.createVarchar("2026-07-24"),
+                ConstantOperator.createVarchar("yyyy-MM-dd")).getBigint();
+        assertEquals(strptime, javaNodash);
+        assertEquals(strptime, javaDash);
+
+        // The time part must be honoured (01:02:03 == 3723s past midnight).
+        long withTimeJava = ScalarOperatorFunctions.unixTimestamp(
+                ConstantOperator.createVarchar("2026-07-24 01:02:03"),
+                ConstantOperator.createVarchar("yyyy-MM-dd HH:mm:ss")).getBigint();
+        long withTimeStr = ScalarOperatorFunctions.unixTimestamp(
+                ConstantOperator.createVarchar("2026-07-24 01:02:03"),
+                ConstantOperator.createVarchar("%Y-%m-%d %H:%i:%s")).getBigint();
+        assertEquals(withTimeStr, withTimeJava);
+        assertEquals(3723L, withTimeJava - javaDash);
+
+        // An unparseable input must return NULL rather than a wrong value.
+        assertTrue(ScalarOperatorFunctions.unixTimestamp(
+                ConstantOperator.createVarchar("not-a-date"),
+                ConstantOperator.createVarchar("yyyyMMdd")).isNull());
     }
 
     @Test

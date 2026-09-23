@@ -536,7 +536,16 @@ public class ListPartitionPruner implements PartitionPruner {
         });
 
         return newMap;
-    }    
+    }
+
+    // Hive string partitions store values like "20260728", but SQL may use numeric literals (20260728).
+    // Cast the predicate literal to the partition column (or cast-column) type before map lookup.
+    private static LiteralExpr normalizeLiteralForPartitionLookup(LiteralExpr literal, Type targetType) {
+        if (literal.getType().matchesType(targetType)) {
+            return literal;
+        }
+        return castLiteralExpr(literal, targetType);
+    }
 
     // generate new partition value map using cast operator' type.
     // eg. string partition value cast to int
@@ -613,6 +622,7 @@ public class ListPartitionPruner implements PartitionPruner {
         ScalarOperatorToExpr.FormatterContext formatterContext =
                 new ScalarOperatorToExpr.FormatterContext(new HashMap<>());
         LiteralExpr literal = (LiteralExpr) ScalarOperatorToExpr.buildExecExpression(rightChild, formatterContext);
+        literal = normalizeLiteralForPartitionLookup(literal, binaryPredicate.getChild(0).getType());
 
         BinaryType type = binaryPredicate.getBinaryType();
         switch (type) {
@@ -760,11 +770,17 @@ public class ListPartitionPruner implements PartitionPruner {
             matches.removeAll(nullPartitions);
         }
 
+        Type targetType = inPredicate.getChild(0).getType();
         for (int i = 1; i < inPredicate.getChildren().size(); ++i) {
+            ConstantOperator inValue = evaluateConstant(inPredicate.getChild(i));
+            if (inValue == null) {
+                continue;
+            }
             ScalarOperatorToExpr.FormatterContext formatterContext =
                     new ScalarOperatorToExpr.FormatterContext(new HashMap<>());
             LiteralExpr literal =
-                    (LiteralExpr) ScalarOperatorToExpr.buildExecExpression(inPredicate.getChild(i), formatterContext);
+                    (LiteralExpr) ScalarOperatorToExpr.buildExecExpression(inValue, formatterContext);
+            literal = normalizeLiteralForPartitionLookup(literal, targetType);
             Set<Long> partitions = partitionValueMap.get(literal);
             if (partitions != null) {
                 if (inPredicate.isNotIn()) {

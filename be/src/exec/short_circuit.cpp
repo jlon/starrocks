@@ -44,6 +44,10 @@ public:
 
     Status prepare(RuntimeState* state) override {
         _row_buffer = new (std::nothrow) MysqlRowBuffer(_is_binary_format);
+        if (state->query_options().__isset.enable_map_value_raw_output &&
+            state->query_options().enable_map_value_raw_output) {
+            _row_buffer->set_map_value_raw_output(true);
+        }
 
         RETURN_IF_ERROR(Expr::create_expr_trees(state->obj_pool(), _t_exprs, &_output_expr_ctxs, state));
         RETURN_IF_ERROR(Expr::prepare(_output_expr_ctxs, state));

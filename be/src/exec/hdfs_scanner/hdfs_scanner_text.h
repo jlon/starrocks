@@ -59,6 +59,8 @@ private:
     std::string _field_delimiter;
     char _collection_delimiter;
     char _mapkey_delimiter;
+    char _enclose = 0;
+    char _escape = 0;
     int32_t _skip_header_line_count = 0;
     bool _need_probe_line_delimiter = false;
     // Always set true in data lake now.

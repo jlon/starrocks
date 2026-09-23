@@ -424,7 +424,7 @@ public class SelectAnalyzer {
                 // CollectionElementExpr with a new node.
                 Expr probed = expressionAnalyzer.analyzeWithoutUpdateState(expression, analyzeState, orderByScope);
                 List<Expr> aggregations = Lists.newArrayList();
-                probed.collectAll(ExprUtils::isAggregate, aggregations);
+                probed.collectAll(e -> ExprUtils.isAggregate(e), aggregations);
                 if (isDistinct && !aggregations.isEmpty()) {
                     throw new SemanticException("for SELECT DISTINCT, ORDER BY expressions must appear in select list",
                             expression.getPos());
@@ -1024,3 +1024,4 @@ public class SelectAnalyzer {
         return result;
     }
 }
+

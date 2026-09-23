@@ -25,6 +25,7 @@
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
 #include "testutil/parallel_test.h"
+#include "util/mysql_row_buffer.h"
 
 namespace starrocks {
 
@@ -1464,6 +1465,60 @@ TEST(MapColumnTest, test_hash) {
     column1->crc32_hash_at(&hash1, 0);
 
     ASSERT_EQ(hash, hash1);
+}
+
+// NOLINTNEXTLINE
+PARALLEL_TEST(MapColumnTest, test_put_mysql_row_buffer_raw_string_value) {
+    UInt32Column::Ptr offsets = UInt32Column::create();
+    BinaryColumn::Ptr keys_data = BinaryColumn::create();
+    NullableColumn::Ptr keys = NullableColumn::create(keys_data, NullColumn::create());
+    BinaryColumn::Ptr values_data = BinaryColumn::create();
+    NullableColumn::Ptr values = NullableColumn::create(values_data, NullColumn::create());
+    MapColumn::Ptr column = MapColumn::create(keys, values, offsets);
+
+    DatumMap map;
+    map[(Slice) "dcsEvents"] = (Slice) R"({"mark_":"0-7"})";
+    column->append_datum(map);
+
+    MysqlRowBuffer row_buffer;
+    row_buffer.set_map_value_raw_output(true);
+    column->put_mysql_row_buffer(&row_buffer, 0);
+    const auto& raw = row_buffer.data();
+    std::string content(raw.data() + 1, raw[0]);
+    ASSERT_EQ(R"({"dcsEvents":{"mark_":"0-7"}})", content);
+
+    MysqlRowBuffer default_row_buffer;
+    column->put_mysql_row_buffer(&default_row_buffer, 0);
+    const auto& default_raw = default_row_buffer.data();
+    std::string default_content(default_raw.data() + 1, default_raw[0]);
+    ASSERT_EQ(R"({"dcsEvents":"{\"mark_\":\"0-7\"}"})", default_content);
+}
+
+// NOLINTNEXTLINE
+PARALLEL_TEST(MapColumnTest, test_put_mysql_row_buffer_raw_string_value_long) {
+    std::string long_json = R"({"mark_":"0-7","payload_":")";
+    long_json.append(300, 'x');
+    long_json.append(R"("})");
+    ASSERT_GT(long_json.size(), 251U);
+
+    UInt32Column::Ptr offsets = UInt32Column::create();
+    BinaryColumn::Ptr keys_data = BinaryColumn::create();
+    NullableColumn::Ptr keys = NullableColumn::create(keys_data, NullColumn::create());
+    BinaryColumn::Ptr values_data = BinaryColumn::create();
+    NullableColumn::Ptr values = NullableColumn::create(values_data, NullColumn::create());
+    MapColumn::Ptr column = MapColumn::create(keys, values, offsets);
+
+    DatumMap map;
+    map[(Slice) "dcsEvents"] = (Slice) long_json;
+    column->append_datum(map);
+
+    MysqlRowBuffer row_buffer;
+    row_buffer.set_map_value_raw_output(true);
+    column->put_mysql_row_buffer(&row_buffer, 0);
+    const auto& raw = row_buffer.data();
+    std::string content(raw.data() + 1, raw[0]);
+    const std::string expected = "{\"dcsEvents\":" + long_json + "}";
+    ASSERT_EQ(expected, content);
 }
 
 } // namespace starrocks

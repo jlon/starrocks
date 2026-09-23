@@ -26,7 +26,6 @@ import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Table;
-import com.starrocks.type.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Pair;
 import com.starrocks.common.util.DebugUtil;
@@ -43,6 +42,7 @@ import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.expression.BinaryType;
 import com.starrocks.sql.ast.expression.ExprUtils;
 import com.starrocks.sql.ast.expression.LiteralExpr;
+import com.starrocks.sql.ast.expression.LiteralExprFactory;
 import com.starrocks.sql.common.ErrorType;
 import com.starrocks.sql.common.StarRocksPlannerException;
 import com.starrocks.sql.optimizer.OptimizerContext;
@@ -52,6 +52,7 @@ import com.starrocks.sql.optimizer.operator.logical.LogicalEsScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalScanOperator;
 import com.starrocks.sql.optimizer.operator.scalar.BinaryPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.CallOperator;
+import com.starrocks.sql.optimizer.operator.scalar.CastOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.CompoundPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
@@ -59,6 +60,7 @@ import com.starrocks.sql.optimizer.operator.scalar.InPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.LikePredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rule.transformation.ListPartitionPruner;
+import com.starrocks.type.Type;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.paimon.data.BinaryRow;
@@ -156,6 +158,9 @@ public class OptExternalPartitionPruner {
                 ScalarOperator leftChild = scalarOperator.getChild(0);
                 ScalarOperator rightChild = scalarOperator.getChild(1);
                 BinaryType binaryType = binary.getBinaryType();
+                // Skip cast(col) / cast(const): listPartitionNamesByValue matches the raw partition value string,
+                // so a constant whose type differs from the partition column would prune valid partitions away.
+                // buildHmsPartitionFilter handles the cast cases with proper literal coercion.
                 if (binaryType.isEqual() && leftChild.isColumnRef() && rightChild.isConstantRef()) {
                     equalPredicates.add(scalarOperator);
                 }
@@ -253,9 +258,13 @@ public class OptExternalPartitionPruner {
         }
 
         List<ScalarOperator> equalPredicates = getColumnEQConstantPredicates(predicate);
-        Map<ColumnRefOperator, ScalarOperator> equalPredicateMap = equalPredicates.stream().collect(
-                Collectors.toMap(rangePredicate -> rangePredicate.getChild(0).cast(),
-                        rangePredicate -> rangePredicate));
+        Map<ColumnRefOperator, ScalarOperator> equalPredicateMap = Maps.newHashMap();
+        for (ScalarOperator pred : equalPredicates) {
+            ColumnRefOperator columnRef = extractPartitionColumnRef(pred.getChild(0));
+            if (columnRef != null) {
+                equalPredicateMap.put(columnRef, pred);
+            }
+        }
 
         List<Optional<ScalarOperator>> effectivePartitionPredicate = Lists.newArrayList();
         for (Column partitionColumn : partitionColumns) {
@@ -319,11 +328,13 @@ public class OptExternalPartitionPruner {
             }
             ColumnRefOperator columnRef = extractPartitionColumnRef(binary.getChild(0));
             ScalarOperator right = binary.getChild(1);
-            if (columnRef == null || !right.isConstantRef() || !partitionColumnMap.containsKey(columnRef)) {
+            ConstantOperator constant = extractConstantOperand(right);
+            if (columnRef == null || constant == null || !partitionColumnMap.containsKey(columnRef)) {
                 // also allow constant on left, column on right for range/eq
                 columnRef = extractPartitionColumnRef(binary.getChild(1));
                 right = binary.getChild(0);
-                if (columnRef == null || !right.isConstantRef() || !partitionColumnMap.containsKey(columnRef)) {
+                constant = extractConstantOperand(right);
+                if (columnRef == null || constant == null || !partitionColumnMap.containsKey(columnRef)) {
                     return Optional.empty();
                 }
                 binaryType = flipBinaryType(binaryType);
@@ -332,7 +343,6 @@ public class OptExternalPartitionPruner {
                 }
             }
             Column partitionColumn = partitionColumnMap.get(columnRef);
-            ConstantOperator constant = (ConstantOperator) right;
             String literal = formatLiteralForHmsFilter(constant, partitionColumn.getType());
             if (literal == null) {
                 return Optional.empty();
@@ -351,10 +361,11 @@ public class OptExternalPartitionPruner {
             List<String> equals = Lists.newArrayList();
             for (int i = 1; i < inPredicate.getChildren().size(); i++) {
                 ScalarOperator child = inPredicate.getChild(i);
-                if (!child.isConstantRef()) {
+                ConstantOperator constant = extractConstantOperand(child);
+                if (constant == null) {
                     return Optional.empty();
                 }
-                String literal = formatLiteralForHmsFilter((ConstantOperator) child, partitionColumn.getType());
+                String literal = formatLiteralForHmsFilter(constant, partitionColumn.getType());
                 if (literal == null) {
                     return Optional.empty();
                 }
@@ -378,6 +389,19 @@ public class OptExternalPartitionPruner {
         if (operator.isColumnRef()) {
             return (ColumnRefOperator) operator;
         }
+        if (operator instanceof CastOperator && operator.getChild(0) != null && operator.getChild(0).isColumnRef()) {
+            return (ColumnRefOperator) operator.getChild(0);
+        }
+        return null;
+    }
+
+    private static ConstantOperator extractConstantOperand(ScalarOperator operator) {
+        if (operator instanceof ConstantOperator) {
+            return (ConstantOperator) operator;
+        }
+        if (operator instanceof CastOperator && operator.getChild(0).isConstantRef()) {
+            return (ConstantOperator) operator.getChild(0);
+        }
         return null;
     }
 
@@ -400,18 +424,27 @@ public class OptExternalPartitionPruner {
     }
 
     private static String formatLiteralForHmsFilter(ConstantOperator constant, Type partitionColumnType) {
-        if (constant.isNull() || !constant.getType().matchesType(partitionColumnType)) {
+        if (constant.isNull()) {
             return null;
         }
         boolean quoted = partitionColumnType.isStringType() || partitionColumnType.isDateType()
                 || partitionColumnType.isDatetime();
         String raw;
-        if (constant.getType().isStringType()) {
-            raw = constant.getVarchar();
-        } else if (constant.getType().isDate() || constant.getType().isDatetime()) {
-            raw = constant.toString();
+        if (constant.getType().matchesType(partitionColumnType)) {
+            if (constant.getType().isStringType()) {
+                raw = constant.getVarchar();
+            } else if (constant.getType().isDate() || constant.getType().isDatetime()) {
+                raw = constant.toString();
+            } else {
+                raw = constant.toString();
+            }
         } else {
-            raw = constant.toString();
+            try {
+                LiteralExpr literal = LiteralExprFactory.create(constant.toString(), partitionColumnType);
+                raw = literal.getStringValue();
+            } catch (AnalysisException e) {
+                return null;
+            }
         }
         if (quoted) {
             return "'" + raw.replace("'", "''") + "'";
@@ -424,7 +457,11 @@ public class OptExternalPartitionPruner {
         for (Optional<ScalarOperator> predicate : predicates) {
             if (predicate.isPresent()) {
                 Preconditions.checkState(predicate.get() instanceof BinaryPredicateOperator);
-                ConstantOperator constantOperator = predicate.get().getChild(1).cast();
+                ConstantOperator constantOperator = extractConstantOperand(predicate.get().getChild(1));
+                if (constantOperator == null) {
+                    partitionValues.add(Optional.empty());
+                    continue;
+                }
                 partitionValues.add(Optional.of(formatConstantForHivePartition(constantOperator)));
             } else {
                 partitionValues.add(Optional.empty());
@@ -495,9 +532,19 @@ public class OptExternalPartitionPruner {
                                         table.getCatalogTableName(), ConnectorMetadataRequestContext.DEFAULT);
                     }
                 } else {
-                    partitionNames = GlobalStateMgr.getCurrentState().getMetadataMgr()
-                            .listPartitionNames(table.getCatalogName(), table.getCatalogDBName(),
-                                    table.getCatalogTableName(), ConnectorMetadataRequestContext.DEFAULT);
+                    // check if the partition predicate could be used for filter partition names
+                    List<Optional<ScalarOperator>> effectivePartitionPredicate =
+                            getEffectivePartitionPredicate(operator, partitionColumns, operator.getPredicate());
+                    if (effectivePartitionPredicate.stream().anyMatch(Optional::isPresent)) {
+                        List<Optional<String>> partitionValues = getPartitionValue(effectivePartitionPredicate);
+                        partitionNames = GlobalStateMgr.getCurrentState().getMetadataMgr()
+                                .listPartitionNamesByValue(table.getCatalogName(), table.getCatalogDBName(),
+                                        table.getCatalogTableName(), partitionValues);
+                    } else {
+                        partitionNames = GlobalStateMgr.getCurrentState().getMetadataMgr()
+                                .listPartitionNames(table.getCatalogName(), table.getCatalogDBName(),
+                                        table.getCatalogTableName(), ConnectorMetadataRequestContext.DEFAULT);
+                    }
                 }
 
                 List<PartitionKey> keys = new ArrayList<>();
@@ -688,6 +735,7 @@ public class OptExternalPartitionPruner {
         if (operator instanceof BinaryPredicateOperator) {
             ScalarOperator leftChild = operator.getChild(0);
             ScalarOperator rightChild = operator.getChild(1);
+            // Skip cast(col) / cast(const): min/max file pruning requires a raw column vs constant.
             if (!(leftChild.isColumnRef()) || !(rightChild.isConstantRef())) {
                 return false;
             }
