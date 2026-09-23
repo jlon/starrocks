@@ -21,26 +21,19 @@
 #include <shared_mutex>
 #include <utility>
 
+#include "agent/master_info.h"
 #include "column/chunk.h"
 #include "column/column.h"
-#include "column/raw_data_visitor.h"
-#include "common/config_ingest_fwd.h"
-#include "common/config_lake_fwd.h"
-#include "common/config_primary_key_fwd.h"
-#include "common/config_storage_fwd.h"
-#include "common/system/master_info.h"
-#include "compute_env/load_spill/load_spill_block_manager.h"
+#include "common/config.h"
 #include "fs/bundle_file.h"
 #include "runtime/current_thread.h"
-#include "runtime/descriptors.h"
+#include "runtime/exec_env.h"
 #include "runtime/load_fail_point.h"
 #include "runtime/mem_tracker.h"
-#include "runtime/runtime_env.h"
 #include "storage/chunk_helper.h"
 #include "storage/del_vector.h"
 #include "storage/delta_writer.h"
 #include "storage/lake/filenames.h"
-#include "storage/lake/load_spill_pipeline_merge_context.h"
 #include "storage/lake/meta_file.h"
 #include "storage/lake/metacache.h"
 #include "storage/lake/pk_tablet_writer.h"
@@ -52,12 +45,13 @@
 #include "storage/lake/tablet_write_log_manager.h"
 #include "storage/lake/tablet_writer.h"
 #include "storage/lake/update_manager.h"
+#include "storage/load_spill_block_manager.h"
+#include "storage/load_spill_pipeline_merge_context.h"
 #include "storage/memtable.h"
 #include "storage/memtable_sink.h"
+#include "storage/primary_key_encoder.h"
 #include "storage/storage_engine.h"
-#include "storage/storage_env.h"
-#include "storage/storage_metrics.h"
-#include "storage_primitive/primary_key_encoder.h"
+#include "util/starrocks_metrics.h"
 
 namespace starrocks::lake {
 
@@ -125,8 +119,8 @@ public:
                              int64_t schema_id, const PartialUpdateMode& partial_update_mode,
                              const std::map<string, string>* column_to_expr_value, PUniqueId load_id,
                              RuntimeProfile* profile, BundleWritableFileContext* bundle_writable_file_context,
-                             GlobalDictByNameMaps* global_dicts, bool is_multi_statements_txn, bool multi_node_write,
-                             std::shared_ptr<const TabletSchema> tablet_schema, bool force_build_vector_index_inline)
+                             GlobalDictByNameMaps* global_dicts, bool is_multi_statements_txn,
+                             std::shared_ptr<const TabletSchema> tablet_schema)
             : _tablet_manager(tablet_manager),
               _tablet_id(tablet_id),
               _txn_id(txn_id),
@@ -147,9 +141,7 @@ public:
               _profile(profile),
               _bundle_writable_file_context(bundle_writable_file_context),
               _global_dicts(global_dicts),
-              _is_multi_statements_txn(is_multi_statements_txn),
-              _multi_node_write(multi_node_write),
-              _force_build_vector_index_inline(force_build_vector_index_inline) {}
+              _is_multi_statements_txn(is_multi_statements_txn) {}
 
     ~DeltaWriterImpl() = default;
 
@@ -164,6 +156,10 @@ public:
     Status finish();
 
     void close();
+
+    void flush_and_wait();
+
+    void release_resources();
 
     void cancel(const Status& st);
 
@@ -235,10 +231,9 @@ public:
 
     bool already_finished() const { return _already_finished; }
 
-    // Returns the status passed to `cancel()`, or OK if the writer has never been cancelled.
+private:
     Status current_cancel_status() const;
 
-private:
     Status reset_memtable();
 
     Status fill_auto_increment_id(Chunk& chunk);
@@ -335,13 +330,6 @@ private:
 
     GlobalDictByNameMaps* _global_dicts = nullptr;
     bool _is_multi_statements_txn = false;
-    // See TOlapTableSink.enable_multi_node_write: this writer holds only PART of the tablet's rows for
-    // this transaction, so the txn log it produces must not be cached as if it were the whole thing.
-    bool _multi_node_write = false;
-    // When true, the internal TabletWriter builds the vector index inline (overriding async
-    // index_build_mode). Set by lake schema-change conversions (SortedSchemaChange) so the
-    // shadow tablet's existing data is fully indexed during the ALTER, matching DirectSchemaChange.
-    bool _force_build_vector_index_inline = false;
 
     // Record the time when DeltaWriter is opened
     int64_t _begin_time_ms = 0;
@@ -445,21 +433,6 @@ Status DeltaWriterImpl::build_schema_and_writer() {
                     _tablet_manager, _tablet_id, _write_schema, _txn_id, false, nullptr, _bundle_writable_file_context,
                     _global_dicts);
         }
-        if (_force_build_vector_index_inline) {
-            _tablet_writer->force_set_build_vector_index_inline();
-        }
-        // A column partial-update publish routes through UpdateManager::_handle_delete_files, which erases
-        // every del file via the memtable path and never reads op_write.del_ssts(). Building a tombstone
-        // sstable here would cost a full sort+SST write at import and then leave the file orphaned (it never
-        // reaches sstable_meta(), so only a full vacuum's orphan scan reclaims it), with no publish speedup
-        // in return. The del file itself is still written and carried normally.
-        // The condition mirrors the publish-side dispatch exactly: txn_meta (and with it the mode publish
-        // reads) is only emitted for a real partial update, so a full-column write keeps the optimization
-        // even when the load carries a column mode.
-        if (is_partial_update() && (_partial_update_mode == PartialUpdateMode::COLUMN_UPDATE_MODE ||
-                                    _partial_update_mode == PartialUpdateMode::COLUMN_UPSERT_MODE)) {
-            _tablet_writer->set_skip_del_tombstone_sstable();
-        }
         RETURN_IF_ERROR(_tablet_writer->open());
         if (should_enable_load_spill()) {
             // Eager PK-index build (the unsort SST writer that a separate-sort-key spill load needs to
@@ -478,7 +451,6 @@ Status DeltaWriterImpl::build_schema_and_writer() {
                         UniqueId(_tablet_id, _txn_id)
                                 .to_thrift(), // use tablet id + txn id to generate fragment instance id
                         _tablet_manager->tablet_root_location(_tablet_id), nullptr,
-                        StorageEnv::GetInstance()->spill_dir_mgr(),
                         /*enable_flat_layout=*/true, _txn_id);
                 RETURN_IF_ERROR(_load_spill_block_mgr->init());
             }
@@ -627,9 +599,9 @@ inline Status DeltaWriterImpl::flush() {
     watch.start();
     DeferOp defer([&] {
         ADD_COUNTER_RELAXED(_stats.write_wait_flush_time_ns, watch.elapsed_time());
-        StorageMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
-        StorageMetrics::instance()->delta_writer_wait_flush_duration_us.increment(watch.elapsed_time() /
-                                                                                  NANOSECS_PER_USEC);
+        StarRocksMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
+        StarRocksMetrics::instance()->delta_writer_wait_flush_duration_us.increment(watch.elapsed_time() /
+                                                                                    NANOSECS_PER_USEC);
     });
     if (_flush_token == nullptr) {
         // This will happen when flush is invoked before any write.
@@ -678,9 +650,7 @@ Status DeltaWriterImpl::check_partial_update_with_sort_key(const Chunk& chunk) {
         if (_slots != nullptr && _slots->back()->col_name() == "__op") {
             size_t op_column_id = chunk.num_columns() - 1;
             const auto& op_column = chunk.get_column_by_index(op_column_id);
-            RawDataVisitor visitor;
-            RETURN_IF_ERROR(op_column->accept(&visitor));
-            const auto* ops = visitor.result();
+            auto* ops = reinterpret_cast<const uint8_t*>(op_column->raw_data());
             ok = !std::any_of(ops, ops + chunk.num_rows(), [](auto op) { return op == TOpType::UPSERT; });
         } else {
             ok = false;
@@ -701,10 +671,6 @@ Status DeltaWriterImpl::check_partial_update_with_sort_key(const Chunk& chunk) {
 
 Status DeltaWriterImpl::write(const Chunk& chunk, const uint32_t* indexes, uint32_t indexes_size) {
     SCOPED_THREAD_LOCAL_MEM_SETTER(_mem_tracker, false);
-    // A column addresses its bytes with uint32 offsets, so a chunk wider than that cannot be
-    // carried through to apply. Fail the load here, where the statement can still be retried with
-    // less data per batch, rather than let it commit and leave apply to fail on every retry.
-    RETURN_IF_ERROR(ChunkHelper::reject_if_over_capacity(chunk, "load chunk", _tablet_id, _txn_id));
 
     // Fast-fail if writer has been cancelled.
     auto cancel_st = current_cancel_status();
@@ -715,7 +681,7 @@ Status DeltaWriterImpl::write(const Chunk& chunk, const uint32_t* indexes, uint3
     if (_mem_table == nullptr) {
         // When loading memory usage is larger than hard limit, we will reject new loading task.
         if (!config::enable_new_load_on_memory_limit_exceeded &&
-            is_tracker_hit_hard_limit(RuntimeEnv::GetInstance()->load_mem_tracker(),
+            is_tracker_hit_hard_limit(GlobalEnv::GetInstance()->load_mem_tracker(),
                                       config::load_process_max_memory_hard_limit_ratio)) {
             return Status::MemoryLimitExceeded(
                     "memory limit exceeded, please reduce load frequency or increase config "
@@ -844,13 +810,13 @@ StatusOr<TxnLogPtr> DeltaWriterImpl::finish_with_txnlog(DeltaWriterFinishMode mo
     watch.start();
     DeferOp defer([&] {
         ADD_COUNTER_RELAXED(_stats.finish_time_ns, watch.elapsed_time());
-        StorageMetrics::instance()->delta_writer_commit_task_total.increment(1);
+        StarRocksMetrics::instance()->delta_writer_commit_task_total.increment(1);
     });
     RETURN_IF_ERROR(finish());
     auto wait_flush_ts = watch.elapsed_time();
     ADD_COUNTER_RELAXED(_stats.finish_wait_flush_time_ns, wait_flush_ts);
-    StorageMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
-    StorageMetrics::instance()->delta_writer_wait_flush_duration_us.increment(wait_flush_ts / NANOSECS_PER_USEC);
+    StarRocksMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
+    StarRocksMetrics::instance()->delta_writer_wait_flush_duration_us.increment(wait_flush_ts / NANOSECS_PER_USEC);
 
     if (UNLIKELY(_txn_id < 0)) {
         return Status::InvalidArgument(fmt::format("negative txn id: {}", _txn_id));
@@ -897,13 +863,6 @@ StatusOr<TxnLogPtr> DeltaWriterImpl::finish_with_txnlog(DeltaWriterFinishMode mo
                 op_write->add_del_op_offsets(i < del_op_offsets.size() ? del_op_offsets[i] : kUnknownDelOpOffset);
             }
         }
-        // Carry the per-del tombstone count (parallel to dels_meta, index by del_id). Unlike
-        // del_op_offsets this has no downgrade-safety concern: a pre-fix reader simply ignores
-        // DelfileWithRowsetId.num_rows, so it is emitted unconditionally.
-        const auto& del_num_rows = _tablet_writer->del_num_rows();
-        for (size_t i = 0; i < del_idx; ++i) {
-            op_write->add_del_num_rows(i < del_num_rows.size() ? del_num_rows[i] : 0);
-        }
     }
     for (const auto& sst : _tablet_writer->ssts()) {
         to_file_meta_pb(sst, op_write->add_ssts());
@@ -928,13 +887,6 @@ StatusOr<TxnLogPtr> DeltaWriterImpl::finish_with_txnlog(DeltaWriterFinishMode mo
                 seg_delvec_pb->set_data(dv.save());
             }
         }
-    }
-    // Threshold-based pre-built tombstone sstables for the del files, parallel to dels_meta.
-    for (const auto& del_sst : _tablet_writer->del_ssts()) {
-        to_file_meta_pb(del_sst, op_write->add_del_ssts());
-    }
-    for (auto& del_sst_range : _tablet_writer->del_sst_ranges()) {
-        op_write->add_del_sst_ranges()->CopyFrom(del_sst_range);
     }
     op_write->mutable_rowset()->set_num_rows(_tablet_writer->num_rows());
     op_write->mutable_rowset()->set_data_size(_tablet_writer->data_size());
@@ -1019,14 +971,7 @@ StatusOr<TxnLogPtr> DeltaWriterImpl::finish_with_txnlog(DeltaWriterFinishMode mo
         VLOG(2) << "Wrote txn log for tablet=" << _tablet_id << " txn=" << _txn_id
                 << " load_id=" << UniqueId(_load_id).to_string();
     } else {
-        if (_multi_node_write) {
-            // Under multi-node write this log covers only the rows THIS node received, while the cache key
-            // below claims to hold the tablet's whole transaction. publish consults that key before
-            // reading the aggregated {txn_id}.logs and would stop at this partial log, dropping every
-            // other node's data. Skipping the fill makes publish miss and read the aggregated file.
-            VLOG(2) << "Skipped caching partial multi-node write txn log for tablet=" << _tablet_id
-                    << " txn=" << _txn_id;
-        } else if (_is_multi_statements_txn) {
+        if (_is_multi_statements_txn) {
             auto cache_key = _tablet_manager->txn_log_location(_tablet_id, _txn_id, _load_id);
             _tablet_manager->metacache()->cache_txn_log(cache_key, txn_log);
         } else {
@@ -1039,8 +984,8 @@ StatusOr<TxnLogPtr> DeltaWriterImpl::finish_with_txnlog(DeltaWriterFinishMode mo
     auto put_txn_log_ts = watch.elapsed_time();
     auto commit_txn_duration_ns = put_txn_log_ts - prepare_txn_log_ts;
     ADD_COUNTER_RELAXED(_stats.finish_put_txn_log_time_ns, commit_txn_duration_ns);
-    StorageMetrics::instance()->delta_writer_txn_commit_duration_us.increment(commit_txn_duration_ns /
-                                                                              NANOSECS_PER_USEC);
+    StarRocksMetrics::instance()->delta_writer_txn_commit_duration_us.increment(commit_txn_duration_ns /
+                                                                                NANOSECS_PER_USEC);
     VLOG(2) << "txn_log: " << txn_log->DebugString();
 
     if (config::enable_tablet_write_log) {
@@ -1064,7 +1009,6 @@ Status DeltaWriterImpl::fill_auto_increment_id(Chunk& chunk) {
     ASSIGN_OR_RETURN(auto tablet, _tablet_manager->get_tablet(_tablet_id));
     // 1. get pk column from chunk
     vector<uint32_t> pk_columns;
-    pk_columns.reserve(_write_schema->num_key_columns());
     for (size_t i = 0; i < _write_schema->num_key_columns(); i++) {
         pk_columns.push_back((uint32_t)i);
     }
@@ -1130,20 +1074,21 @@ Status DeltaWriterImpl::fill_auto_increment_id(Chunk& chunk) {
     return Status::OK();
 }
 
-void DeltaWriterImpl::close() {
+void DeltaWriterImpl::flush_and_wait() {
     SCOPED_THREAD_LOCAL_MEM_SETTER(_mem_tracker, false);
-    auto start_time = MonotonicNanos();
-    DeferOp defer([&] { ADD_COUNTER_RELAXED(_stats.close_time_ns, MonotonicNanos() - start_time); });
     if (_flush_token != nullptr) {
         auto st = _flush_token->wait();
         LOG_IF(WARNING, !st.ok()) << "flush token error: " << st;
         VLOG(3) << "Tablet_id: " << tablet_id() << ", flush stats: " << _flush_token->get_stats();
     }
-
-    // Destruct variables manually for counting memory usage into |_mem_tracker|
     if (_tablet_writer != nullptr) {
         _tablet_writer->close();
     }
+}
+
+void DeltaWriterImpl::release_resources() {
+    SCOPED_THREAD_LOCAL_MEM_SETTER(_mem_tracker, false);
+    // Destruct variables manually for counting memory usage into |_mem_tracker|
     _tablet_writer.reset();
     _mem_table.reset();
     _mem_table_sink.reset();
@@ -1164,6 +1109,14 @@ void DeltaWriterImpl::close() {
     _tablet_schema.reset();
     _write_schema.reset();
     _merge_condition.clear();
+}
+
+void DeltaWriterImpl::close() {
+    SCOPED_THREAD_LOCAL_MEM_SETTER(_mem_tracker, false);
+    auto start_time = MonotonicNanos();
+    DeferOp defer([&] { ADD_COUNTER_RELAXED(_stats.close_time_ns, MonotonicNanos() - start_time); });
+    flush_and_wait();
+    release_resources();
 }
 
 void DeltaWriterImpl::cancel(const Status& st) {
@@ -1249,12 +1202,16 @@ void DeltaWriter::close() {
     _impl->close();
 }
 
-void DeltaWriter::cancel(const Status& st) {
-    _impl->cancel(st);
+void DeltaWriter::flush_and_wait() {
+    _impl->flush_and_wait();
 }
 
-Status DeltaWriter::cancel_status() const {
-    return _impl->current_cancel_status();
+void DeltaWriter::release_resources() {
+    _impl->release_resources();
+}
+
+void DeltaWriter::cancel(const Status& st) {
+    _impl->cancel(st);
 }
 
 int64_t DeltaWriter::partition_id() const {
@@ -1392,11 +1349,11 @@ StatusOr<DeltaWriterBuilder::DeltaWriterPtr> DeltaWriterBuilder::build() {
         return Status::InvalidArgument(
                 fmt::format("tablet_schema id {} mismatches schema_id {}", _tablet_schema->id(), _schema_id));
     }
-    auto impl = new DeltaWriterImpl(
-            _tablet_mgr, _tablet_id, _txn_id, _partition_id, _slots, _merge_condition, _miss_auto_increment_column,
-            _db_id, _table_id, _immutable_tablet_size, _mem_tracker, _max_buffer_size, _schema_id, _partial_update_mode,
-            _column_to_expr_value, _load_id, _profile, _bundle_writable_file_context, _global_dicts,
-            _is_multi_statements_txn, _multi_node_write, _tablet_schema, _force_build_vector_index_inline);
+    auto impl = new DeltaWriterImpl(_tablet_mgr, _tablet_id, _txn_id, _partition_id, _slots, _merge_condition,
+                                    _miss_auto_increment_column, _db_id, _table_id, _immutable_tablet_size,
+                                    _mem_tracker, _max_buffer_size, _schema_id, _partial_update_mode,
+                                    _column_to_expr_value, _load_id, _profile, _bundle_writable_file_context,
+                                    _global_dicts, _is_multi_statements_txn, _tablet_schema);
     return std::make_unique<DeltaWriter>(impl);
 }
 

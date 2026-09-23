@@ -12,17 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "io/io_profiler.h"
+#include "io_profiler.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <thread>
-#include <unordered_map>
+#include <unordered_set>
 
 #include "fmt/format.h"
-#include "io/io_profiler_metrics.h"
+#include "util/stack_util.h"
+#include "util/starrocks_metrics.h"
+#include "util/system_metrics.h"
 
 namespace starrocks {
 
@@ -99,8 +100,7 @@ struct IOStatEntry {
         uint64_t tablet_id = id & 0x0000FFFFFFFFFFFFUL;
         return fmt::format("{:>10} {:>10} {:>16} {:>8} {:>16} {:>8} {:>16} {:>8}", tablet_id,
                            IOProfiler::tag_to_string(tag), read_bytes.load(), read_ops.load(), write_bytes.load(),
-                           write_ops.load(), read_bytes.load() + write_bytes.load(),
-                           read_ops.load() + write_ops.load());
+                           write_ops.load(), read_bytes + write_bytes, read_ops + write_ops);
     }
 };
 
@@ -206,14 +206,25 @@ void IOProfiler::_add_tls_read(int64_t bytes, int64_t latency_ns) {
     tls_io_stat.read_ops += 1;
     tls_io_stat.read_bytes += bytes;
     tls_io_stat.read_time_ns += latency_ns;
-    IOProfilerMetrics::instance()->record_read(current_io_tag, bytes);
+    auto* metrics = StarRocksMetrics::instance()->system_metrics()->get_io_metrics_by_tag(current_io_tag);
+    if (UNLIKELY(metrics == nullptr)) {
+        // some r/w operations may be performed before metrics are initialized, in which case updating metrics is ignored.
+        return;
+    }
+    metrics->read_ops.increment(1);
+    metrics->read_bytes.increment(bytes);
 }
 
 void IOProfiler::_add_tls_write(int64_t bytes, int64_t latency_ns) {
     tls_io_stat.write_ops += 1;
     tls_io_stat.write_bytes += bytes;
     tls_io_stat.write_time_ns += latency_ns;
-    IOProfilerMetrics::instance()->record_write(current_io_tag, bytes);
+    auto* metrics = StarRocksMetrics::instance()->system_metrics()->get_io_metrics_by_tag(current_io_tag);
+    if (UNLIKELY(metrics == nullptr)) {
+        return;
+    }
+    metrics->write_ops.increment(1);
+    metrics->write_bytes.increment(bytes);
 }
 
 void IOProfiler::_add_tls_sync(int64_t latency_ns) {

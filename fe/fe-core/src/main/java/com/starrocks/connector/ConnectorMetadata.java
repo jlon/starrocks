@@ -19,7 +19,6 @@ import com.google.common.collect.Lists;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.IcebergTable;
-import com.starrocks.catalog.MvId;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.AlreadyExistsException;
@@ -43,7 +42,7 @@ import com.starrocks.sql.ast.AlterTableStmt;
 import com.starrocks.sql.ast.AlterViewStmt;
 import com.starrocks.sql.ast.CancelRefreshMaterializedViewStmt;
 import com.starrocks.sql.ast.CreateMaterializedViewStatement;
-import com.starrocks.sql.ast.CreateSyncMVStmt;
+import com.starrocks.sql.ast.CreateMaterializedViewStmt;
 import com.starrocks.sql.ast.CreateTableLikeStmt;
 import com.starrocks.sql.ast.CreateTableStmt;
 import com.starrocks.sql.ast.CreateViewStmt;
@@ -134,22 +133,13 @@ public interface ConnectorMetadata {
     }
 
     /**
-     * Lazily fetch the table comment when a caller really needs it
-     * (e.g. information_schema.tables). Default implementation returns
-     * the comment already on the cached Table object — i.e. for Iceberg
-     * the comment travels with getTable() so this is free. JDBC overrides
-     * to issue a dedicated REMARKS query.
+     * Lazily fetch the table comment when a caller really needs it.
+     * The default implementation reuses the comment already carried by
+     * getTable(); JDBC overrides this to issue a dedicated REMARKS query.
      */
     default String getTableComment(ConnectContext context, String dbName, String tblName) {
         Table table = getTable(context, dbName, tblName);
         return table == null ? "" : Strings.nullToEmpty(table.getComment());
-    }
-
-    /**
-     * Build a temporary table from a pass-through query when the connector can infer the result schema.
-     */
-    default Table getTableFromQuery(ConnectContext context, String dbName, String query) {
-        return null;
     }
 
     /**
@@ -168,15 +158,6 @@ public interface ConnectorMetadata {
      */
     default TvrTableSnapshot getCurrentTvrSnapshot(String dbName, Table table) {
         return TvrTableSnapshot.empty();
-    }
-
-    /**
-     * Like {@link #getCurrentTvrSnapshot} but lets storages that pin snapshots
-     * per caller attach a reference for {@code mvId} as a side effect. Default
-     * is a pure read.
-     */
-    default TvrTableSnapshot acquireTvrSnapshot(String dbName, Table table, MvId mvId) {
-        return getCurrentTvrSnapshot(dbName, table);
     }
 
     /**
@@ -224,6 +205,10 @@ public interface ConnectorMetadata {
 
     default RemoteFileInfoSource getRemoteFilesAsync(Table table, GetRemoteFilesParams params) {
         return RemoteFileInfoDefaultSource.EMPTY;
+    }
+
+    default List<PartitionInfo> getRemotePartitions(Table table, List<String> partitionNames) {
+        return Lists.newArrayList();
     }
 
     /**
@@ -375,7 +360,7 @@ public interface ConnectorMetadata {
     default void renamePartition(Database db, Table table, PartitionRenameClause renameClause) throws DdlException {
     }
 
-    default void createMaterializedView(CreateSyncMVStmt stmt)
+    default void createMaterializedView(CreateMaterializedViewStmt stmt)
             throws AnalysisException, DdlException {
     }
 

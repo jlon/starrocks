@@ -17,19 +17,18 @@
 #include <map>
 
 #include "storage/rowset/column_writer.h"
-#include "storage/rowset/object_column_writer.h"
 
 namespace starrocks {
 class BloomFilter;
 
 StatusOr<std::unique_ptr<ColumnWriter>> create_json_column_writer(const ColumnWriterOptions& opts,
                                                                   TypeInfoPtr type_info, WritableFile* wfile,
-                                                                  std::unique_ptr<ObjectColumnWriter> json_writer);
+                                                                  std::unique_ptr<ScalarColumnWriter> json_writer);
 
 class FlatJsonColumnWriter : public ColumnWriter {
 public:
     FlatJsonColumnWriter(const ColumnWriterOptions& opts, TypeInfoPtr type_info, WritableFile* wfile,
-                         std::unique_ptr<ObjectColumnWriter> json_writer);
+                         std::unique_ptr<ScalarColumnWriter> json_writer);
 
     ~FlatJsonColumnWriter() override = default;
 
@@ -47,15 +46,6 @@ public:
     Status write_ordinal_index() override;
     Status write_zone_map() override;
     Status write_bitmap_index() override;
-    // Same order as write_ordinal_index(): the flat children first, then the root JSON writer.
-    // Omitting the root leaves its ColumnMetaPB without an ordinal index, which ColumnReader::_init()
-    // rejects as a corrupt segment.
-    void take_ordinal_index_builders(std::vector<DeferredOrdinalIndex>* out) override {
-        for (auto& w : _flat_writers) {
-            w->take_ordinal_index_builders(out);
-        }
-        _json_writer->take_ordinal_index_builders(out);
-    }
     Status write_bloom_filter_index() override;
     ordinal_t get_next_rowid() const override;
 
@@ -76,7 +66,7 @@ private:
 protected:
     ColumnMetaPB* _json_meta;
     WritableFile* _wfile;
-    std::unique_ptr<ObjectColumnWriter> _json_writer;
+    std::unique_ptr<ScalarColumnWriter> _json_writer;
 
     std::vector<std::unique_ptr<ColumnWriter>> _flat_writers;
     std::vector<std::string> _flat_paths;
@@ -86,7 +76,7 @@ protected:
     MutableColumns _json_datas;
     size_t _estimate_size = 0;
 
-    bool _has_remain = false;
+    bool _has_remain;
     std::shared_ptr<BloomFilter> _remain_filter;
     bool _is_flat = false;
     const FlatJsonConfig* _flat_json_config = nullptr;
@@ -98,16 +88,5 @@ protected:
 
     // Track global dict validity for each sub-column
     std::map<std::string, bool> _subcolumn_dict_valid;
-
-    // captured from the parent ColumnWriterOptions so it can be propagated to
-    // the flat string/JSON sub-columns (the `remain` blob is the primary target).
-    // The fallback plain _json_writer already carries this flag via its own opts.
-    bool _use_zstd_compression = false;
-    // The parent column's data page size. The flattened sub-columns are what
-    // actually holds the data, so a per-column page size that stopped at the
-    // parent would have no effect on a JSON column at all.
-    uint32_t _data_page_size = 0;
-    uint32_t _zstd_compression_dict_sample_bytes = 0;
-    double _zstd_compression_dict_min_gain = 0;
 };
 } // namespace starrocks

@@ -25,14 +25,9 @@
 #include "storage/lake/txn_log.h"
 #include "storage/lake/types_fwd.h"
 #include "storage/olap_common.h"
+#include "storage/primary_key_encoding_types.h"
 #include "storage/rowset/rowset_meta.h"
-#include "storage_primitive/primary_key_encoding_types.h"
 #include "tablet_manager.h"
-
-namespace starrocks {
-class RemoteSnapshotClient;
-class ThreadPool;
-} // namespace starrocks
 
 using starrocks::FileConverterCreatorFunc;
 
@@ -51,20 +46,13 @@ struct DelTranscodeContext {
 
 class ReplicationTxnManager {
 public:
-    explicit ReplicationTxnManager(lake::TabletManager* tablet_manager, RemoteSnapshotClient* snapshot_client = nullptr)
-            : _tablet_manager(tablet_manager), _snapshot_client(snapshot_client) {
+    explicit ReplicationTxnManager(lake::TabletManager* tablet_manager) : _tablet_manager(tablet_manager) {
         _lake_replication_txn_manager = std::make_unique<LakeReplicationTxnManager>(tablet_manager);
-    }
-
-    RemoteSnapshotClient* TEST_set_remote_snapshot_client(RemoteSnapshotClient* snapshot_client) {
-        auto* previous = _snapshot_client;
-        _snapshot_client = snapshot_client;
-        return previous;
     }
 
     Status remote_snapshot(const TRemoteSnapshotRequest& request, TSnapshotInfo* src_snapshot_info);
 
-    Status replicate_snapshot(const TReplicateSnapshotRequest& request, ThreadPool* replicate_file_thread_pool);
+    Status replicate_snapshot(const TReplicateSnapshotRequest& request);
 
     Status clear_snapshots(const TxnLogPtr& txn_slog);
 
@@ -135,7 +123,6 @@ private:
 
 private:
     lake::TabletManager* _tablet_manager;
-    RemoteSnapshotClient* _snapshot_client = nullptr;
     std::unique_ptr<LakeReplicationTxnManager> _lake_replication_txn_manager;
 };
 

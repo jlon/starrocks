@@ -22,7 +22,7 @@
 #include "bthread/condition_variable.h"
 #include "bthread/mutex.h"
 #include "common/status.h"
-#include "common/thread/threadpool.h"
+#include "util/threadpool.h"
 
 namespace starrocks {
 

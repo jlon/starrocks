@@ -40,21 +40,14 @@
 
 #include <memory>
 
-#include "base/failpoint/fail_point.h"
-#include "base/hash/crc32c.h"
-#include "base/string/slice.h"
-#include "base/utility/defer_op.h"
 #include "column/column_access_path.h"
-#include "column/flat_json/json_flat_path.h"
 #include "column/schema.h"
-#include "common/bloom_filter.h"
-#include "common/config_rowset_fwd.h"
 #include "common/logging.h"
+#include "fs/key_cache.h"
 #include "gutil/strings/split.h"
 #include "gutil/strings/substitute.h"
-#include "platform/key_cache.h"
 #include "runtime/current_thread.h"
-#include "runtime/runtime_env.h"
+#include "runtime/exec_env.h"
 #include "segment_iterator.h"
 #include "segment_options.h"
 #include "storage/lake/tablet_manager.h"
@@ -65,9 +58,14 @@
 #include "storage/rowset/page_io.h"
 #include "storage/rowset/scalar_column_iterator.h"
 #include "storage/rowset/segment_writer.h" // k_segment_magic_length
-#include "storage/storage_metrics.h"
 #include "storage/tablet_schema.h"
 #include "storage/utils.h"
+#include "util/crc32c.h"
+#include "util/defer_op.h"
+#include "util/failpoint/fail_point.h"
+#include "util/json_flattener.h"
+#include "util/slice.h"
+#include "util/starrocks_metrics.h"
 
 bvar::Adder<int> g_open_segments;    // NOLINT
 bvar::Adder<int> g_open_segments_io; // NOLINT
@@ -239,12 +237,12 @@ Segment::Segment(std::shared_ptr<FileSystem> fs, FileInfo segment_file_info, uin
           _tablet_schema(std::move(tablet_schema)),
           _segment_id(segment_id),
           _tablet_manager(tablet_manager) {
-    MEM_TRACKER_SAFE_CONSUME(RuntimeEnv::GetInstance()->segment_metadata_mem_tracker(), _basic_info_mem_usage());
+    MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->segment_metadata_mem_tracker(), _basic_info_mem_usage());
 }
 
 Segment::~Segment() {
-    MEM_TRACKER_SAFE_RELEASE(RuntimeEnv::GetInstance()->segment_metadata_mem_tracker(), _basic_info_mem_usage());
-    MEM_TRACKER_SAFE_RELEASE(RuntimeEnv::GetInstance()->short_key_index_mem_tracker(), _short_key_index_mem_usage());
+    MEM_TRACKER_SAFE_RELEASE(GlobalEnv::GetInstance()->segment_metadata_mem_tracker(), _basic_info_mem_usage());
+    MEM_TRACKER_SAFE_RELEASE(GlobalEnv::GetInstance()->short_key_index_mem_tracker(), _short_key_index_mem_usage());
 }
 
 Status Segment::open(size_t* footer_length_hint, const FooterPointerPB* partial_rowset_footer,
@@ -255,7 +253,7 @@ Status Segment::open(size_t* footer_length_hint, const FooterPointerPB* partial_
 
     auto res = success_once(_open_once, [&] { return _open(footer_length_hint, partial_rowset_footer, lake_io_opts); });
     if (res.status().is_not_found()) {
-        StorageMetrics::instance()->segment_file_not_found_total.increment(1);
+        StarRocksMetrics::instance()->segment_file_not_found_total.increment(1);
     }
 
     // move the cache size update out of the `success_once`,
@@ -283,8 +281,6 @@ Status Segment::_open(size_t* footer_length_hint, const FooterPointerPB* partial
     RETURN_IF_ERROR(_create_column_readers(&footer));
     _num_rows = footer.num_rows();
     _short_key_index_page = PagePointer(footer.short_key_index_page());
-    _skip_vector_index =
-            footer.has_vector_index_storage_type() && footer.vector_index_storage_type() == VECTOR_INDEX_STORAGE_NONE;
     return Status::OK();
 }
 
@@ -338,7 +334,9 @@ struct SegmentZoneMapPruner {
     const SegmentReadOptions& read_options;
 };
 
-Status Segment::_prune_by_segment_zone_map(const SegmentReadOptions& read_options) {
+StatusOr<ChunkIteratorPtr> Segment::_new_iterator(const Schema& schema, const SegmentReadOptions& read_options) {
+    DCHECK(read_options.stats != nullptr);
+
     const auto pruned = config::enable_index_segment_level_zonemap_filter &&
                         read_options.pred_tree_for_zone_map.visit(SegmentZoneMapPruner{this, read_options});
     if (pruned) {
@@ -347,13 +345,7 @@ Status Segment::_prune_by_segment_zone_map(const SegmentReadOptions& read_option
         }
         return Status::EndOfFile(strings::Substitute("End of file $0, empty iterator", _segment_file_info.path));
     }
-    return Status::OK();
-}
 
-StatusOr<ChunkIteratorPtr> Segment::_new_iterator(const Schema& schema, const SegmentReadOptions& read_options) {
-    DCHECK(read_options.stats != nullptr);
-
-    RETURN_IF_ERROR(_prune_by_segment_zone_map(read_options));
     return new_segment_iterator(shared_from_this(), schema, read_options);
 }
 
@@ -364,17 +356,6 @@ StatusOr<ChunkIteratorPtr> Segment::new_iterator(const Schema& schema, const Seg
     return _new_iterator(schema, read_options);
 }
 
-StatusOr<ChunkIteratorPtr> Segment::new_reusable_iterator(const Schema& iterator_schema, const Schema& output_schema,
-                                                          const SegmentReadOptions& read_options,
-                                                          ChunkIteratorPtr* reusable_slot) {
-    if (read_options.stats == nullptr) {
-        return Status::InvalidArgument("stats is null pointer");
-    }
-    RETURN_IF_ERROR(_prune_by_segment_zone_map(read_options));
-    return new_reusable_segment_iterator(shared_from_this(), iterator_schema, output_schema, read_options,
-                                         reusable_slot);
-}
-
 Status Segment::new_inverted_index_iterator(uint32_t ucid, InvertedIndexIterator** iter, const SegmentReadOptions& opts,
                                             const IndexReadOptions& index_opt) {
     auto column_reader_iter = _column_readers.find(ucid);
@@ -383,7 +364,8 @@ Status Segment::new_inverted_index_iterator(uint32_t ucid, InvertedIndexIterator
         std::shared_ptr<TabletIndex> index_meta;
         RETURN_IF_ERROR(_tablet_schema->get_indexes_for_column(ucid, GIN, index_meta));
         if (index_meta.get() != nullptr) {
-            return column_reader_iter->second->new_inverted_index_iterator(index_meta, iter, opts, index_opt);
+            return column_reader_iter->second->new_inverted_index_iterator(index_meta, iter, std::move(opts),
+                                                                           index_opt);
         }
     }
     return Status::OK();
@@ -395,9 +377,8 @@ Status Segment::load_index(const LakeIOOptions& lake_io_opts) {
 
         Status st = _load_index(lake_io_opts);
         if (st.ok()) {
-            const auto index_mem_usage = _short_key_index_mem_usage();
-            MEM_TRACKER_SAFE_CONSUME(RuntimeEnv::GetInstance()->short_key_index_mem_tracker(), index_mem_usage);
-            _loaded_key_index_mem_usage.store(index_mem_usage, std::memory_order_relaxed);
+            MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->short_key_index_mem_tracker(),
+                                     _short_key_index_mem_usage());
             update_cache_size();
         } else {
             _reset();
@@ -405,20 +386,6 @@ Status Segment::load_index(const LakeIOOptions& lake_io_opts) {
         return st;
     });
     return res.status();
-}
-
-StatusOr<std::unique_ptr<RandomAccessFile>> Segment::new_segment_read_file(const LakeIOOptions& lake_io_opts) {
-    // Apply the segment file's encryption info + bundling offset (like _open/_load_index) so reads land at
-    // the right offset on bundled/encrypted segments. Don't cache into _encryption_info here (OnceFlag owns it).
-    RandomAccessFileOptions file_opts{.skip_fill_local_cache = !lake_io_opts.fill_data_cache,
-                                      .buffer_size = lake_io_opts.buffer_size};
-    if (_encryption_info) {
-        file_opts.encryption_info = *_encryption_info;
-    } else if (!_segment_file_info.encryption_meta.empty()) {
-        ASSIGN_OR_RETURN(auto info, KeyCache::instance().unwrap_encryption_meta(_segment_file_info.encryption_meta));
-        file_opts.encryption_info = std::move(info);
-    }
-    return _fs->new_random_access_file_with_bundling(file_opts, _segment_file_info);
 }
 
 Status Segment::_load_index(const LakeIOOptions& lake_io_opts) {
@@ -676,16 +643,10 @@ StatusOr<std::unique_ptr<ColumnIterator>> Segment::new_column_iterator(const Tab
 
 Status Segment::new_bitmap_index_iterator(ColumnUID id, const IndexReadOptions& options, BitmapIndexIterator** res) {
     auto iter = _column_readers.find(id);
-    if (iter == _column_readers.end()) {
-        return Status::OK();
+    if (iter != _column_readers.end() && iter->second->has_bitmap_index()) {
+        return iter->second->new_bitmap_index_iterator(options, res);
     }
-    // Delegate to ColumnReader: it handles both the footer-embedded bitmap
-    // (legacy path) and the IDG-backed sidecar (.idx file, lake fast path).
-    // Do NOT gate on `has_bitmap_index()` here — that only checks the
-    // footer-loaded `_bitmap_index` pointer and would short-circuit before
-    // the IDG branch gets a chance. ColumnReader::new_bitmap_index_iterator
-    // returns OK with `*res == nullptr` when neither source has a bitmap.
-    return iter->second->new_bitmap_index_iterator(options, res);
+    return Status::OK();
 }
 
 StatusOr<std::shared_ptr<Segment>> Segment::new_dcg_segment(const DeltaColumnGroup& dcg, uint32_t idx,
@@ -739,7 +700,8 @@ void Segment::turn_off_batch_update_cache_size() {
                 // a path-only key would miss for bundled slices (non-zero bundle_file_offset) and
                 // their cache entries would never get the post-open memory cost, defeating
                 // metacache capacity control.
-                _tablet_manager->update_segment_cache_size(_segment_file_info.cache_key(), mem_cost, this);
+                _tablet_manager->update_segment_cache_size(_segment_file_info.cache_key(), mem_cost,
+                                                           reinterpret_cast<intptr_t>(this));
             }
         }
     }
@@ -750,14 +712,12 @@ void Segment::update_cache_size() {
         // could be race condition on this `_batch_on_flags_counter` check, but it is ok to be inaccurate in such case.
         if (_batch_on_flags_counter.load(std::memory_order_relaxed) == 0) {
             auto mem_cost = mem_usage();
-            _tablet_manager->update_segment_cache_size(_segment_file_info.cache_key(), mem_cost, this);
+            _tablet_manager->update_segment_cache_size(_segment_file_info.cache_key(), mem_cost,
+                                                       reinterpret_cast<intptr_t>(this));
         } else {
             // under batch mode, only increase the _dirty_cache_counter
             _dirty_cache_counter.fetch_add(1, std::memory_order_relaxed);
         }
-    } else {
-        // Only used by share-nothing rowsets. The last reader release consumes this flag.
-        _lazy_mem_update.store(true, std::memory_order_release);
     }
 }
 
@@ -766,8 +726,7 @@ size_t Segment::mem_usage() const {
         // just report the basic info memory usage if not opened yet
         return _basic_info_mem_usage();
     }
-    return _basic_info_mem_usage() + _loaded_key_index_mem_usage.load(std::memory_order_relaxed) +
-           _column_index_mem_usage();
+    return _basic_info_mem_usage() + _short_key_index_mem_usage() + _column_index_mem_usage();
 }
 
 StatusOr<int64_t> Segment::get_data_size() const {

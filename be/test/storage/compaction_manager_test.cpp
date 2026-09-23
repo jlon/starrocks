@@ -23,9 +23,6 @@
 #include <mutex>
 #include <random>
 
-#include "base/testutil/assert.h"
-#include "common/config_compaction_fwd.h"
-#include "common/config_storage_fwd.h"
 #include "fs/fs_util.h"
 #include "runtime/mem_pool.h"
 #include "storage/compaction.h"
@@ -36,6 +33,7 @@
 #include "storage/storage_engine.h"
 #include "storage/tablet.h"
 #include "storage/tablet_updates.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 

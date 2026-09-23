@@ -3,5 +3,4 @@ label: 'Execution plan and profile'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: plan_profile
+  type: generated-index

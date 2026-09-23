@@ -31,9 +31,7 @@ import com.starrocks.common.AnalysisException;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.util.RangeUtils;
-import com.starrocks.connector.MVPartitionCellBuilder;
 import com.starrocks.connector.PartitionUtil;
-import com.starrocks.mv.pct.BaseToMVPartitionMapping;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.type.Type;
@@ -222,13 +220,13 @@ public final class RangePartitionDiffer extends PartitionDiffer {
      * @return the ref base table's partition range map: <ref base table, partition cells>
      */
     @Override
-    public Map<Table, BaseToMVPartitionMapping> syncBaseTablePartitionInfos() {
+    public Map<Table, PCellSortedSet> syncBaseTablePartitionInfos() {
         Map<Table, List<Column>> partitionTableAndColumn = mv.getRefBaseTablePartitionColumns();
         if (partitionTableAndColumn.isEmpty()) {
             return Maps.newHashMap();
         }
 
-        Map<Table, BaseToMVPartitionMapping> refBaseTablePartitionMap = Maps.newHashMap();
+        Map<Table, PCellSortedSet> refBaseTablePartitionMap = Maps.newHashMap();
         Optional<Expr> mvPartitionExprOpt = mv.getRangePartitionFirstExpr();
         if (mvPartitionExprOpt.isEmpty()) {
             return Maps.newHashMap();
@@ -239,13 +237,13 @@ public final class RangePartitionDiffer extends PartitionDiffer {
                 List<Column> refBTPartitionColumns = entry.getValue();
                 Preconditions.checkArgument(refBTPartitionColumns.size() == 1);
                 // Collect the ref base table's partition range map.
-                BaseToMVPartitionMapping mapping =
-                        MVPartitionCellBuilder.getPartitionKeyRange(refBT, refBTPartitionColumns.get(0),
+                PCellSortedSet refTablePartitionKeyMap =
+                        PartitionUtil.getPartitionKeyRange(refBT, refBTPartitionColumns.get(0),
                                 mvPartitionExprOpt.get(), pinnedRangeFor(refBT));
-                if (mapping.cells() == null) {
+                if (refTablePartitionKeyMap == null) {
                     return null;
                 }
-                refBaseTablePartitionMap.put(refBT, mapping);
+                refBaseTablePartitionMap.put(refBT, refTablePartitionKeyMap);
             }
         } catch (StarRocksException | SemanticException e) {
             LOG.warn("Partition differ collects ref base table partition failed.", e);
@@ -335,13 +333,13 @@ public final class RangePartitionDiffer extends PartitionDiffer {
      */
     @Override
     public PartitionDiffResult computePartitionDiff(Range<PartitionKey> rangeToInclude) {
-        Map<Table, BaseToMVPartitionMapping> rBTPartitionMap = syncBaseTablePartitionInfos();
+        Map<Table, PCellSortedSet> rBTPartitionMap = syncBaseTablePartitionInfos();
         return computePartitionDiff(rangeToInclude, rBTPartitionMap);
     }
 
     @Override
     public PartitionDiffResult computePartitionDiff(Range<PartitionKey> rangeToInclude,
-                                                    Map<Table, BaseToMVPartitionMapping> refBaseTablePartitionMap) {
+                                                    Map<Table, PCellSortedSet> refBaseTablePartitionMap) {
         Map<Table, List<Column>> refBaseTablePartitionColumns = mv.getRefBaseTablePartitionColumns();
         Preconditions.checkArgument(!refBaseTablePartitionColumns.isEmpty());
         // get the materialized view's partition range map
@@ -353,8 +351,7 @@ public final class RangePartitionDiffer extends PartitionDiffer {
             return null;
         }
         Expr mvPartitionExpr = mvPartitionExprOpt.get();
-        Map<Table, PCellSortedSet> refBaseTableCells = BaseToMVPartitionMapping.extractCells(refBaseTablePartitionMap);
-        PCellSortedSet mergedRBTPartitionKeyMap = mergeRBTPartitionKeyMap(mvPartitionExpr, refBaseTableCells);
+        PCellSortedSet mergedRBTPartitionKeyMap = mergeRBTPartitionKeyMap(mvPartitionExpr, refBaseTablePartitionMap);
         if (mergedRBTPartitionKeyMap == null) {
             LOG.warn("Merge materialized view {} with base tables failed.", mv.getName());
             return null;
@@ -366,31 +363,42 @@ public final class RangePartitionDiffer extends PartitionDiffer {
             for (Table refBaseTable : refBaseTablePartitionColumns.keySet()) {
                 Preconditions.checkArgument(refBaseTablePartitionMap.containsKey(refBaseTable));
                 RangePartitionDiffer differ = new RangePartitionDiffer(mv, queryRewriteParams, rangeToInclude);
-                PCellSortedSet basePartitionMap = refBaseTableCells.get(refBaseTable);
+                PCellSortedSet basePartitionMap = refBaseTablePartitionMap.get(refBaseTable);
                 PartitionDiff diff = PartitionUtil.getPartitionDiff(mvPartitionExpr, basePartitionMap,
                         mvPartitionCells, differ);
                 rangePartitionDiffList.add(diff);
             }
             PartitionDiff.checkRangePartitionAligned(rangePartitionDiffList);
         }
-        // NOTE: Use all refBaseTables' partition range to compute the partition difference between MV and refBaseTables.
-        // Merge all deletes of each refBaseTab's diff may cause dropping needed partitions, the deletes should use
-        // `bigcap` rather than `bigcup`.
-        // Diff_{adds} = P_{\bigcup_{baseTables}^{}} \setminus  P_{MV} \\
-        //             = \bigcup_{baseTables} P_{baseTable}\setminus P_{MV}
-        //
-        // Diff_{deletes} = P_{MV} \setminus P_{\bigcup_{baseTables}^{}} \\
-        //                = \bigcap_{baseTables} P_{MV}\setminus P_{baseTable}
-        RangePartitionDiffer differ = queryRewriteParams.isQueryRewrite() ? null
-                : new RangePartitionDiffer(mv, queryRewriteParams, rangeToInclude);
-        PartitionDiff rangePartitionDiff = PartitionUtil.getPartitionDiff(mvPartitionExpr, mergedRBTPartitionKeyMap,
-                mvPartitionCells, differ);
-        if (rangePartitionDiff == null) {
-            LOG.warn("Materialized view compute partition difference with base table failed: rangePartitionDiff is null.");
+        try {
+            // NOTE: Use all refBaseTables' partition range to compute the partition difference between MV and refBaseTables.
+            // Merge all deletes of each refBaseTab's diff may cause dropping needed partitions, the deletes should use
+            // `bigcap` rather than `bigcup`.
+            // Diff_{adds} = P_{\bigcup_{baseTables}^{}} \setminus  P_{MV} \\
+            //             = \bigcup_{baseTables} P_{baseTable}\setminus P_{MV}
+            //
+            // Diff_{deletes} = P_{MV} \setminus P_{\bigcup_{baseTables}^{}} \\
+            //                = \bigcap_{baseTables} P_{MV}\setminus P_{baseTable}
+            RangePartitionDiffer differ = queryRewriteParams.isQueryRewrite() ? null
+                    : new RangePartitionDiffer(mv, queryRewriteParams, rangeToInclude);
+            PartitionDiff rangePartitionDiff = PartitionUtil.getPartitionDiff(mvPartitionExpr, mergedRBTPartitionKeyMap,
+                    mvPartitionCells, differ);
+            if (rangePartitionDiff == null) {
+                LOG.warn("Materialized view compute partition difference with base table failed: rangePartitionDiff is null.");
+                return null;
+            }
+            Map<Table, PartitionNameSetMap> extRBTMVPartitionNameMap = Maps.newHashMap();
+            if (!queryRewriteParams.isQueryRewrite()) {
+                // To solve multi partition columns' problem of external table, record the mv partition name to all the same
+                // partition names map here.
+                collectExternalPartitionNameMapping(refBaseTablePartitionColumns, extRBTMVPartitionNameMap);
+            }
+            return new PartitionDiffResult(extRBTMVPartitionNameMap, refBaseTablePartitionMap,
+                    mvPartitionCells, rangePartitionDiff);
+        } catch (AnalysisException e) {
+            LOG.warn("Materialized view compute partition difference with base table failed.", e);
             return null;
         }
-        return new PartitionDiffResult(refBaseTablePartitionMap,
-                mvPartitionCells, rangePartitionDiff);
     }
 
     public static void updatePartitionRefMap(Map<String, Map<Table, PCellSortedSet>> result,

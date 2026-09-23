@@ -37,7 +37,6 @@ package com.starrocks.backup;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicates;
-import com.google.common.base.Strings;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Collections2;
 import com.google.common.collect.Lists;
@@ -161,12 +160,6 @@ public class BackupJob extends AbstractJob {
     @SerializedName(value = "backupCatalogs")
     private List<Catalog> backupCatalogs = Lists.newArrayList();
 
-    // How long the snapshot this job produces is kept, as the user wrote it in the BACKUP property;
-    // null keeps it forever. Persisted with the job so a replayed job still writes the same
-    // retention into the repository.
-    @SerializedName(value = "ttl")
-    private String ttl;
-
     public BackupJob() {
         super(JobType.BACKUP);
     }
@@ -176,30 +169,6 @@ public class BackupJob extends AbstractJob {
         super(JobType.BACKUP, label, dbId, dbName, timeoutMs, globalStateMgr, repoId);
         this.tableRefs = tableRefs;
         this.state = BackupJobState.PENDING;
-    }
-
-    protected BackupJob(BackupJob job) {
-        super(job);
-
-        this.tableRefs = job.tableRefs;
-        this.state = job.state;
-        this.snapshotFinishedTime = job.snapshotFinishedTime;
-        this.snapshotUploadFinishedTime = job.snapshotUploadFinishedTime;
-        this.snapshotInfos = job.snapshotInfos;
-        this.backupMeta = job.backupMeta;
-        this.localMetaInfoFilePath = job.localMetaInfoFilePath;
-        this.localJobInfoFilePath = job.localJobInfoFilePath;
-        this.backupFunctions = job.backupFunctions;
-        this.backupCatalogs = job.backupCatalogs;
-        this.ttl = job.ttl;
-    }
-
-    public String getTtl() {
-        return ttl;
-    }
-
-    public void setTtl(String ttl) {
-        this.ttl = ttl;
     }
 
     public void setTestPrimaryKey() {
@@ -615,9 +584,10 @@ public class BackupJob extends AbstractJob {
     protected void waitingAllSnapshotsFinished() {
         if (unfinishedTaskIds.isEmpty()) {
             snapshotFinishedTime = System.currentTimeMillis();
+            state = BackupJobState.UPLOAD_SNAPSHOT;
 
             // log
-            persistStateChange(BackupJobState.UPLOAD_SNAPSHOT);
+            globalStateMgr.getEditLog().logBackupJob(this);
             LOG.info("finished to make snapshots. {}", this);
             return;
         }
@@ -712,9 +682,10 @@ public class BackupJob extends AbstractJob {
     protected void waitingAllUploadingFinished() {
         if (unfinishedTaskIds.isEmpty()) {
             snapshotUploadFinishedTime = System.currentTimeMillis();
+            state = BackupJobState.SAVE_META;
 
             // log
-            persistStateChange(BackupJobState.SAVE_META);
+            globalStateMgr.getEditLog().logBackupJob(this);
             LOG.info("finished uploading snapshots. {}", this);
             return;
         }
@@ -763,12 +734,6 @@ public class BackupJob extends AbstractJob {
             // 3. save job info file
             jobInfo = BackupJobInfo.fromCatalog(createTime, label, dbName, dbId, backupMeta.getTables().values(),
                     snapshotInfos);
-
-            long finishTime = System.currentTimeMillis();
-            jobInfo.clusterId = globalStateMgr.getNodeMgr().getClusterId();
-            jobInfo.finishTime = finishTime;
-            jobInfo.ttl = Strings.emptyToNull(ttl);
-            jobInfo.expireTime = SnapshotTtl.computeExpireTime(finishTime, jobInfo.ttl);
             LOG.debug("job info: {}. {}", jobInfo, this);
             File jobInfoFile = new File(jobDir, Repository.PREFIX_JOB_INFO + createTimeStr);
             if (!jobInfoFile.createNewFile()) {
@@ -782,6 +747,8 @@ public class BackupJob extends AbstractJob {
             return;
         }
 
+        state = BackupJobState.UPLOAD_INFO;
+
         // meta info and job info has been saved to local file, this can be cleaned to reduce log size
         backupMeta = null;
         jobInfo = null;
@@ -792,7 +759,7 @@ public class BackupJob extends AbstractJob {
         snapshotInfos.clear();
 
         // log
-        persistStateChange(BackupJobState.UPLOAD_INFO);
+        globalStateMgr.getEditLog().logBackupJob(this);
         LOG.info("finished to save meta the backup job info file to local.[{}], [{}] {}",
                 localMetaInfoFilePath, localJobInfoFilePath, this);
     }
@@ -826,9 +793,10 @@ public class BackupJob extends AbstractJob {
         }
 
         finishedTime = System.currentTimeMillis();
+        state = BackupJobState.FINISHED;
 
         // log
-        persistStateChange(BackupJobState.FINISHED);
+        globalStateMgr.getEditLog().logBackupJob(this);
         LOG.info("job is finished. {}", this);
 
         MetricRepo.COUNTER_UNFINISHED_BACKUP_JOB.increase(-1L);
@@ -917,20 +885,13 @@ public class BackupJob extends AbstractJob {
 
         BackupJobState curState = state;
         finishedTime = System.currentTimeMillis();
+        state = BackupJobState.CANCELLED;
 
         // log
-        persistStateChange(BackupJobState.CANCELLED);
+        globalStateMgr.getEditLog().logBackupJob(this);
         WarehouseIdleChecker.updateJobLastFinishTime(WarehouseManager.DEFAULT_WAREHOUSE_ID,
                 "BackupJob: jobId[" + jobId + "]" + " label[" + label + "]");
         LOG.info("finished to cancel backup job. current state: {}. {}", curState.name(), this);
-    }
-
-    protected void persistStateChange(BackupJobState newState) {
-        BackupJob persist = this.copyForPersist();
-        persist.setState(newState);
-        globalStateMgr.getEditLog().logBackupJob(persist, wal -> {
-            state = newState;
-        });
     }
 
     public List<String> getInfo() {
@@ -970,8 +931,5 @@ public class BackupJob extends AbstractJob {
         sb.append(", state: ").append(state.name());
         return sb.toString();
     }
-
-    public BackupJob copyForPersist() {
-        return new BackupJob(this);
-    }
 }
+

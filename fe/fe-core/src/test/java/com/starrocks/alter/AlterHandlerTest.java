@@ -18,15 +18,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 /**
@@ -46,40 +40,6 @@ public class AlterHandlerTest {
     public void testGetActiveTxnIdOfTableReturnsEmptyWhenNoJobs() {
         Optional<Long> result = handler.getActiveTxnIdOfTable(123L);
         Assertions.assertTrue(result.isEmpty());
-    }
-
-    @Test
-    public void testRunAlterJobV2SafelyContainsOrdinaryExceptionsButPropagatesErrors() {
-        AlterJobV2 bad = mock(AlterJobV2.class);
-        when(bad.getJobId()).thenReturn(1L);
-        when(bad.getJobState()).thenReturn(AlterJobV2.JobState.RUNNING);
-        doThrow(new IllegalStateException("NORMAL")).when(bad).run();
-
-        Assertions.assertDoesNotThrow(() -> handler.runAlterJobV2Safely(bad));
-
-        AlterJobV2 fatal = mock(AlterJobV2.class);
-        doThrow(new AssertionError("fatal")).when(fatal).run();
-
-        Assertions.assertThrows(AssertionError.class, () -> handler.runAlterJobV2Safely(fatal));
-    }
-
-    @Test
-    public void testRunAlterJobV2ContinuesWithSiblingAfterOrdinaryException() {
-        LakeTableAddIndexJob bad = spy(new LakeTableAddIndexJob(
-                1L, 2L, 3L, "bad", 60_000L, new ArrayList<>(), new ArrayList<>()));
-        LakeTableAddIndexJob healthy = spy(new LakeTableAddIndexJob(
-                2L, 2L, 3L, "healthy", 60_000L, new ArrayList<>(), new ArrayList<>()));
-        bad.setJobState(AlterJobV2.JobState.PENDING);
-        healthy.setJobState(AlterJobV2.JobState.PENDING);
-        AtomicInteger healthyRuns = new AtomicInteger();
-        doThrow(new IllegalStateException("NORMAL")).when(bad).run();
-        doAnswer(invocation -> {
-            healthyRuns.incrementAndGet();
-            return null;
-        }).when(healthy).run();
-
-        Assertions.assertDoesNotThrow(() -> handler.runAlterJobV2(List.of(bad, healthy)));
-        Assertions.assertEquals(1, healthyRuns.get());
     }
 
     @Test
@@ -248,30 +208,6 @@ public class AlterHandlerTest {
     }
 
     /**
-     * After onStopped() shuts down the AlterReplicaTask executor, a subsequent start() must
-     * rebuild it so that handleFinishAlterTask submissions accepted by the next leader land
-     * on a fresh pool rather than throwing RejectedExecutionException forever.
-     */
-    @Test
-    public void testStartRebuildsExecutorAfterOnStopped() throws Exception {
-        java.util.concurrent.ThreadPoolExecutor poolBeforeStop =
-                (java.util.concurrent.ThreadPoolExecutor) org.apache.commons.lang3.reflect.FieldUtils
-                        .readField(handler, "executor", true);
-        org.apache.commons.lang3.reflect.MethodUtils.invokeMethod(handler, true, "onStopped");
-        Assertions.assertTrue(poolBeforeStop.isShutdown(),
-                "executor must be shut down on demotion so AlterReplicaTask workers exit");
-
-        handler.start();
-        java.util.concurrent.ThreadPoolExecutor poolAfterRestart =
-                (java.util.concurrent.ThreadPoolExecutor) org.apache.commons.lang3.reflect.FieldUtils
-                        .readField(handler, "executor", true);
-        Assertions.assertNotSame(poolBeforeStop, poolAfterRestart,
-                "start() must rebuild the executor after demotion");
-        Assertions.assertFalse(poolAfterRestart.isShutdown());
-        handler.setStop();
-    }
-
-    /**
      * Helper method to create a mock AlterJobV2 with specified properties.
      */
     private AlterJobV2 createMockJob(long jobId, long tableId, long txnId, AlterJobV2.JobState state) {
@@ -295,3 +231,4 @@ public class AlterHandlerTest {
         return job;
     }
 }
+

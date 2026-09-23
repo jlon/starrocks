@@ -18,24 +18,23 @@
 
 #include <cstring>
 
-#include "base/coding.h"
-#include "base/container/raw_container.h"
-#include "base/debug/trace.h"
-#include "base/hash/crc32c.h"
-#include "common/config_primary_key_fwd.h"
-#include "common/thread/threadpool.h"
+#include "common/config.h"
 #include "fs/fs.h"
-#include "fs/fs_factory.h"
 #include "lake/filenames.h"
-#include "runtime/runtime_env.h"
+#include "runtime/exec_env.h"
 #include "storage/data_dir.h"
 #include "storage/lake/tablet_manager.h"
-#include "storage/tablet.h"
+#include "storage/storage_engine.h"
+#include "util/coding.h"
+#include "util/crc32c.h"
+#include "util/raw_container.h"
+#include "util/threadpool.h"
+#include "util/trace.h"
 
 namespace starrocks {
 
 Status RowsMapperBuilder::_init() {
-    ASSIGN_OR_RETURN(auto fs, FileSystemFactory::CreateSharedFromString(_filename));
+    ASSIGN_OR_RETURN(auto fs, FileSystem::CreateSharedFromString(_filename));
     WritableFileOptions wblock_opts{.sync_on_close = true, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
     ASSIGN_OR_RETURN(_wfile, fs->new_writable_file(wblock_opts, _filename));
     return Status::OK();
@@ -114,7 +113,7 @@ RowsMapperIterator::~RowsMapperIterator() {
 // Open file
 Status RowsMapperIterator::open(const FileInfo& filename) {
     _path = filename.path;
-    ASSIGN_OR_RETURN(auto fs, FileSystemFactory::CreateSharedFromString(filename.path));
+    ASSIGN_OR_RETURN(auto fs, FileSystem::CreateSharedFromString(filename.path));
     // The .lcrm rows-mapper file is read exactly once during compaction publish and
     // then never accessed again — caching it locally is pure cache pollution that
     // evicts hotter data (PK index pages, segment blocks). Disable fill-cache so the
@@ -238,7 +237,7 @@ Status RowsMapperIterator::_maybe_submit_next() {
     // Each in-flight chunk owns its own RandomAccessFile so concurrent reads never
     // touch shared file-class state (the underlying starlet wrapper has been
     // observed to crash under concurrent access on the same handle).
-    ASSIGN_OR_RETURN(auto fs, FileSystemFactory::CreateSharedFromString(_path));
+    ASSIGN_OR_RETURN(auto fs, FileSystem::CreateSharedFromString(_path));
     RandomAccessFileOptions opts;
     opts.skip_fill_local_cache = true;
     ASSIGN_OR_RETURN(chunk.rf, fs->new_random_access_file(opts, _path));
@@ -255,7 +254,7 @@ Status RowsMapperIterator::_maybe_submit_next() {
 
     _in_flight.push_back(std::move(chunk));
 
-    auto* pool = RuntimeEnv::GetInstance()->pk_index_execution_thread_pool();
+    auto* pool = ExecEnv::GetInstance()->pk_index_execution_thread_pool();
     if (pool == nullptr) {
         // Pool unavailable — execute inline so the promise is always satisfied.
         promise->set_value(rf_raw->read_at_fully(off, data_raw, bytes));
@@ -377,14 +376,33 @@ Status RowsMapperIterator::status() {
 }
 
 StatusOr<std::string> new_lake_rows_mapper_filename(lake::TabletManager* mgr, int64_t tablet_id, int64_t txn_id) {
-    // Always store the rows mapper on remote storage (.lcrm).
-    // WHY: The mapper file must be reachable by whichever compute node publishes the
-    // compaction, and remote storage (S3/HDFS) guarantees shared access without file
-    // replication. Keeping this unconditional avoids a class of local-vs-remote mismatch
-    // bugs (writer picks .crm while the publisher looks for .lcrm, or vice versa).
-    // TRADEOFF: Slower I/O (~50-200ms) than local .crm, accepted for correctness and
-    // multi-node accessibility.
-    return mgr->lcrm_location(tablet_id, lake::gen_lcrm_filename(txn_id));
+    // DESIGN DECISION: Storage location depends on execution mode
+    if (config::enable_pk_index_parallel_execution) {
+        // WHY: Remote storage (.lcrm) for parallel execution mode
+        // TRADEOFF: Slower I/O (~50-200ms) vs multi-node accessibility
+        // During parallel pk index execution, multiple compute nodes may need to read
+        // the same mapper file simultaneously. Storing on S3/HDFS allows all nodes to
+        // access it without file replication, enabling true distributed processing.
+        // Performance impact is acceptable since parallel execution gains outweigh I/O overhead.
+        return mgr->lcrm_location(tablet_id, lake::gen_lcrm_filename(txn_id));
+    }
+    // WHY: Local disk (.crm) for single-node execution mode
+    // TRADEOFF: Fast I/O (~1-5ms) vs single-node limitation
+    // When parallel execution is disabled, using local disk provides 10-100x faster I/O.
+    // This is the optimal choice for single-node compaction where distributed access isn't needed.
+    auto data_dir = StorageEngine::instance()->get_persistent_index_store(tablet_id);
+    if (data_dir == nullptr) {
+        return Status::NotFound(fmt::format("Not local disk found. tablet id: {}", tablet_id));
+    }
+    return data_dir->get_tmp_path() + "/" + fmt::format("{:016X}_{:016X}.crm", tablet_id, txn_id);
+}
+
+StatusOr<std::string> lake_rows_mapper_filename(int64_t tablet_id, int64_t txn_id) {
+    auto data_dir = StorageEngine::instance()->get_persistent_index_store(tablet_id);
+    if (data_dir == nullptr) {
+        return Status::NotFound(fmt::format("Not local disk found. tablet id: {}", tablet_id));
+    }
+    return data_dir->get_tmp_path() + "/" + fmt::format("{:016X}_{:016X}.crm", tablet_id, txn_id);
 }
 
 StatusOr<std::string> lake_rows_mapper_filename(lake::TabletManager* mgr, int64_t tablet_id,

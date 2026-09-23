@@ -3,5 +3,4 @@ label: 'Table, bucket, partition, and index'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: table_bucket_part_index
+  type: generated-index

@@ -43,6 +43,7 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -147,7 +148,7 @@ public class PseudoClusterTest {
             // client prepared stmt
             PreparedStatement pstmt = connection.prepareStatement("select * from test where pk = ?");
             pstmt.setInt(1, 1);
-            pstmt.executeQuery();
+            ResultSet rs = pstmt.executeQuery();
             pstmt.close();
         } finally {
             stmt.close();

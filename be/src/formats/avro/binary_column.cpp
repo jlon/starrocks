@@ -18,18 +18,17 @@
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
 
-#include "base/utility/defer_op.h"
 #include "column/binary_column.h"
 #include "column/json_column.h"
-#include "common/config_avro_fwd.h"
 #include "common/status.h"
 #include "gutil/strings/substitute.h"
-#include "types/json_value.h"
+#include "util/defer_op.h"
+#include "util/json.h"
 
 namespace starrocks {
 
 static Status add_column_with_numeric_value(BinaryColumn* column, const TypeDescriptor& type_desc,
-                                            std::string_view name, const avro_value_t& value) {
+                                            const std::string& name, const avro_value_t& value) {
     switch (avro_value_get_type(&value)) {
     case AVRO_INT32: {
         int in;
@@ -109,8 +108,8 @@ static Status add_column_with_numeric_value(BinaryColumn* column, const TypeDesc
     return Status::OK();
 }
 
-static Status add_column_with_string_value(BinaryColumn* column, const TypeDescriptor& type_desc, std::string_view name,
-                                           const avro_value_t& value) {
+static Status add_column_with_string_value(BinaryColumn* column, const TypeDescriptor& type_desc,
+                                           const std::string& name, const avro_value_t& value) {
     switch (avro_value_get_type(&value)) {
     case AVRO_STRING: {
         const char* in;
@@ -190,7 +189,7 @@ static Status add_column_with_string_value(BinaryColumn* column, const TypeDescr
 }
 
 static Status add_column_with_boolean_value(BinaryColumn* column, const TypeDescriptor& type_desc,
-                                            std::string_view name, const avro_value_t& value) {
+                                            const std::string& name, const avro_value_t& value) {
     int in;
     if (avro_value_get_boolean(&value, &in) != 0) {
         auto err_msg = strings::Substitute("Get boolean value error. column=$0", name);
@@ -416,7 +415,7 @@ static Status avro_value_to_json_str(const avro_value_t& value, std::string* jso
 }
 
 static Status add_column_with_array_object_value(BinaryColumn* column, const TypeDescriptor& type_desc,
-                                                 std::string_view name, const avro_value_t& value) {
+                                                 const std::string& name, const avro_value_t& value) {
     if (config::avro_ignore_union_type_tag) {
         std::string json_str;
         auto st = avro_value_to_json_str(value, &json_str);
@@ -440,7 +439,7 @@ static Status add_column_with_array_object_value(BinaryColumn* column, const Typ
     return Status::OK();
 }
 
-Status add_binary_column(Column* column, const TypeDescriptor& type_desc, std::string_view name,
+Status add_binary_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
                          const avro_value_t& value) {
     auto binary_column = down_cast<BinaryColumn*>(column);
 
@@ -478,7 +477,7 @@ Status add_binary_column(Column* column, const TypeDescriptor& type_desc, std::s
     return Status::OK();
 }
 
-Status add_native_json_column(Column* column, const TypeDescriptor& type_desc, std::string_view name,
+Status add_native_json_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
                               const avro_value_t& value) {
     JsonValue json_value;
     Status st;

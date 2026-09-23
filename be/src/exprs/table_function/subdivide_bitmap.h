@@ -16,9 +16,10 @@
 
 #include "column/column_builder.h"
 #include "column/column_viewer.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
+#include "common/config.h"
 #include "exprs/table_function/table_function.h"
-#include "types/integer_overflow_arithmetics.h"
+#include "runtime/integer_overflow_arithmetics.h"
 #include "types/logical_type.h"
 
 namespace starrocks {
@@ -40,7 +41,7 @@ public:
     Status open(RuntimeState* runtime_state, TableFunctionState* state) const override { return Status::OK(); }
 
     Status close(RuntimeState* runtime_state, TableFunctionState* state) const override {
-        delete state;
+        SAFE_DELETE(state);
         return Status::OK();
     }
 
@@ -61,11 +62,6 @@ public:
     }
 
     // TODO: The TableFunction framework should support streaming processing to avoid generating large Column
-    // Expansion is unbounded (bitmap cardinality / batch_size). Locals are MutableColumnPtr plus a
-    // by-value vector<BitmapValue> from split_bitmap(), and ObjectColumn::append() copies the value in
-    // (object_column.cpp), so nothing survives or leaks when a std::bad_alloc unwinds.
-    bool is_exception_safe() const override { return true; }
-
     std::pair<Columns, UInt32Column::Ptr> process(RuntimeState* runtime_state,
                                                   TableFunctionState* state) const override {
         if (state->get_columns().size() != 2) {

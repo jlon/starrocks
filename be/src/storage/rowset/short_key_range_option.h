@@ -17,7 +17,7 @@
 #include <memory>
 #include <string>
 
-#include "base/string/slice.h"
+#include "util/slice.h"
 
 namespace starrocks {
 

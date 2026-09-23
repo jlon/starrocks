@@ -16,10 +16,14 @@
 
 #include <memory>
 
-#include "base/phmap/phmap.h"
 #include "column/column.h"
 #include "common/global_types.h"
-#include "runtime/runtime_fwd.h"
+#include "runtime/runtime_state.h"
+#include "util/phmap/phmap.h"
+
+namespace starrocks {
+class RuntimeState;
+}
 namespace starrocks::pipeline {
 
 class FetchProcessor;
@@ -51,13 +55,11 @@ public:
     FetchTaskContext() = default;
     virtual ~FetchTaskContext() = default;
 
-    std::weak_ptr<FetchProcessor> processor;
+    FetchProcessor* processor = nullptr;
     // Keep the batch weak to avoid a BatchUnit -> FetchTask -> FetchTaskContext -> BatchUnit cycle.
     std::weak_ptr<BatchUnit> unit;
     TupleId request_tuple_id = 0;
-    // source_id , used to find the target BE/CN to send request
     int32_t source_node_id = 0;
-    int32_t scan_node_id = 0;
     // request chunk, contains all request-related columns
     ChunkPtr request_chunk;
     mutable phmap::flat_hash_map<SlotId, ColumnPtr> response_columns;
@@ -73,28 +75,22 @@ public:
 
     // Submit the task, return OK if success
     virtual Status submit(RuntimeState* state);
+    virtual bool is_local() const { return false; }
     // Check if the task is done
     virtual bool is_done() const { return _is_done; }
     FetchTaskContextPtr get_ctx() const { return _ctx; }
 
 protected:
+    virtual Status _submit_local_task(RuntimeState* state);
     virtual Status _submit_remote_task(RuntimeState* state);
     FetchTaskContextPtr _ctx;
     std::atomic_bool _is_done = false;
 };
 
-class LookUpCloseTask {
+class IcebergFetchTask : public FetchTask {
 public:
-    LookUpCloseTask(int32_t target_node_id, std::string host, int32_t port)
-            : _target_node_id(target_node_id), _host(std::move(host)), _port(port) {}
-    ~LookUpCloseTask() = default;
-
-    void submit(RuntimeState* state);
-
-private:
-    int32_t _target_node_id;
-    std::string _host;
-    int32_t _port;
+    IcebergFetchTask(FetchTaskContextPtr ctx) : FetchTask(std::move(ctx)) {}
 };
+using IcebergFetchTaskPtr = std::shared_ptr<IcebergFetchTask>;
 
 } // namespace starrocks::pipeline

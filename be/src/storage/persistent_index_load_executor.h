@@ -14,8 +14,8 @@
 
 #pragma once
 
-#include "base/concurrency/countdown_latch.h"
-#include "common/thread/threadpool.h"
+#include "util/countdown_latch.h"
+#include "util/threadpool.h"
 
 namespace starrocks {
 

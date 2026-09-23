@@ -19,70 +19,68 @@
 #include <variant>
 
 #include "column/column_helper.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "column/vectorized_fwd.h"
-#include "common/config_scan_io_fwd.h"
 #include "common/object_pool.h"
 #include "exec/aggregator.h"
-#include "runtime/runtime_filter.h"
-#include "runtime/runtime_in_filter.h"
+#include "exprs/agg_in_runtime_filter.h"
+#include "exprs/runtime_filter.h"
 #include "runtime/runtime_state.h"
 #include "types/logical_type.h"
 
 namespace starrocks {
 
-MutableColumns extract_group_by_columns(Aggregator* aggregator) {
-    MutableColumns group_by_columns;
-    auto& hash_map_variant = aggregator->hash_map_variant();
-
-    hash_map_variant.visit([&](auto& variant_value) {
-        auto& hash_map_with_key = *variant_value;
-        using HashMapWithKey = std::remove_reference_t<decltype(hash_map_with_key)>;
-        using ResultVector = typename HashMapWithKey::ResultVector;
-        auto& hash_map = hash_map_with_key.hash_map;
-        const size_t hash_map_size = hash_map_variant.size();
-        group_by_columns = aggregator->create_group_by_columns(hash_map_size);
-        {
-            ResultVector result_vector;
-            result_vector.resize(hash_map_size);
-            auto it = hash_map.begin();
-            auto end = hash_map.end();
-            size_t read_index = 0;
-            while (it != end) {
-                result_vector[read_index++] = it->first;
-                ++it;
-            }
-            if (read_index > 0) {
-                hash_map_with_key.insert_keys_to_columns(result_vector, group_by_columns, read_index);
-            }
-            if constexpr (HashMapWithKey::has_single_null_key) {
-                if (hash_map_with_key.null_key_data != nullptr) {
-                    DCHECK(group_by_columns.size() == 1);
-                    group_by_columns[0]->append_default();
-                }
-            }
-        }
-    });
-
-    return group_by_columns;
-}
-
 struct AggInRuntimeFilterBuilderImpl {
     template <LogicalType ltype>
     RuntimeFilter* operator()(ObjectPool* pool, Aggregator* aggregator, size_t build_expr_order) {
-        auto group_by_columns = extract_group_by_columns(aggregator);
-        Column* build_column = group_by_columns[build_expr_order].get();
-        // A constant build column carries a single value spread over column->size() logical rows but
-        // is backed by one physical row. InRuntimeFilter::build() down_casts to the typed/nullable
-        // column and iterates column->size() rows (its is_constant() check is only a DCHECK, compiled
-        // out in release builds), so a ConstColumn would be misinterpreted and overrun its backing
-        // storage. Returning nullptr leaves the merged filter always-true (conservative and correct),
-        // mirroring the ConstColumn handling in AggTopNRuntimeFilterBuilder::update().
-        if (build_column->is_constant()) {
+        auto runtime_filter = InRuntimeFilter<ltype>::create(pool);
+        bool skip_constant_build_column = false;
+        auto& hash_map_variant = aggregator->hash_map_variant();
+        hash_map_variant.visit([&](auto& variant_value) {
+            auto& hash_map_with_key = *variant_value;
+            using HashMapWithKey = std::remove_reference_t<decltype(hash_map_with_key)>;
+            using ResultVector = typename HashMapWithKey::ResultVector;
+            auto& hash_map = hash_map_with_key.hash_map;
+            const size_t hash_map_size = hash_map_variant.size();
+            MutableColumns group_by_columns = aggregator->create_group_by_columns(hash_map_size);
+            {
+                ResultVector result_vector;
+                result_vector.resize(hash_map_size);
+                auto it = hash_map.begin();
+                auto end = hash_map.end();
+                size_t read_index = 0;
+                while (it != end) {
+                    result_vector[read_index++] = it->first;
+                    ++it;
+                }
+                if (read_index > 0) {
+                    hash_map_with_key.insert_keys_to_columns(result_vector, group_by_columns, read_index);
+                }
+                if constexpr (HashMapWithKey::has_single_null_key) {
+                    if (hash_map_with_key.null_key_data != nullptr) {
+                        DCHECK(group_by_columns.size() == 1);
+                        group_by_columns[0]->append_default();
+                    }
+                }
+                Column* build_column = group_by_columns[build_expr_order].get();
+                // A constant build column carries a single value spread over column->size() logical rows
+                // but is backed by one physical row. InRuntimeFilter::build() down_casts to the
+                // typed/nullable column and iterates column->size() rows (its is_constant() check is only
+                // a DCHECK, compiled out in release builds), so a ConstColumn would be misinterpreted and
+                // overrun its backing storage. Skip it and leave the merged filter always-true
+                // (conservative and correct), mirroring AggTopNRuntimeFilterBuilder::update().
+                if (build_column->is_constant()) {
+                    skip_constant_build_column = true;
+                    return;
+                }
+                runtime_filter->build(build_column);
+            }
+        });
+
+        if (skip_constant_build_column) {
             return nullptr;
         }
-        auto runtime_filter = InRuntimeFilter<ltype>::create(pool);
-        runtime_filter->build(build_column);
+
         return runtime_filter;
     }
 };
@@ -152,11 +150,37 @@ struct AggTopRuntimeFilterBuilderImpl {
         RuntimeFilter* runtime_filter = MinMaxRuntimeFilter<ltype>::create_full_range_with_null(pool);
         auto* heap_builder = new THeapBuilder<ltype, Comp>(Comp());
         pool->add(heap_builder);
-
-        auto group_by_columns = extract_group_by_columns(aggregator);
-
-        update_runtime_filter<ltype, Comp, isAsc>(heap_builder, runtime_filter, pool,
-                                                  group_by_columns[build_expr_order].get(), limit);
+        auto& hash_map_variant = aggregator->hash_map_variant();
+        hash_map_variant.visit([&](auto& variant_value) {
+            auto& hash_map_with_key = *variant_value;
+            using HashMapWithKey = std::remove_reference_t<decltype(hash_map_with_key)>;
+            using ResultVector = typename HashMapWithKey::ResultVector;
+            auto& hash_map = hash_map_with_key.hash_map;
+            const size_t hash_map_size = hash_map_variant.size();
+            MutableColumns group_by_columns = aggregator->create_group_by_columns(hash_map_size);
+            {
+                ResultVector result_vector;
+                result_vector.resize(hash_map_size);
+                auto it = hash_map.begin();
+                auto end = hash_map.end();
+                size_t read_index = 0;
+                while (it != end) {
+                    result_vector[read_index++] = it->first;
+                    ++it;
+                }
+                if (read_index > 0) {
+                    hash_map_with_key.insert_keys_to_columns(result_vector, group_by_columns, read_index);
+                }
+                if constexpr (HashMapWithKey::has_single_null_key) {
+                    if (hash_map_with_key.null_key_data != nullptr) {
+                        DCHECK(group_by_columns.size() == 1);
+                        group_by_columns[build_expr_order]->append_default();
+                    }
+                }
+                update_runtime_filter<ltype, Comp, isAsc>(heap_builder, runtime_filter, pool,
+                                                          group_by_columns[build_expr_order].get(), limit);
+            }
+        });
         return std::make_pair(runtime_filter, heap_builder);
     }
 

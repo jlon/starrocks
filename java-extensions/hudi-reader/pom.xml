@@ -26,6 +26,7 @@
             <groupId>com.starrocks</groupId>
             <artifactId>hadoop-ext</artifactId>
             <version>1.0.0</version>
+            <scope>provided</scope>
         </dependency>
 
         <!-- https://mvnrepository.com/artifact/org.apache.hadoop/hadoop-client -->
@@ -181,7 +182,6 @@
                         <configuration>
                             <outputDirectory>${project.build.directory}/hudi-reader-lib</outputDirectory>
                             <overWriteIfNewer>true</overWriteIfNewer>
-                            <includeScope>runtime</includeScope>
                         </configuration>
                     </execution>
                 </executions>

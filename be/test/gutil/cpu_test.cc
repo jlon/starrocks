@@ -16,7 +16,7 @@
 
 #include <gtest/gtest.h>
 
-#include "common/system/cpu_info.h"
+#include "util/cpu_info.h"
 
 namespace starrocks {
 

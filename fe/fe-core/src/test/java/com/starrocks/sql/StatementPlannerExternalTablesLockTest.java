@@ -50,9 +50,9 @@ public class StatementPlannerExternalTablesLockTest extends ConnectorPlanTestBas
         private final AtomicInteger getTableCalls;
 
         public BlockingJDBCMetadata(Map<String, String> properties,
-                                   CountDownLatch started,
-                                   CountDownLatch allowReturn,
-                                   AtomicInteger getTableCalls) {
+                                    CountDownLatch started,
+                                    CountDownLatch allowReturn,
+                                    AtomicInteger getTableCalls) {
             super(properties);
             this.started = started;
             this.allowReturn = allowReturn;
@@ -70,34 +70,6 @@ public class StatementPlannerExternalTablesLockTest extends ConnectorPlanTestBas
                 Thread.currentThread().interrupt();
             }
             return super.getTable(context, dbName, tblName);
-        }
-    }
-
-    private static class BlockingJDBCQueryMetadata extends MockedJDBCMetadata {
-        private final CountDownLatch started;
-        private final CountDownLatch allowReturn;
-        private final AtomicInteger getTableFromQueryCalls;
-
-        public BlockingJDBCQueryMetadata(Map<String, String> properties,
-                                         CountDownLatch started,
-                                         CountDownLatch allowReturn,
-                                         AtomicInteger getTableFromQueryCalls) {
-            super(properties);
-            this.started = started;
-            this.allowReturn = allowReturn;
-            this.getTableFromQueryCalls = getTableFromQueryCalls;
-        }
-
-        @Override
-        public Table getTableFromQuery(ConnectContext context, String dbName, String query) {
-            getTableFromQueryCalls.incrementAndGet();
-            started.countDown();
-            try {
-                allowReturn.await(20, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            return super.getTableFromQuery(context, dbName, query);
         }
     }
 
@@ -185,7 +157,7 @@ public class StatementPlannerExternalTablesLockTest extends ConnectorPlanTestBas
     public void testCTEJoinInternalTable() throws Exception {
         // Test CTE joined with internal table
         String sql = "with cte as (select * from jdbc0.partitioned_db0.tbl0) " +
-                     "select * from t0 join cte on t0.v1 = cte.a";
+                "select * from t0 join cte on t0.v1 = cte.a";
         StatementBase stmt = UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
         try {
             StatementPlanner.plan(stmt, connectContext);
@@ -200,8 +172,8 @@ public class StatementPlannerExternalTablesLockTest extends ConnectorPlanTestBas
         // This is the key scenario: CTE with internal table, joined with external table
         // Should pre-parse external table before acquiring lock on internal tables
         String sql = "with cte as (select * from t0) " +
-                     "select * from jdbc0.partitioned_db0.tbl0 " +
-                     "join cte on jdbc0.partitioned_db0.tbl0.a = cte.v1";
+                "select * from jdbc0.partitioned_db0.tbl0 " +
+                "join cte on jdbc0.partitioned_db0.tbl0.a = cte.v1";
         StatementBase stmt = UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
         try {
             StatementPlanner.plan(stmt, connectContext);
@@ -275,70 +247,6 @@ public class StatementPlannerExternalTablesLockTest extends ConnectorPlanTestBas
         Assertions.assertTrue(lockCalled.get());
         // Analyzer should reuse pre-resolved external table; metadata getTable must not be called twice.
         Assertions.assertEquals(1, getTableCalls.get());
-    }
-
-    @Test
-    public void testMixedQueryNativeQueryMetadataNotUnderLock() throws Exception {
-        CountDownLatch started = new CountDownLatch(1);
-        CountDownLatch allowReturn = new CountDownLatch(1);
-        AtomicInteger getTableFromQueryCalls = new AtomicInteger();
-
-        GlobalStateMgr gsm = GlobalStateMgr.getCurrentState();
-        MockedMetadataMgr metadataMgr = (MockedMetadataMgr) gsm.getMetadataMgr();
-        Map<String, String> props = new HashMap<>();
-        props.put(JDBCResource.TYPE, "jdbc");
-        props.put(JDBCResource.DRIVER_CLASS, "org.mariadb.jdbc.Driver");
-        props.put(JDBCResource.URI, "jdbc:mariadb://127.0.0.1:3306");
-        props.put(JDBCResource.USER, "root");
-        props.put(JDBCResource.PASSWORD, "123456");
-        props.put(JDBCResource.CHECK_SUM, "xxxx");
-        props.put(JDBCResource.DRIVER_URL, "xxxx");
-        BlockingJDBCQueryMetadata blocking =
-                new BlockingJDBCQueryMetadata(props, started, allowReturn, getTableFromQueryCalls);
-        metadataMgr.registerMockedMetadata(MockedJDBCMetadata.MOCKED_JDBC_CATALOG_NAME, blocking);
-
-        String sql = "select * from t0 join table(jdbc0.native_query('select * from remote_table')) q on true";
-        StatementBase stmt = UtFrameUtils.parseStmtWithNewParserNotIncludeAnalyzer(sql, connectContext);
-
-        AtomicBoolean lockCalled = new AtomicBoolean(false);
-        PlannerMetaLocker locker = new PlannerMetaLocker(connectContext, stmt) {
-            @Override
-            public void lock() {
-                lockCalled.set(true);
-            }
-
-            @Override
-            public void unlock() {
-                // no-op
-            }
-        };
-
-        AtomicBoolean finished = new AtomicBoolean(false);
-        AtomicReference<Throwable> error = new AtomicReference<>();
-        Thread t = new Thread(() -> {
-            try {
-                StatementPlanner.analyzeStatement(stmt, connectContext, locker);
-                finished.set(true);
-            } catch (Throwable t0) {
-                error.set(t0);
-            }
-        });
-        t.start();
-
-        Assertions.assertTrue(started.await(10, TimeUnit.SECONDS));
-        Assertions.assertFalse(lockCalled.get(),
-                "Meta lock was acquired while JDBC native_query metadata was blocked.");
-
-        allowReturn.countDown();
-        t.join(TimeUnit.SECONDS.toMillis(20));
-
-        if (error.get() != null) {
-            throw new RuntimeException(error.get());
-        }
-        Assertions.assertTrue(finished.get());
-        Assertions.assertTrue(lockCalled.get());
-        Assertions.assertEquals(1, getTableFromQueryCalls.get(),
-                "getTableFromQuery was called " + getTableFromQueryCalls.get() + " times, expected 1.");
     }
 
     @Test
@@ -629,7 +537,7 @@ public class StatementPlannerExternalTablesLockTest extends ConnectorPlanTestBas
         // Scenario: Outer query uses external table "tbl0", nested subquery has CTE with same name "tbl0".
         // The external table should still be pre-resolved (not skipped due to CTE name collision).
         String sql = "select * from jdbc0.partitioned_db0.tbl0 t " +
-                     "where exists (with tbl0 as (select * from t0) select * from tbl0)";
+                "where exists (with tbl0 as (select * from t0) select * from tbl0)";
         StatementBase stmt = UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
         try {
             StatementPlanner.plan(stmt, connectContext);
@@ -663,7 +571,7 @@ public class StatementPlannerExternalTablesLockTest extends ConnectorPlanTestBas
 
         // Outer query uses external table "tbl0", nested subquery has CTE "tbl0"
         String sql = "select * from t0 join jdbc0.partitioned_db0.tbl0 on true " +
-                     "where exists (with tbl0 as (select * from t0) select * from tbl0)";
+                "where exists (with tbl0 as (select * from t0) select * from tbl0)";
         StatementBase stmt = UtFrameUtils.parseStmtWithNewParserNotIncludeAnalyzer(sql, connectContext);
 
         AtomicBoolean lockCalled = new AtomicBoolean(false);
@@ -739,7 +647,7 @@ public class StatementPlannerExternalTablesLockTest extends ConnectorPlanTestBas
             metadataMgr.registerMockedMetadata(MockedJDBCMetadata.MOCKED_JDBC_CATALOG_NAME, blocking);
 
             String sql = "with tbl0 as (select * from jdbc0.partitioned_db0.tbl0) " +
-                         "select * from default_catalog.test.t0 join tbl0 on true";
+                    "select * from default_catalog.test.t0 join tbl0 on true";
             StatementBase stmt = UtFrameUtils.parseStmtWithNewParserNotIncludeAnalyzer(sql, connectContext);
 
             AtomicBoolean lockCalled = new AtomicBoolean(false);

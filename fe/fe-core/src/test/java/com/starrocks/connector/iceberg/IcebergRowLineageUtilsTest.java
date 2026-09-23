@@ -47,7 +47,7 @@ public class IcebergRowLineageUtilsTest {
         IcebergTable icebergTable = Mockito.mock(IcebergTable.class);
         Mockito.when(icebergTable.getFormatVersion()).thenReturn(3);
 
-        IcebergRewriteStmt rewriteStmt = new IcebergRewriteStmt(newInsertStmt(), true, true, false);
+        IcebergRewriteStmt rewriteStmt = new IcebergRewriteStmt(newInsertStmt(), true, true);
 
         Assertions.assertTrue(
                 IcebergRowLineageUtils.shouldWriteRowLineageColumns(rewriteStmt, icebergTable));
@@ -58,7 +58,7 @@ public class IcebergRowLineageUtilsTest {
         IcebergTable icebergTable = Mockito.mock(IcebergTable.class);
         Mockito.when(icebergTable.getFormatVersion()).thenReturn(3);
 
-        IcebergRewriteStmt rewriteStmt = new IcebergRewriteStmt(newInsertStmt(), true, false, false);
+        IcebergRewriteStmt rewriteStmt = new IcebergRewriteStmt(newInsertStmt(), true, false);
 
         Assertions.assertFalse(
                 IcebergRowLineageUtils.shouldWriteRowLineageColumns(rewriteStmt, icebergTable));
@@ -69,7 +69,7 @@ public class IcebergRowLineageUtilsTest {
         IcebergTable icebergTable = Mockito.mock(IcebergTable.class);
         Mockito.when(icebergTable.getFormatVersion()).thenReturn(2);
 
-        IcebergRewriteStmt rewriteStmt = new IcebergRewriteStmt(newInsertStmt(), true, true, false);
+        IcebergRewriteStmt rewriteStmt = new IcebergRewriteStmt(newInsertStmt(), true, true);
 
         Assertions.assertFalse(
                 IcebergRowLineageUtils.shouldWriteRowLineageColumns(rewriteStmt, icebergTable));

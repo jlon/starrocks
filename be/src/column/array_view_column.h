@@ -23,6 +23,7 @@
 #include "column/fixed_length_column.h"
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
+
 namespace starrocks {
 
 class ArrayViewColumn final : public CowFactory<ColumnFactory<Column, ArrayViewColumn>, ArrayViewColumn> {
@@ -34,13 +35,21 @@ public:
     ArrayViewColumn(ColumnPtr elements, UInt32Column::Ptr offsets, UInt32Column::Ptr lengths)
             : _elements(std::move(elements)), _offsets(std::move(offsets)), _lengths(std::move(lengths)) {}
 
-    DISALLOW_COPY(ArrayViewColumn);
+    ArrayViewColumn(const ArrayViewColumn& rhs)
+            : _elements(rhs._elements),
+              _offsets(UInt32Column::static_pointer_cast(rhs._offsets->clone())),
+              _lengths(UInt32Column::static_pointer_cast(rhs._lengths->clone())) {}
 
     ArrayViewColumn(ArrayViewColumn&& rhs) noexcept
             : _elements(std::move(rhs._elements)),
               _offsets(std::move(rhs._offsets)),
               _lengths(std::move(rhs._lengths)) {}
 
+    ArrayViewColumn& operator=(const ArrayViewColumn& rhs) {
+        ArrayViewColumn tmp(rhs);
+        this->swap_column(tmp);
+        return *this;
+    }
     ArrayViewColumn& operator=(ArrayViewColumn&& rhs) noexcept {
         ArrayViewColumn tmp(std::move(rhs));
         this->swap_column(tmp);
@@ -50,6 +59,16 @@ public:
     ~ArrayViewColumn() override = default;
 
     bool is_array_view() const override { return true; }
+
+    const uint8_t* raw_data() const override {
+        DCHECK(false) << "ArrayViewColumn::raw_data() is not supported";
+        throw std::runtime_error("ArrayViewColumn::raw_data() is not supported");
+    }
+
+    uint8_t* mutable_raw_data() override {
+        DCHECK(false) << "ArrayViewColumn::mutable_raw_data() is not supported";
+        throw std::runtime_error("ArrayViewColumn::mutable_raw_data() is not supported");
+    }
 
     size_t size() const override { return _offsets->size(); }
     size_t capacity() const override { return _offsets->capacity() + _lengths->capacity(); }
@@ -123,12 +142,6 @@ public:
     void deserialize_and_append_batch(Buffer<Slice>& srcs, size_t chunk_size) override;
 
     MutableColumnPtr clone_empty() const override;
-
-    MutableColumnPtr clone() const override {
-        auto p = clone_empty();
-        p->append(*this, 0, size());
-        return p;
-    }
 
     size_t filter_range(const Filter& filter, size_t from, size_t to) override;
 

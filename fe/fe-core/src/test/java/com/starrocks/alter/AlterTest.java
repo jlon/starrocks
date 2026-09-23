@@ -84,6 +84,7 @@ import com.starrocks.sql.ast.AlterClause;
 import com.starrocks.sql.ast.AlterDatabaseQuotaStmt;
 import com.starrocks.sql.ast.AlterDatabaseRenameStatement;
 import com.starrocks.sql.ast.AlterMaterializedViewStmt;
+import com.starrocks.sql.ast.AlterSystemStmt;
 import com.starrocks.sql.ast.AlterTableStmt;
 import com.starrocks.sql.ast.CancelRefreshMaterializedViewStmt;
 import com.starrocks.sql.ast.ColumnRenameClause;
@@ -596,7 +597,7 @@ public class AlterTest {
         // alterTable(stmt, true);
 
         // no conflict
-        stmt = "alter table test.tbl1 add column k3 int key, add column k4 int key";
+        stmt = "alter table test.tbl1 add column k3 int, add column k4 int";
         alterTableWithNewParser(stmt, false);
         waitSchemaChangeJobDone(false, tbl);
 
@@ -1473,22 +1474,22 @@ public class AlterTest {
         ConnectContext ctx = starRocksAssert.getCtx();
 
         String addBackendSql = "ALTER SYSTEM ADD BACKEND \"192.168.1.1:8080\",\"192.168.1.2:8080\"";
-        UtFrameUtils.parseStmtWithNewParser(addBackendSql, ctx);
+        AlterSystemStmt addBackendStmt = (AlterSystemStmt) UtFrameUtils.parseStmtWithNewParser(addBackendSql, ctx);
 
         String dropBackendSql = "ALTER SYSTEM DROP BACKEND \"192.168.1.1:8080\",\"192.168.1.2:8080\"";
-        UtFrameUtils.parseStmtWithNewParser(dropBackendSql, ctx);
+        AlterSystemStmt dropBackendStmt = (AlterSystemStmt) UtFrameUtils.parseStmtWithNewParser(dropBackendSql, ctx);
 
         String addObserverSql = "ALTER SYSTEM ADD OBSERVER \"192.168.1.1:8080\"";
-        UtFrameUtils.parseStmtWithNewParser(addObserverSql, ctx);
+        AlterSystemStmt addObserverStmt = (AlterSystemStmt) UtFrameUtils.parseStmtWithNewParser(addObserverSql, ctx);
 
         String dropObserverSql = "ALTER SYSTEM DROP OBSERVER \"192.168.1.1:8080\"";
-        UtFrameUtils.parseStmtWithNewParser(dropObserverSql, ctx);
+        AlterSystemStmt dropObserverStmt = (AlterSystemStmt) UtFrameUtils.parseStmtWithNewParser(dropObserverSql, ctx);
 
         String addFollowerSql = "ALTER SYSTEM ADD FOLLOWER \"192.168.1.1:8080\"";
-        UtFrameUtils.parseStmtWithNewParser(addFollowerSql, ctx);
+        AlterSystemStmt addFollowerStmt = (AlterSystemStmt) UtFrameUtils.parseStmtWithNewParser(addFollowerSql, ctx);
 
         String dropFollowerSql = "ALTER SYSTEM DROP FOLLOWER \"192.168.1.1:8080\"";
-        UtFrameUtils.parseStmtWithNewParser(dropFollowerSql, ctx);
+        AlterSystemStmt dropFollowerStmt = (AlterSystemStmt) UtFrameUtils.parseStmtWithNewParser(dropFollowerSql, ctx);
     }
 
     @Test
@@ -2725,7 +2726,7 @@ public class AlterTest {
             PartitionRef partitionNames = new PartitionRef(Arrays.asList("p1"), true, NodePosition.ZERO);
             TruncatePartitionClause clause = new TruncatePartitionClause(partitionNames);
             cList.add(clause);
-            new AlterJobMgr(
+            AlterJobMgr alter = new AlterJobMgr(
                     new SchemaChangeHandler(),
                     new MaterializedViewHandler(),
                     new SystemHandler());

@@ -14,8 +14,6 @@
 
 package com.starrocks.transaction;
 
-import com.starrocks.ha.FrontendNodeType;
-import com.starrocks.server.GlobalStateMgr;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,20 +24,7 @@ public class GtidGeneratorTest {
 
     @BeforeEach
     public void setUp() {
-        GlobalStateMgr.getCurrentState().setFrontendNodeType(FrontendNodeType.LEADER);
         gtidGenerator = new GtidGenerator();
-    }
-
-    @Test
-    public void testNextGtidRequiresLeader() {
-        GlobalStateMgr.getCurrentState().setFrontendNodeType(FrontendNodeType.FOLLOWER);
-        // Every FE builds a generator at startup, so construction alone must not generate a gtid.
-        GtidGenerator generator = new GtidGenerator();
-        IllegalStateException e = Assertions.assertThrows(IllegalStateException.class, generator::nextGtid);
-        Assertions.assertTrue(e.getMessage().contains("leader"), e.getMessage());
-
-        GlobalStateMgr.getCurrentState().setFrontendNodeType(FrontendNodeType.LEADER);
-        Assertions.assertTrue(generator.nextGtid() > 0);
     }
 
     @Test
@@ -79,7 +64,7 @@ public class GtidGeneratorTest {
 
     @Test
     public void testNextGtidResetsSequenceOnNewMillisecond() throws InterruptedException {
-        gtidGenerator.nextGtid();
+        long firstGtid = gtidGenerator.nextGtid();
         Thread.sleep(1); // Ensure the next GTID is in a new millisecond
         long nextGtid = gtidGenerator.nextGtid();
 
@@ -89,11 +74,9 @@ public class GtidGeneratorTest {
     @Test
     public void testNextGtidWhenSystemClockGoesBackwards() {
         gtidGenerator.setLastGtid(Long.MAX_VALUE); // Simulate a GTID with a far future timestamp
-        IllegalStateException e = Assertions.assertThrows(IllegalStateException.class,
-                () -> gtidGenerator.nextGtid(),
-                "Should throw an IllegalStateException when the system clock goes backwards");
-        // The leader guard throws the same type, so pin this to the overflow it is meant to cover.
-        Assertions.assertTrue(e.getMessage().contains("Timestamp overflow"), e.getMessage());
+        Assertions.assertThrows(IllegalStateException.class, () -> {
+            gtidGenerator.nextGtid();
+        }, "Should throw an IllegalStateException when the system clock goes backwards");
     }
 
     @Test

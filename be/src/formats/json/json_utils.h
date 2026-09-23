@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include "types/type_descriptor.h"
+#include "runtime/types.h"
 namespace starrocks {
 class JsonUtils {
 public:

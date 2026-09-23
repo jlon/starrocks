@@ -17,15 +17,14 @@
 #include <sstream>
 #include <string>
 
-#include "base/utility/defer_op.h"
-#include "common/config_http_fwd.h"
 #include "common/process_exit.h"
-#include "platform/http/http_channel.h"
-#include "platform/http/http_request.h"
-#include "platform/http/http_status.h"
+#include "http/http_channel.h"
+#include "http/http_request.h"
+#include "http/http_status.h"
+#include "util/defer_op.h"
 
 #ifdef USE_STAROS
-#include "compute_env/staros/staros_worker_runtime.h"
+#include "service/staros_worker.h"
 #endif
 
 namespace starrocks {
@@ -42,13 +41,6 @@ std::string StopBeAction::construct_response_message(const std::string& msg) {
 
 void StopBeAction::handle(HttpRequest* req) {
     LOG(INFO) << "Accept one stop_be request " << req->debug_string();
-
-    if (!config::enable_stop_be_action) {
-        LOG(WARNING) << "Reject stop_be request because config::enable_stop_be_action is false";
-        HttpChannel::send_reply(req, HttpStatus::FORBIDDEN,
-                                construct_response_message("stop_be action is disabled by config"));
-        return;
-    }
 
     DeferOp defer([&]() {
 #ifdef USE_STAROS

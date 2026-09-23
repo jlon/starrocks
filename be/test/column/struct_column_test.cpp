@@ -17,7 +17,6 @@
 #include <gtest/gtest.h>
 
 #include "column/binary_column.h"
-#include "column/column_helper.h"
 #include "column/fixed_length_column.h"
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
@@ -79,7 +78,7 @@ TEST(StructColumnTest, test_column_downgrade) {
         fields.emplace_back(std::move(name));
         auto column = StructColumn::create(std::move(fields), field_name);
 
-        for (uint64_t i = 0; i < 10; i++) {
+        for (size_t i = 0; i < 10; i++) {
             column->append_datum(DatumStruct{i, Slice(std::to_string(i))});
         }
 
@@ -89,7 +88,7 @@ TEST(StructColumnTest, test_column_downgrade) {
         ASSERT_TRUE(ret.value() == nullptr);
         ASSERT_FALSE(column->has_large_column());
         ASSERT_EQ(column->size(), 10);
-        for (uint64_t i = 0; i < 10; i++) {
+        for (size_t i = 0; i < 10; i++) {
             DatumStruct datum = column->get(i).get_struct();
             ASSERT_EQ(i, datum[0].get_uint64());
             ASSERT_EQ(std::to_string(i), datum[1].get_slice());
@@ -209,9 +208,9 @@ TEST(StructColumnTest, equals) {
 TEST(StructColumnTest, test_byte_size) {
     auto col = create_test_column();
 
-    ASSERT_EQ(sizeof(uint64_t) * 2 + sizeof(uint32_t) * 2 + 11 + 2 * 2, col->byte_size());
-    ASSERT_EQ(sizeof(uint64_t) + sizeof(uint32_t) + 6 + 2, col->byte_size(1, 1));
-    ASSERT_EQ(sizeof(uint64_t) + sizeof(uint32_t) + 5 + 2, col->byte_size(0));
+    ASSERT_EQ(sizeof(uint64_t) * 2 + sizeof(BinaryColumn::Offset) * 2 + 11 + 2 * 2, col->byte_size());
+    ASSERT_EQ(sizeof(uint64_t) + sizeof(BinaryColumn::Offset) + 6 + 2, col->byte_size(1, 1));
+    ASSERT_EQ(sizeof(uint64_t) + sizeof(BinaryColumn::Offset) + 5 + 2, col->byte_size(0));
 }
 
 TEST(StructColumnTest, test_resize) {
@@ -286,16 +285,15 @@ TEST(StructColumnTest, test_copy_construtor) {
     ASSERT_EQ("{id:1,name:'smith'}", col->debug_item(0));
     ASSERT_EQ("{id:2,name:'cruise'}", col->debug_item(1));
 
-    auto copy_ptr = col->clone();
-    auto* copy = down_cast<StructColumn*>(copy_ptr.get());
+    StructColumn copy(*col);
     col->reset_column();
     ASSERT_EQ(0, col->size());
-    ASSERT_EQ(2, copy->size());
-    ASSERT_EQ("{id:1,name:'smith'}", copy->debug_item(0));
-    ASSERT_EQ("{id:2,name:'cruise'}", copy->debug_item(1));
+    ASSERT_EQ(2, copy.size());
+    ASSERT_EQ("{id:1,name:'smith'}", copy.debug_item(0));
+    ASSERT_EQ("{id:2,name:'cruise'}", copy.debug_item(1));
 
-    ASSERT_TRUE(copy->get_column_by_idx(0)->use_count() == 1);
-    ASSERT_TRUE(copy->get_column_by_idx(1)->use_count() == 1);
+    ASSERT_TRUE(copy.get_column_by_idx(0)->use_count() == 1);
+    ASSERT_TRUE(copy.get_column_by_idx(1)->use_count() == 1);
 }
 
 TEST(StructColumnTest, test_move_construtor) {

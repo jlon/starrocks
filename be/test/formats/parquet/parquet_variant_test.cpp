@@ -14,15 +14,15 @@
 
 #include <fs/fs.h>
 #include <gtest/gtest.h>
+#include <util/variant.h>
 
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_io.hpp>
 
-#include "base/testutil/assert.h"
-#include "base/url_coding.h"
-#include "types/decimalv3.h"
+#include "runtime/decimalv3.h"
+#include "testutil/assert.h"
 #include "types/timestamp_value.h"
-#include "types/variant.h"
+#include "util/url_coding.h"
 
 namespace starrocks::parquet {
 
@@ -293,13 +293,10 @@ TEST_F(ParquetVariantTest, TimestampValue) {
 }
 
 std::string epoch_day_to_date(int32_t epoch_days) {
-    std::time_t raw_time = static_cast<std::time_t>(epoch_days) * 86400; // to seconds
-    std::tm tm_buf{};
-    if (gmtime_r(&raw_time, &tm_buf) == nullptr) {
-        return {};
-    }
+    std::time_t raw_time = epoch_days * 86400; // to seconds
+    std::tm* ptm = std::gmtime(&raw_time);     // to UTC
     char buffer[11];
-    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &tm_buf);
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", ptm);
     return buffer;
 }
 

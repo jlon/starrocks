@@ -21,6 +21,7 @@ import com.starrocks.common.profile.Tracers;
 import com.starrocks.common.util.UUIDUtil;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.DDLStmtExecutor;
+import com.starrocks.qe.QueryState;
 import com.starrocks.qe.StmtExecutor;
 import com.starrocks.sql.analyzer.Analyzer;
 import com.starrocks.sql.analyzer.AstToSQLBuilder;
@@ -149,7 +150,7 @@ public class RecursiveCTEExecutor {
                 executor = StmtExecutor.newInternalExecutor(connectContext, insert);
                 connectContext.setQueryId(UUIDUtil.genUUID());
                 executor.execute();
-                if (connectContext.getState().isError()) {
+                if (!connectContext.getState().getErrType().equals(QueryState.ErrType.UNKNOWN)) {
                     LOG.warn("Error occurred during executing recursive CTE start statement: {}",
                             connectContext.getState().getErrorMessage());
                     throw new RuntimeException("Error occurred during executing recursive CTE start statement: " +
@@ -164,16 +165,15 @@ public class RecursiveCTEExecutor {
                     executor = StmtExecutor.newInternalExecutor(connectContext, insert);
                     connectContext.setQueryId(UUIDUtil.genUUID());
                     executor.execute();
-                    // Once the insert has failed, checking affected rows is meaningless.
-                    if (connectContext.getState().isError()) {
-                        LOG.warn("Error occurred during executing recursive CTE recursive statement at iteration {}: {}",
-                                i, connectContext.getState().getErrorMessage());
-                        throw new RuntimeException("Error occurred during executing recursive CTE recursive statement" +
-                                " at iteration " + i + ": " + connectContext.getState().getErrorMessage());
-                    }
                     if (connectContext.getState().getAffectedRows() <= 0) {
                         // no more rows inserted, break
                         break;
+                    }
+                    if (connectContext.getState().getErrType() != QueryState.ErrType.UNKNOWN) {
+                        LOG.warn("Error occurred during executing recursive CTE recursive statement: {}",
+                                connectContext.getState().getErrorMessage());
+                        throw new RuntimeException("Error occurred during executing recursive CTE recursive statement: " +
+                                connectContext.getState().getErrorMessage());
                     }
                 }
                 if (connectContext.getState().getAffectedRows() > 0

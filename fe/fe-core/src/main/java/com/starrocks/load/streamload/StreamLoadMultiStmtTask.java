@@ -26,7 +26,6 @@ import com.starrocks.http.rest.ActionStatus;
 import com.starrocks.http.rest.TransactionResult;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.ast.txn.BeginStmt;
 import com.starrocks.sql.ast.txn.CommitStmt;
@@ -372,24 +371,10 @@ public class StreamLoadMultiStmtTask extends AbstractStreamLoadTask {
         if (context.getExecutionId() == null) {
             context.setExecutionId(loadId);
         }
-        // Bind the context to the task's warehouse and compute resource before the transaction is
-        // created: TransactionStmtExecutor.beginStmt stores context.getCurrentComputeResource() in
-        // the TransactionState, and createPartition, updateImmutablePartition and publish derive
-        // tablet locations and nodes from it. In shared-data mode getCurrentComputeResource() never
-        // returns null: it acquires a resource from the context's warehouse (the default one for
-        // this private context) and re-acquires whenever the resource's warehouse differs from the
-        // context's, so a null check left the transaction on the default warehouse while the load's
-        // coordinator runs on the task's warehouse.
-        if (RunMode.isSharedDataMode()) {
-            context.setCurrentWarehouseId(computeResource.getWarehouseId());
+        // Also propagate compute resource so the txn carries the same resource context.
+        if (context.getCurrentComputeResource() == null) {
+            context.setCurrentComputeResource(computeResource);
         }
-        context.setCurrentComputeResource(computeResource);
-        // The transaction's timeout is the task's (the HTTP "timeout" header), as for a classic
-        // stream load: TransactionStmtExecutor.beginStmt takes it from context.getExecTimeout(),
-        // i.e. the session's query_timeout, and the transaction is visible to the transaction
-        // timeout checker from the first load. commitStmt's lock and publish waits follow the
-        // same value. Set it after the warehouse binding, which replaces the session variables.
-        context.getSessionVariable().setQueryTimeoutS((int) Math.max(1L, timeoutMs / 1000L));
 
         TransactionStmtExecutor.beginStmt(context, new BeginStmt(NodePosition.ZERO),
                 TransactionState.LoadJobSourceType.MULTI_STATEMENT_STREAMING, label);
@@ -862,19 +847,9 @@ public class StreamLoadMultiStmtTask extends AbstractStreamLoadTask {
                 if (!checkLoadAllowed(resp)) {
                     return null;
                 }
-                task = taskMaps.get(table.getName());
+                task = taskMaps.putIfAbsent(table.getName(), newTask);
                 if (task == null) {
-                    // Register the transaction with DatabaseTransactionMgr and add this table to it
-                    // before the sub-task exists, as the INSERT path of an explicit transaction does
-                    // before it executes. The BE looks the transaction up there while it writes
-                    // (createPartition for automatic partitioning, updateImmutablePartition for
-                    // automatic bucketing); a transaction that only reaches DatabaseTransactionMgr at
-                    // commit fails those lookups with "txn %d not exist". It also lets a failed
-                    // sub-task abort the shared transaction (StreamLoadTask.cancelTask). If this
-                    // throws, nothing is added to taskMaps and executeLoadTask aborts the transaction.
-                    TransactionStmtExecutor.activateTable(dbId, table.getId(), context);
                     task = newTask;
-                    taskMaps.put(table.getName(), task);
                     boolean isFirstSubTask = taskMaps.size() == 1;
                     LOG.info("Add stream load task {}", task.getShowInfo());
                     task.tryBegin(0, 1, txnId);
@@ -989,9 +964,9 @@ public class StreamLoadMultiStmtTask extends AbstractStreamLoadTask {
     }
 
     @Override
-    public void afterPrepared(TransactionState txnState) throws StarRocksException {
+    public void afterPrepared(TransactionState txnState, boolean txnOperated) throws StarRocksException {
         for (StreamLoadTask task : taskMaps.values()) {
-            task.afterPrepared(txnState);
+            task.afterPrepared(txnState, txnOperated);
         }
     }
 
@@ -1010,9 +985,9 @@ public class StreamLoadMultiStmtTask extends AbstractStreamLoadTask {
     }
 
     @Override
-    public void afterCommitted(TransactionState txnState) throws StarRocksException {
+    public void afterCommitted(TransactionState txnState, boolean txnOperated) throws StarRocksException {
         for (StreamLoadTask task : taskMaps.values()) {
-            task.afterCommitted(txnState);
+            task.afterCommitted(txnState, txnOperated);
         }
     }
 
@@ -1024,10 +999,10 @@ public class StreamLoadMultiStmtTask extends AbstractStreamLoadTask {
     }
 
     @Override
-    public void afterAborted(TransactionState txnState, String txnStatusChangeReason)
+    public void afterAborted(TransactionState txnState, boolean txnOperated, String txnStatusChangeReason)
             throws StarRocksException {
         for (StreamLoadTask task : taskMaps.values()) {
-            task.afterAborted(txnState, txnStatusChangeReason);
+            task.afterAborted(txnState, txnOperated, txnStatusChangeReason);
         }
     }
 
@@ -1039,9 +1014,9 @@ public class StreamLoadMultiStmtTask extends AbstractStreamLoadTask {
     }
 
     @Override
-    public void afterVisible(TransactionState txnState) {
+    public void afterVisible(TransactionState txnState, boolean txnOperated) {
         for (StreamLoadTask task : taskMaps.values()) {
-            task.afterVisible(txnState);
+            task.afterVisible(txnState, txnOperated);
         }
     }
 

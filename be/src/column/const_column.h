@@ -14,13 +14,11 @@
 
 #pragma once
 
-#include <sstream>
-
 #include "column/column.h"
+#include "column/datum.h"
 #include "column/vectorized_fwd.h"
 #include "common/logging.h"
 #include "gutil/strings/substitute.h"
-#include "types/datum.h"
 
 namespace starrocks {
 
@@ -33,9 +31,15 @@ public:
     explicit ConstColumn(ColumnPtr data_column);
     ConstColumn(ColumnPtr data_column, size_t size);
 
-    DISALLOW_COPY(ConstColumn);
+    ConstColumn(const ConstColumn& rhs) : _data(rhs._data->clone()), _size(rhs._size) {}
 
     ConstColumn(ConstColumn&& rhs) noexcept : _data(std::move(rhs._data)), _size(rhs._size) {}
+
+    ConstColumn& operator=(const ConstColumn& rhs) {
+        ConstColumn tmp(rhs);
+        this->swap_column(tmp);
+        return *this;
+    }
 
     ConstColumn& operator=(ConstColumn&& rhs) noexcept {
         ConstColumn tmp(std::move(rhs));
@@ -60,6 +64,10 @@ public:
     bool has_null() const override { return _data->has_null(); }
 
     bool is_constant() const override { return true; }
+
+    const uint8_t* raw_data() const override { return _data->raw_data(); }
+
+    uint8_t* mutable_raw_data() override { return reinterpret_cast<uint8_t*>(_data->mutable_raw_data()); }
 
     size_t size() const override { return _size; }
 
@@ -194,8 +202,6 @@ public:
     uint32_t serialize_size(size_t idx) const override { return _data->serialize_size(0); }
 
     MutableColumnPtr clone_empty() const override { return create(_data->clone_empty(), 0); }
-
-    MutableColumnPtr clone() const override { return create(_data->clone(), _size); }
 
     size_t filter_range(const Filter& filter, size_t from, size_t to) override;
 

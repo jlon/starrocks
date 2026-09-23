@@ -36,7 +36,9 @@ package com.starrocks.sql.ast.expression;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
+import com.starrocks.catalog.FunctionSet;
 import com.starrocks.sql.ast.AstVisitor;
 import com.starrocks.sql.ast.AstVisitorExtendInterface;
 import com.starrocks.sql.ast.HintNode;
@@ -47,6 +49,7 @@ import org.apache.commons.collections.CollectionUtils;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Representation of an analytic function call with OVER clause.
@@ -84,11 +87,6 @@ public class AnalyticExpr extends Expr {
 
     private boolean useHashBasedPartition;
     private boolean isSkewed;
-    private boolean forceMergeSort;
-
-    // Skew hint with explicit column and values: [skew|t.column(value1, value2, ...)]
-    private Expr skewColumn;
-    private List<Expr> skewValues;
 
     // SQL string of this AnalyticExpr before standardization. Returned in toSqlImpl().
     private String sqlString;
@@ -115,11 +113,11 @@ public class AnalyticExpr extends Expr {
 
     public AnalyticExpr(FunctionCallExpr fnCall, List<Expr> partitionExprs, List<OrderByElement> orderByElements,
                         AnalyticWindow window, List<String> hints) {
-        this(fnCall, partitionExprs, orderByElements, window, hints, NodePosition.ZERO, null, List.of());
+        this(fnCall, partitionExprs, orderByElements, window, hints, NodePosition.ZERO);
     }
 
     public AnalyticExpr(FunctionCallExpr fnCall, List<Expr> partitionExprs, List<OrderByElement> orderByElements,
-                        AnalyticWindow window, List<String> hints, NodePosition pos, Expr skewColumn, List<Expr> skewValues) {
+                        AnalyticWindow window, List<String> hints, NodePosition pos) {
         super(pos);
         Preconditions.checkNotNull(fnCall);
         this.fnCall = fnCall;
@@ -130,7 +128,7 @@ public class AnalyticExpr extends Expr {
         }
 
         this.window = window;
-        this.skewValues = List.of();
+
         if (CollectionUtils.isNotEmpty(hints)) {
             for (String hint : hints) {
                 if (HintNode.HINT_ANALYTIC_SORT.equalsIgnoreCase(hint) ||
@@ -140,16 +138,8 @@ public class AnalyticExpr extends Expr {
                 } else if (HintNode.HINT_ANALYTIC_SKEW.equalsIgnoreCase(hint)) {
                     this.skewHint = hint;
                     this.isSkewed = true;
-                } else if (HintNode.HINT_ANALYTIC_SKEW_EXPLICIT.equalsIgnoreCase(hint)) {
-                    this.skewHint = hint;
-                    this.skewColumn = skewColumn;
-                    this.skewValues = skewValues;
-                } else if (HintNode.HINT_ANALYTIC_MERGE_SORT.equalsIgnoreCase(hint)) {
-                    this.skewHint = hint;
-                    this.forceMergeSort = true;
                 } else {
-                    Preconditions.checkState(false,
-                            "partition by hint can only be 'sort' or 'hash' or 'skew' or 'skewed' or 'merge_sort'");
+                    Preconditions.checkState(false, "partition by hint can only be 'sort' or 'hash' or 'skew'");
                 }
             }
         }
@@ -175,9 +165,6 @@ public class AnalyticExpr extends Expr {
         skewHint = other.skewHint;
         useHashBasedPartition = other.useHashBasedPartition;
         isSkewed = other.isSkewed;
-        forceMergeSort = other.forceMergeSort;
-        skewColumn = (other.skewColumn != null ? other.skewColumn.clone() : null);
-        skewValues = ExprUtils.cloneList(other.skewValues);
         sqlString = other.sqlString;
         setChildren();
     }
@@ -218,18 +205,6 @@ public class AnalyticExpr extends Expr {
         return sqlString;
     }
 
-    public Expr getSkewColumn() {
-        return skewColumn;
-    }
-
-    public List<Expr> getSkewValues() {
-        return skewValues;
-    }
-
-    public boolean isForceMergeSort() {
-        return forceMergeSort;
-    }
-
     @Override
     public boolean equalsWithoutChild(Object obj) {
         if (!super.equalsWithoutChild(obj)) {
@@ -246,9 +221,6 @@ public class AnalyticExpr extends Expr {
                 Objects.equals(skewHint, o.skewHint) &&
                 Objects.equals(useHashBasedPartition, o.useHashBasedPartition) &&
                 Objects.equals(isSkewed, o.isSkewed) &&
-                Objects.equals(forceMergeSort, o.forceMergeSort) &&
-                Objects.equals(skewColumn, o.skewColumn) &&
-                Objects.equals(skewValues, o.skewValues) &&
                 Objects.equals(fnCall.getIgnoreNulls(), o.fnCall.getIgnoreNulls());
     }
 
@@ -347,7 +319,27 @@ public class AnalyticExpr extends Expr {
         // so need to calculate super's hashCode.
         // field window is correlated with field resetWindow, so no need to add resetWindow when calculating hashCode.
         return Objects.hash(type, fnCall, partitionExprs, orderByElements, window, partitionHint, skewHint,
-                useHashBasedPartition, isSkewed, forceMergeSort, skewColumn, skewValues);
+                useHashBasedPartition, isSkewed);
     }
 
+    // aggregation function over unbounded window without sliding frame can convert into
+    // null-safe-eq join with aggregation
+    // for an example:
+    // Q1: select a, b, count(distinct c) over (partition by a,b) from t;
+    // equals to
+    // Q2: with cte as (select a,b, count(distinct c) cdc from t group by a,b)
+    //     select t.a,t.b,cte.cdc from t inner join cte on t.a <=> cte.a and t.b <= cte.b
+    public boolean isUnboundedWindowWithoutSlidingFrame() {
+        if (window != null && !window.getType().equals(AnalyticWindow.Type.RANGE)) {
+            return false;
+        }
+
+        final Set<String> supportFunctions = ImmutableSet.of(
+                FunctionSet.SUM,
+                FunctionSet.AVG,
+                FunctionSet.COUNT,
+                FunctionSet.ARRAY_AGG,
+                FunctionSet.ARRAY_AGG_DISTINCT);
+        return supportFunctions.contains(fnCall.getFunctionName());
+    }
 }

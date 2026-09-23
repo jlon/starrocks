@@ -38,10 +38,6 @@ public class PartitionPublishVersionData {
         this.partitionId = partitionId;
     }
 
-    public long getTableId() {
-        return tableId;
-    }
-
     public long getPartitionId() {
         return partitionId;
     }

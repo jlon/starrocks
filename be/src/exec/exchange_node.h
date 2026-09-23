@@ -34,10 +34,9 @@
 
 #pragma once
 
-#include "common/statusor.h"
-#include "compute_env/data_stream/data_stream_recvr.h"
-#include "exec_primitive/exec_node.h"
-#include "exprs/sort_exec_exprs.h"
+#include "exec/exec_node.h"
+#include "exec/sort_exec_exprs.h"
+#include "runtime/data_stream_recvr.h"
 
 namespace starrocks {
 
@@ -72,7 +71,8 @@ public:
     // recorded in TPlanNode, and before calling prepare()
     void set_num_senders(int num_senders) { _num_senders = num_senders; }
 
-    StatusOr<pipeline::OpFactories> decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
+    std::vector<std::shared_ptr<pipeline::OperatorFactory>> decompose_to_pipeline(
+            pipeline::PipelineBuilderContext* context) override;
 
 protected:
     void debug_string(int indentation_level, std::stringstream* out) const override;
@@ -84,13 +84,13 @@ private:
 
     const TExchangeNode& _texchange_node;
 
-    int _num_senders{0}; // needed for _stream_recvr construction
+    int _num_senders; // needed for _stream_recvr construction
 
     // created in prepare() and owned by the RuntimeState
     std::shared_ptr<DataStreamRecvr> _stream_recvr;
 
     // our input rows are a prefix of the rows we produce
-    RecordDescriptor _input_record_desc;
+    RowDescriptor _input_row_desc;
 
     ChunkUniquePtr _input_chunk;
     bool _is_finished = false;
@@ -109,7 +109,7 @@ private:
     int64_t _offset;
 
     // Number of rows skipped so far.
-    int64_t _num_rows_skipped{0};
+    int64_t _num_rows_skipped;
 
     // Sub plan query statistics receiver. It is shared with DataStreamRecvr and will be
     // called in two different threads. When ExchangeNode is destructed, this may be accessed

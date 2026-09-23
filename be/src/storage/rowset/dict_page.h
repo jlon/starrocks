@@ -18,17 +18,17 @@
 #include <memory>
 #include <string>
 
-#include "base/phmap/phmap.h"
 #include "gen_cpp/segment.pb.h"
 #include "gutil/hash/string_hash.h"
 #include "runtime/mem_pool.h"
 #include "storage/olap_common.h"
+#include "storage/range.h"
 #include "storage/rowset/bitshuffle_page.h"
+#include "storage/rowset/common.h"
 #include "storage/rowset/options.h"
 #include "storage/rowset/plain_page.h"
 #include "storage/types.h"
-#include "storage_primitive/range.h"
-#include "storage_primitive/rowid_types.h"
+#include "util/phmap/phmap.h"
 
 namespace starrocks {
 
@@ -68,8 +68,8 @@ struct DataTypeTraits<TYPE_SMALLINT> {
 
 template <LogicalType Type>
 class DictPageBuilder final : public PageBuilder {
-    using ValueType = StorageCppType<Type>;
-    using ValueCodeType = StorageCppType<DataTypeTraits<Type>::type>;
+    using ValueType = typename CppTypeTraits<Type>::CppType;
+    using ValueCodeType = typename CppTypeTraits<DataTypeTraits<Type>::type>::CppType;
 
 public:
     explicit DictPageBuilder(const PageBuilderOptions& options);
@@ -100,16 +100,16 @@ public:
     bool all_dict_encoded() const override { return _encoding_type == DICT_ENCODING; }
 
 private:
-    enum { SIZE_OF_TYPE = StorageCppTypeSize<Type> };
+    enum { SIZE_OF_TYPE = TypeTraits<Type>::size };
 
     PageBuilderOptions _options;
-    bool _finished{false};
+    bool _finished;
 
     std::unique_ptr<PageBuilder> _data_page_builder;
 
     std::unique_ptr<BitshufflePageBuilder<Type>> _dict_builder;
 
-    EncodingTypePB _encoding_type{DICT_ENCODING};
+    EncodingTypePB _encoding_type;
     // query for dict item -> dict id
     phmap::flat_hash_map<ValueType, ValueCodeType> _dictionary;
     ValueType _first_value;
@@ -124,8 +124,7 @@ private:
 // but rather the index of the data. In this case, you need to load the data from the dictionary.
 template <LogicalType Type>
 class DictPageDecoder final : public PageDecoder {
-    using ValueType = StorageCppType<Type>;
-    static_assert(!lt_is_string_or_binary<Type>, "DictPageDecoder does not support string or binary types");
+    using ValueType = typename CppTypeTraits<Type>::CppType;
 
 public:
     DictPageDecoder(Slice data);
@@ -151,12 +150,12 @@ public:
     Status next_dict_codes(const SparseRange<>& range, Column* dst) override;
 
 private:
-    enum { SIZE_OF_TYPE = StorageCppTypeSize<Type> };
+    enum { SIZE_OF_TYPE = TypeTraits<Type>::size };
     Slice _data;
     std::unique_ptr<PageDecoder> _data_page_decoder;
     const BitShufflePageDecoder<Type>* _dict_decoder = nullptr;
-    bool _parsed{false};
-    EncodingTypePB _encoding_type{UNKNOWN_ENCODING};
+    bool _parsed;
+    EncodingTypePB _encoding_type;
     MutableColumnPtr _vec_code_buf;
 };
 

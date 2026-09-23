@@ -127,7 +127,7 @@ public class CachingIcebergCatalogTest {
         CachingIcebergCatalog cachingIcebergCatalog = new CachingIcebergCatalog(CATALOG_NAME, icebergCatalog,
                 DEFAULT_CATALOG_PROPERTIES, Executors.newSingleThreadExecutor());
         IcebergTable table =
-                IcebergTable.builder().setSrTableName("test")
+                IcebergTable.builder().setSrTableName("test_sr")
                 .setCatalogDBName("db").setCatalogTableName("test").setNativeTable(nativeTable).build();
 
         Assertions.assertFalse(nativeTable.spec().isUnpartitioned());
@@ -245,7 +245,6 @@ public class CachingIcebergCatalogTest {
         long before = cachingIcebergCatalog.estimateSize();
         cachingIcebergCatalog.getPartitions(table, 1L, null);
         long after = cachingIcebergCatalog.estimateSize();
-        // partitionCache used to be excluded from estimateSize, so a full partition map was invisible.
         Assertions.assertTrue(after > before,
                 "partitionCache must be counted in estimateSize; before=" + before + " after=" + after);
     }
@@ -378,14 +377,14 @@ public class CachingIcebergCatalogTest {
             {
                 props.isEnableIcebergMetadataCache(); 
                 result = true;
+                props.isEnableIcebergTableCache(); 
+                result = true;
                 props.getIcebergMetaCacheTtlSec(); 
                 result = 24L * 60 * 60;
                 props.getIcebergDataFileCacheMemoryUsageRatio(); 
                 result = 0.0;
                 props.getIcebergDeleteFileCacheMemoryUsageRatio(); 
                 result = 0.0;
-                props.isEnableIcebergTableCache();
-                result = true;
                 props.getIcebergTableCacheMemoryUsageRatio();
                 result = 1;
 
@@ -421,13 +420,13 @@ public class CachingIcebergCatalogTest {
                                                          @Mocked IcebergCatalogProperties props,
                                                          @Mocked ConnectContext ctx) throws Exception {
         Table nativeTable1 = createBaseTableWithManifests(1, 1);
-        createBaseTableWithManifests(1, 1);
+        Table nativeTable2 = createBaseTableWithManifests(1, 1);
         new Expectations() {
             {
                 props.isEnableIcebergMetadataCache(); 
                 result = true;
-                props.getIcebergTableCacheMemoryUsageRatio();
-                result = 0.0;
+                props.isEnableIcebergTableCache(); 
+                result = false;
                 props.getIcebergMetaCacheTtlSec(); 
                 result = 60;
                 props.getIcebergDataFileCacheMemoryUsageRatio(); 
@@ -443,9 +442,11 @@ public class CachingIcebergCatalogTest {
 
         ExecutorService es = Executors.newFixedThreadPool(5);
         try {
-            CachingIcebergCatalog catalog = new CachingIcebergCatalog("iceberg0", delegate, props, es);
-            catalog.getTable(ctx, "db1", "t1");
-            catalog.getTable(ctx, "db1", "t1");
+            CachingIcebergCatalog catalog =
+                    new CachingIcebergCatalog("iceberg0", delegate, props, es);
+
+            org.apache.iceberg.Table r1 = catalog.getTable(ctx, "db1", "t1");
+            org.apache.iceberg.Table r2 = catalog.getTable(ctx, "db1", "t1");
 
             new Verifications() {
                 {
@@ -692,7 +693,7 @@ public class CachingIcebergCatalogTest {
         config.put(IcebergCatalogProperties.ICEBERG_TABLE_CACHE_MEMORY_SIZE_RATIO, "1");
         IcebergCatalogProperties icebergProperties = new IcebergCatalogProperties(config);
         ExecutorService exectorCatalog = Executors.newSingleThreadExecutor();
-        Executors.newSingleThreadExecutor();
+        ExecutorService exector = Executors.newSingleThreadExecutor();
         
 
         CachingIcebergCatalog catalog = new CachingIcebergCatalog("test_catalog", delegate, icebergProperties, exectorCatalog);
@@ -828,8 +829,8 @@ public class CachingIcebergCatalogTest {
         LoadingCache<IcebergTableName, Table> tables = Deencapsulation.getField(catalog, "tables");
         Table tmp1 = delegate.getTable(ctx, dbName, tblName);
         Table tmp2 = delegate.getTable(ctx, dbName, tblName);
-        delegate.getTable(ctx, dbName, tblName);
-
+        Table tmp3 = delegate.getTable(ctx, dbName, tblName);
+        
         System.out.println("===== cache test =====");
         catalog.getTable(ctx, dbName, tblName);
         catalog.refreshTable(dbName, tblName, ctx, null);
@@ -906,14 +907,14 @@ public class CachingIcebergCatalogTest {
             {
                 props.isEnableIcebergMetadataCache();
                 result = true;
+                props.isEnableIcebergTableCache();
+                result = true;
                 props.getIcebergMetaCacheTtlSec();
                 result = 60L;
                 props.getIcebergTableCacheRefreshIntervalSec();
                 result = 1L;
                 props.getIcebergTableCacheMemoryUsageRatio();
-                result = 1.0;
-                props.isEnableIcebergTableCache();
-                result = true;
+                result = 1;
                 props.getIcebergDataFileCacheMemoryUsageRatio();
                 result = 0.0;
                 props.getIcebergDeleteFileCacheMemoryUsageRatio();

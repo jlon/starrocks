@@ -20,17 +20,12 @@
 #include <random>
 
 #include "column/chunk.h"
-#include "column/chunk_factory.h"
 #include "column/datum_tuple.h"
 #include "column/fixed_length_column.h"
 #include "column/schema.h"
 #include "column/vectorized_fwd.h"
-#include "common/config_ingest_fwd.h"
-#include "common/config_lake_fwd.h"
-#include "common/config_primary_key_fwd.h"
 #include "common/logging.h"
 #include "fs/fs_util.h"
-#include "runtime/descriptors.h"
 #include "storage/chunk_helper.h"
 #include "storage/lake/compaction_task.h"
 #include "storage/lake/delta_writer.h"
@@ -44,7 +39,6 @@
 #include "storage/lake/test_util.h"
 #include "storage/rowset/segment_iterator.h"
 #include "storage/rowset/segment_options.h"
-#include "storage/storage_env.h"
 #include "storage/tablet_schema.h"
 #include "testutil/deterministic_test_utils.h"
 
@@ -219,8 +213,7 @@ private:
 class LakePrimaryKeyConsistencyTest : public TestBase, testing::WithParamInterface<PrimaryKeyParam> {
 public:
     LakePrimaryKeyConsistencyTest() : TestBase(kTestGroupPath) {
-        const bool separate_sort_key = GetParam().separate_sort_key;
-        _tablet_metadata = generate_tablet_metadata(PRIMARY_KEYS, separate_sort_key);
+        _tablet_metadata = generate_tablet_metadata(PRIMARY_KEYS);
         _tablet_metadata->set_enable_persistent_index(true);
         _tablet_metadata->set_persistent_index_type(GetParam().persistent_index_type);
 
@@ -254,15 +247,8 @@ public:
         items.emplace_back(PICT_OP::COMPACT, 10);
         items.emplace_back(PICT_OP::RELOAD, 10);
         items.emplace_back(PICT_OP::UPSERT_WITH_BATCH_PUB, 17);
-        if (!separate_sort_key) {
-            // Partial updates are not supported on a separate-sort-key table when the partial columns
-            // ({c0, c1}) do not cover the sort key (ROW mode) or touch a sort-key column (COLUMN mode),
-            // and they never take the load-spill / unsort-SST path under test anyway
-            // (should_enable_load_spill disables spilling for partial updates). Skip them for the
-            // ORDER BY != PK variant; the remaining ops fully drive the separate-sort-key write path.
-            items.emplace_back(PICT_OP::PARTIAL_UPDATE_ROW, 5);
-            items.emplace_back(PICT_OP::PARTIAL_UPDATE_COLUMN, 5);
-        }
+        items.emplace_back(PICT_OP::PARTIAL_UPDATE_ROW, 5);
+        items.emplace_back(PICT_OP::PARTIAL_UPDATE_COLUMN, 5);
         items.emplace_back(PICT_OP::CONDITION_UPDATE, 5);
         items.emplace_back(PICT_OP::MIXED_UPSERT_DELETE, 17);
         _random_op_selector = std::make_unique<WeightedRandomOpSelector<int, PICT_OP>>(_random_generator.get(), items);
@@ -277,7 +263,7 @@ public:
         CHECK_OK(fs::create_directories(lake::join_path(kTestGroupPath, lake::kMetadataDirectoryName)));
         CHECK_OK(fs::create_directories(lake::join_path(kTestGroupPath, lake::kTxnLogDirectoryName)));
         CHECK_OK(_tablet_mgr->put_tablet_metadata(*_tablet_metadata));
-        StorageEnv::GetInstance()->parallel_compact_mgr()->TEST_set_tablet_mgr(_tablet_mgr.get());
+        ExecEnv::GetInstance()->parallel_compact_mgr()->TEST_set_tablet_mgr(_tablet_mgr.get());
         _old_l0_size = config::l0_max_mem_usage;
         config::l0_max_mem_usage = MaxNumber * (sizeof(int) + sizeof(uint64_t) * 2) / 10;
         _old_memtable_size = config::write_buffer_size;
@@ -312,18 +298,18 @@ public:
                 _old_pk_index_parallel_compaction_task_split_threshold_bytes;
     }
 
-    std::shared_ptr<TabletMetadataPB> generate_tablet_metadata(KeysType keys_type, bool separate_sort_key = false) {
+    std::shared_ptr<TabletMetadataPB> generate_tablet_metadata(KeysType keys_type) {
         auto metadata = std::make_shared<TabletMetadata>();
         metadata->set_id(next_id());
         metadata->set_version(1);
         metadata->set_cumulative_point(0);
         metadata->set_next_rowset_id(1);
         //
-        //  | column | type | KEY | NULL | SORTKEY(when separate) |
-        //  +--------+------+-----+------+------------------------+
-        //  |   c0   |  STRING | YES |  NO  |          NO          |
-        //  |   c1   |  INT | NO  |  NO  |          YES         |
-        //  |   c2   |  INT | NO  |  NO  |          YES         |
+        //  | column | type | KEY | NULL |
+        //  +--------+------+-----+------+
+        //  |   c0   |  STRING | YES |  NO  |
+        //  |   c1   |  INT | NO  |  NO  |
+        //  |   c2   |  INT | NO  |  NO  |
         auto schema = metadata->mutable_schema();
         schema->set_keys_type(keys_type);
         schema->set_id(next_id());
@@ -355,12 +341,6 @@ public:
             c2->set_is_key(false);
             c2->set_is_nullable(false);
             c2->set_aggregation(keys_type == DUP_KEYS ? "NONE" : "REPLACE");
-        }
-        if (separate_sort_key) {
-            // ORDER BY (c1, c2) while the primary key is c0, so the sort key differs from the primary
-            // key. num_short_key_columns stays 1 (the short key is the c1 prefix of the sort key).
-            schema->add_sort_key_idxes(1);
-            schema->add_sort_key_idxes(2);
         }
         return metadata;
     }
@@ -437,9 +417,9 @@ public:
         auto reader = std::make_shared<TabletReader>(_tablet_mgr.get(), metadata, *_schema);
         CHECK_OK(reader->prepare());
         CHECK_OK(reader->open(TabletReaderParams()));
-        auto ret = ChunkFactory::new_chunk(*_schema, 128);
+        auto ret = ChunkHelper::new_chunk(*_schema, 128);
         while (true) {
-            auto tmp = ChunkFactory::new_chunk(*_schema, 128);
+            auto tmp = ChunkHelper::new_chunk(*_schema, 128);
             auto st = reader->get_next(tmp.get());
             if (st.is_end_of_file()) {
                 break;
@@ -855,12 +835,8 @@ TEST_P(LakePrimaryKeyConsistencyTest, test_random_seed_pk_consistency) {
     }
 }
 
-INSTANTIATE_TEST_SUITE_P(
-        LakePrimaryKeyConsistencyTest, LakePrimaryKeyConsistencyTest,
-        ::testing::Values(PrimaryKeyParam{.persistent_index_type = PersistentIndexTypePB::CLOUD_NATIVE},
-                          // ORDER BY != PK: separate sort key (c1, c2) exercises the
-                          // load-spill + unsort-SST-writer + op-aware merge path.
-                          PrimaryKeyParam{.persistent_index_type = PersistentIndexTypePB::CLOUD_NATIVE,
-                                          .separate_sort_key = true}));
+INSTANTIATE_TEST_SUITE_P(LakePrimaryKeyConsistencyTest, LakePrimaryKeyConsistencyTest,
+                         ::testing::Values(PrimaryKeyParam{
+                                 .persistent_index_type = PersistentIndexTypePB::CLOUD_NATIVE}));
 
 } // namespace starrocks::lake

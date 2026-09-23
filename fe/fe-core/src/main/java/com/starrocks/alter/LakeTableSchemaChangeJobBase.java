@@ -53,12 +53,6 @@ public abstract class LakeTableSchemaChangeJobBase extends AlterJobV2 {
         super(jobType);
     }
 
-    protected LakeTableSchemaChangeJobBase(LakeTableSchemaChangeJobBase job) {
-        super(job);
-        this.watershedTxnId = job.watershedTxnId;
-        this.watershedGtid = job.watershedGtid;
-    }
-
     // NOTE: Metadata access in these jobs locks only the job's own table
     // (`tableId`) with an intensive db lock (IS/IX on the database + S/X on the
     // table) via AutoCloseableLock, NOT the whole database:
@@ -122,17 +116,7 @@ public abstract class LakeTableSchemaChangeJobBase extends AlterJobV2 {
         AgentTaskExecutor.submit(batchTask);
     }
 
-    @VisibleForTesting
-    public static long getNextTransactionId() {
-        return GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getTransactionIDGenerator().getNextTransactionId();
-    }
 
-    @VisibleForTesting
-    public static long peekNextTransactionId() {
-        return GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getTransactionIDGenerator().peekNextTransactionId();
-    }
 
-    public static long getNextGtid() {
-        return GlobalStateMgr.getCurrentState().getGtidGenerator().nextGtid();
-    }
+
 }

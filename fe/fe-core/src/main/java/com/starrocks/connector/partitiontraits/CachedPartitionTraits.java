@@ -27,6 +27,8 @@ import com.starrocks.common.ThrowingSupplier;
 import com.starrocks.common.tvr.TvrVersionRange;
 import com.starrocks.connector.ConnectorPartitionTraits;
 import com.starrocks.connector.PartitionInfo;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.common.PCellSortedSet;
 import com.starrocks.sql.optimizer.QueryMaterializationContext;
 import com.starrocks.type.Type;
 
@@ -150,6 +152,19 @@ public class CachedPartitionTraits extends DefaultTraits {
     @Override
     public List<Column> getPartitionColumns() {
         return delegate.getPartitionColumns();
+    }
+
+    @Override
+    public PCellSortedSet getPartitionKeyRange(Column partitionColumn, Expr partitionExpr)
+            throws AnalysisException {
+        return getCacheWithException("getPartitionKeyRange",
+                () -> delegate.getPartitionKeyRange(partitionColumn, partitionExpr), () -> null);
+    }
+
+    @Override
+    public PCellSortedSet getPartitionCells(List<Column> partitionColumns) throws AnalysisException {
+        return getCacheWithException("getPartitionList",
+                () -> delegate.getPartitionCells(partitionColumns), () -> null);
     }
 
     @Override

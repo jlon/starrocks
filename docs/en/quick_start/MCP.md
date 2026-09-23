@@ -1,6 +1,6 @@
 ---
 displayed_sidebar: docs
-sidebar_position: 10
+sidebar_position: 5
 description: "Analyze complex data with Claude and the StarRocks MCP server on a shared-data cluster."
 ---
 

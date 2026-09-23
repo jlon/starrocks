@@ -97,33 +97,6 @@ keywords: ['profile', 'query', '指标']
 | QueryPeakScheduleTime | 最大 Pipeline 调度时间 | 简单查询 < 1s 正常 |
 | QuerySpillBytes | 溢出到磁盘的数据 | < 1GB 正常 |
 
-### 各表在各 BE 上的扫描统计
-
-合并后的查询 Profile 中会附加一个 `PerTableScanStats` 子树，按"表 × BE 节点"两个维度汇总 Scan 算子的输出。它在各
-Instance Profile 还未被同构合并时遍历 Profile 树，把每个 Scan 算子 `UniqueMetrics` 上发布的 `RowsRead`、`BytesRead`、
-`RawRowsRead` 计数器以及 `Database`、`Table` InfoString 与所在 Instance 的 `Address` 组合后聚合得到。聚合键包含库名，
-因此不同数据库下的同名表（如 `db1.orders` 与 `db2.orders`）不会被合并到同一桶；若 BE 未上报库名则回退使用裸表名。该汇总可用于
-快速识别表在不同 BE 上的扫描倾斜，以及哪些表是某次查询扫描成本的主要来源。
-
-结构如下：
-
-```
-PerTableScanStats
-  TableNum / ScanRows / ScanBytes / RawScanRows   -- 全查询合计
-  Table: <库名>.<表名>                            -- 缺少库名时退化为 <表名>
-    HostNum / ScanRows / ScanBytes / RawScanRows  -- 表级合计
-    Host: <host:port>
-      ScanRows / ScanBytes / RawScanRows          -- 单 (表, BE) 维度
-```
-
-| 指标 | 描述 |
-|--------|-------------|
-| TableNum | 本次查询涉及的表数量（仅顶层）|
-| HostNum | 扫描该表的 BE 节点数（表级别）|
-| ScanRows | 过滤后读取行数，按对应维度汇总 |
-| ScanBytes | 过滤后读取字节数，按对应维度汇总（部分 connector 未上报）|
-| RawScanRows | 谓词过滤前的原始读取行数，按对应维度汇总 |
-
 ### Fragment 指标
 
 Fragment 级别的执行细节：
@@ -248,24 +221,6 @@ OLAP_SCAN Operator 负责从 StarRocks 内表中读取数据。
 | SubmitTaskTime | 任务提交所花费的时间。 |
 | PeakIOTasks | I/O 任务的峰值数量。 |
 | PeakScanTaskQueueSize | I/O 任务队列的峰值大小。 |
-| RuntimeFilterEvalTime | 在 Parquet Reader 内部对已解码数据行求值 Join Runtime Filter 所花费的时间。 |
-| RuntimeFilterInputRows | 进入 Parquet Reader Join Runtime Filter 求值的行数。 |
-| RuntimeFilterOutputRows | 通过 Parquet Reader Join Runtime Filter 求值的行数。与 `RuntimeFilterInputRows` 差距越大，说明在物化 Lazy 列之前过滤掉的行越多。 |
-| PaimonFSAppIOCount | Paimon 文件系统适配层收到的有效读请求次数，为顺序读、位置读和异步读次数之和。 |
-| PaimonFSAppIOBytes | Paimon 文件系统适配层成功返回的读取字节数。 |
-| PaimonFSAppIOTime | Paimon 文件系统适配层读请求的端到端耗时。 |
-| PaimonFSIOCount | Data Cache 和 Shared Buffered Input Stream 下层的文件系统读次数。该值表示 StarRocks 文件系统调用次数，不一定等于对象存储 RPC 次数。 |
-| PaimonFSIOBytes | Paimon Native Scan 的底层文件系统成功返回的读取字节数。 |
-| PaimonFSIOTime | Paimon Native Scan 在底层文件系统读取中花费的时间。 |
-| PaimonFSSequentialReadCount | Paimon 文件系统适配层顺序读请求次数。 |
-| PaimonFSSequentialReadBytes | Paimon 文件系统适配层顺序读成功返回的字节数。 |
-| PaimonFSSequentialReadTime | Paimon 文件系统适配层顺序读耗时。 |
-| PaimonFSPositionalReadCount | Paimon 文件系统适配层位置读请求次数。 |
-| PaimonFSPositionalReadBytes | Paimon 文件系统适配层位置读成功返回的字节数。 |
-| PaimonFSPositionalReadTime | Paimon 文件系统适配层位置读耗时。 |
-| PaimonFSAsyncReadCount | Paimon 文件系统适配层异步读请求次数。 |
-| PaimonFSAsyncReadBytes | Paimon 文件系统适配层异步读成功返回的字节数。 |
-| PaimonFSAsyncReadTime | Paimon 文件系统适配层异步读耗时。 |
 
 ### Exchange Operator
 
@@ -434,31 +389,6 @@ Project Operator 负责执行 `SELECT <expr>`。如果查询中有一些耗时�
 |--------|-------------|
 | `ExprComputeTime` | 表达式的计算时间。 |
 | `CommonSubExprComputeTime` | 公共子表达式的计算时间。 |
-
-### AI Project Operator
-
-AI Project 用于异步调用模型，其 Source Operator 在 `UniqueMetrics` 下提供以下固定计数器。每个 Driver 只上报自己已结束的任务；刷新 Profile 时替换累计值，不会再次累加。
-
-| 指标 | 单位 | 说明 |
-|------|------|------|
-| `AITaskCount` | 任务 | Dispatcher 已结束的任务数，包括成功、行级失败和取消。不包含 SQL NULL 行或提交任务前的拒绝。 |
-| `AIRequestCount` | 请求 | 这些任务中 HTTP 客户端已接受的提交数，包括重试；不包含被拒绝的提交。 |
-| `AIRetryCount` | 请求 | HTTP 客户端已接受的重试提交数。 |
-| `AITimeoutCount` | 事件 | Dispatcher 针对已接受请求记录的超时事件数。 |
-| `AIErrorCount` | 任务 | 以脱敏行级错误结束的任务数，不包含生命周期取消。 |
-| `AIHttpTime` | 时间 | 已接受 HTTP 请求从提交到传输回调的累计耗时，不包含重试退避、响应解析和完成队列等待。 |
-| `AIPromptTokens` | Token | 模型服务有效返回的输入 Token 数之和。 |
-| `AICompletionTokens` | Token | 模型服务有效返回的输出 Token 数之和。 |
-| `AITotalTokens` | Token | 模型服务有效返回的总 Token 数之和，不根据输入和输出 Token 推算。 |
-| `AIPromptUsageCount` | 响应 | 已解析响应中有效报告输入 Token 数的响应数，包括显式报告零。 |
-| `AICompletionUsageCount` | 响应 | 已解析响应中有效报告输出 Token 数的响应数，包括显式报告零。 |
-| `AITotalUsageCount` | 响应 | 已解析响应中有效报告总 Token 数的响应数，包括显式报告零。 |
-
-所有计数器（包括 `AIHttpTime`）在 Driver 间按求和聚合。由于请求可以并发，累计 HTTP 耗时可能大于查询实际耗时。任务结束时才发布统计摘要，尚未结束的任务暂不计入。
-
-AI 计数器显式使用 Profile 饱和求和策略，累计值达到有符号 64 位整数上限后保持该上限，避免溢出。这要求参与 Profile 合并的 BE 和 FE 都支持该可选策略。滚动升级期间，旧节点会忽略该策略，保留原有合并行为。其他计数器的聚合策略不变。
-
-当某个 Token 计数器和对应 UsageCount 都为零时，表示**未报告**，不是没有消耗。UsageCount 大于零也不表示覆盖全部响应：缺失、非法或未解析的用量按字段独立排除。这些数据是已观测的执行统计，不是 Token 预估或恰好一次计费账本。Query Statistics 和 Audit 沿用已有传输及失败语义，不依赖是否开启 Profile。计数器不包含提示词、响应正文、凭证或模型标识。
 
 ### LocalExchange Operator
 

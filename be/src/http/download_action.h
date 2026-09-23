@@ -17,13 +17,13 @@
 
 #pragma once
 
-#include <string>
-#include <vector>
-
-#include "common/status.h"
-#include "platform/http/http_handler.h"
+#include "exec/scan_node.h"
+#include "http/http_handler.h"
+#include "runtime/descriptors.h"
 
 namespace starrocks {
+
+class ExecEnv;
 
 // A simple handler that serves incoming HTTP requests of file-download to send their respective HTTP responses.
 //
@@ -32,10 +32,10 @@ namespace starrocks {
 // We use parameter named 'file' to specify the static resource path, it is an absolute path.
 class DownloadAction : public HttpHandler {
 public:
-    explicit DownloadAction(const std::vector<std::string>& allow_dirs);
+    DownloadAction(ExecEnv* exec_env, const std::vector<std::string>& allow_dirs);
 
     // for load error
-    explicit DownloadAction(const std::string& error_log_root_dir);
+    DownloadAction(ExecEnv* exec_env, const std::string& error_log_root_dir);
 
     ~DownloadAction() override = default;
 
@@ -60,6 +60,7 @@ private:
     void handle_normal(HttpRequest* req, const std::string& file_param);
     void handle_error_log(HttpRequest* req, const std::string& file_param);
 
+    ExecEnv* _exec_env;
     DOWNLOAD_TYPE _download_type;
 
     std::vector<std::string> _allow_paths;

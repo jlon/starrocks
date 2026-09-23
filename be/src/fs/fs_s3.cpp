@@ -34,20 +34,17 @@
 #include <ctime>
 #include <limits>
 
-#include "common/config_object_storage_fwd.h"
+#include "common/config.h"
 #include "common/http/content_type.h"
 #include "common/s3_uri.h"
-#include "fs/credential/cloud_configuration_factory.h"
 #include "fs/encrypt_file.h"
-#include "fs/fs_options_helper.h"
-#include "fs/fs_registry.h"
-#include "fs/fs_scheme.h"
 #include "fs/output_stream_adapter.h"
 #include "gutil/casts.h"
 #include "gutil/strings/util.h"
 #include "io/direct_s3_output_stream.h"
 #include "io/s3_input_stream.h"
 #include "io/s3_output_stream.h"
+#include "util/hdfs_util.h"
 
 namespace starrocks {
 
@@ -70,8 +67,7 @@ static Status to_status(Aws::S3::S3Errors error, const std::string& msg) {
 
 bool operator==(const Aws::Client::ClientConfiguration& lhs, const Aws::Client::ClientConfiguration& rhs) {
     return lhs.endpointOverride == rhs.endpointOverride && lhs.region == rhs.region &&
-           lhs.maxConnections == rhs.maxConnections && lhs.scheme == rhs.scheme &&
-           lhs.requestTimeoutMs == rhs.requestTimeoutMs;
+           lhs.maxConnections == rhs.maxConnections && lhs.scheme == rhs.scheme;
 }
 
 bool S3ClientFactory::ClientCacheKey::operator==(const ClientCacheKey& rhs) const {
@@ -146,21 +142,6 @@ static const std::vector<Aws::String> retryable_errors = {
         "ExceedAccountQPSLimit", "ExceedAccountRateLimit", "ExceedBucketQPSLimit", "ExceedBucketRateLimit"};
 // clang-format: on
 
-static void set_request_timeout(Aws::Client::ClientConfiguration& client_config,
-                                S3ClientFactory::OperationType operation_type) {
-    if (operation_type == S3ClientFactory::OperationType::RENAME_FILE &&
-        config::object_storage_rename_file_request_timeout_ms >= 0) {
-        client_config.requestTimeoutMs = config::object_storage_rename_file_request_timeout_ms;
-    } else if (config::object_storage_request_timeout_ms >= 0) {
-        // Zero explicitly disables the timeout.
-        client_config.requestTimeoutMs = config::object_storage_request_timeout_ms;
-    } else if (config::enable_poco_client_for_aws_sdk) {
-        // The SDK default and an explicit zero are both represented as zero. Preserve an unset
-        // StarRocks value with a negative sentinel so Poco can restore its own finite default.
-        client_config.requestTimeoutMs = -1;
-    }
-}
-
 S3ClientFactory::S3ClientPtr S3ClientFactory::new_client(const TCloudConfiguration& t_cloud_configuration,
                                                          S3ClientFactory::OperationType operation_type) {
     const AWSCloudConfiguration aws_cloud_configuration = CloudConfigurationFactory::create_aws(t_cloud_configuration);
@@ -186,7 +167,13 @@ S3ClientFactory::S3ClientPtr S3ClientFactory::new_client(const TCloudConfigurati
         config.connectTimeoutMs = config::object_storage_connect_timeout_ms;
     }
 
-    set_request_timeout(config, operation_type);
+    if (operation_type == S3ClientFactory::OperationType::RENAME_FILE &&
+        config::object_storage_rename_file_request_timeout_ms >= 0) {
+        config.requestTimeoutMs = config::object_storage_rename_file_request_timeout_ms;
+    } else if (config::object_storage_request_timeout_ms >= 0) {
+        // 0 is meaningful for object_storage_request_timeout_ms
+        config.requestTimeoutMs = config::object_storage_request_timeout_ms;
+    }
 
     auto client_conf = std::make_shared<Aws::Client::ClientConfiguration>(config);
     auto aws_config = std::make_shared<AWSCloudConfiguration>(aws_cloud_configuration);
@@ -229,7 +216,7 @@ S3ClientFactory::S3ClientPtr S3ClientFactory::new_client(const ClientConfigurati
     string access_key_id;
     string secret_access_key;
     bool path_style_access = config::object_storage_endpoint_path_style_access;
-    const THdfsProperties* hdfs_properties = FSOptionsHelper::hdfs_properties(opts);
+    const THdfsProperties* hdfs_properties = opts.hdfs_properties();
     if (hdfs_properties != nullptr) {
         if (hdfs_properties->__isset.access_key) {
             access_key_id = hdfs_properties->access_key;
@@ -275,7 +262,6 @@ S3ClientFactory::S3ClientPtr S3ClientFactory::new_client(const ClientConfigurati
 // Only use for UT
 bool S3ClientFactory::_find_client_cache_keys_by_config_TEST(const Aws::Client::ClientConfiguration& config,
                                                              AWSCloudConfiguration* cloud_config) {
-    std::lock_guard l(_lock);
     auto aws_config = cloud_config == nullptr ? AWSCloudConfiguration{} : *cloud_config;
     for (size_t i = 0; i < _client_cache_keys.size(); i++) {
         if (_client_cache_keys[i] == ClientCacheKey{std::make_shared<Aws::Client::ClientConfiguration>(config),
@@ -290,7 +276,7 @@ static std::shared_ptr<Aws::S3::S3Client> new_s3client(
         const S3URI& uri, const FSOptions& opts,
         S3ClientFactory::OperationType operation_type = S3ClientFactory::OperationType::UNKNOWN) {
     Aws::Client::ClientConfiguration config = S3ClientFactory::getClientConfig();
-    const THdfsProperties* hdfs_properties = FSOptionsHelper::hdfs_properties(opts);
+    const THdfsProperties* hdfs_properties = opts.hdfs_properties();
     // TODO(SmithCruise) If CloudType is DEFAULT, we should use hadoop sdk to access file,
     // otherwise user's core-site.xml will not take effect in s3 sdk
     if ((hdfs_properties != nullptr && hdfs_properties->__isset.cloud_configuration) ||
@@ -364,14 +350,20 @@ static std::shared_ptr<Aws::S3::S3Client> new_s3client(
         config.connectTimeoutMs = config::object_storage_connect_timeout_ms;
     }
 
-    set_request_timeout(config, operation_type);
+    if (operation_type == S3ClientFactory::OperationType::RENAME_FILE &&
+        config::object_storage_rename_file_request_timeout_ms >= 0) {
+        config.requestTimeoutMs = config::object_storage_rename_file_request_timeout_ms;
+    } else if (config::object_storage_request_timeout_ms >= 0) {
+        // 0 is meaningful for object_storage_request_timeout_ms
+        config.requestTimeoutMs = config::object_storage_request_timeout_ms;
+    }
 
     return S3ClientFactory::instance().new_client(config, opts);
 } // namespace starrocks
 
 class S3FileSystem : public FileSystem {
 public:
-    S3FileSystem(FSOptions options) : _options(std::move(options)) {}
+    S3FileSystem(const FSOptions& options) : _options(std::move(options)) {}
     ~S3FileSystem() override = default;
 
     S3FileSystem(const S3FileSystem&) = delete;
@@ -584,9 +576,9 @@ Status S3FileSystem::rename_file(const std::string& src, const std::string& targ
 
 StatusOr<SpaceInfo> S3FileSystem::space(const std::string& path) {
     // call `is_directory()` to check if 'path' is an valid path
-    Status status = S3FileSystem::is_directory(path).status();
+    const Status status = S3FileSystem::is_directory(path).status();
     if (!status.ok()) {
-        return std::move(status);
+        return status;
     }
     return SpaceInfo{.capacity = std::numeric_limits<int64_t>::max(),
                      .free = std::numeric_limits<int64_t>::max(),
@@ -1267,45 +1259,6 @@ Status S3FileSystem::delete_dir_recursive_v1(const std::string& dirname) {
 std::unique_ptr<FileSystem> new_fs_s3(const FSOptions& options) {
     return std::make_unique<S3FileSystem>(options);
 }
-
-namespace fs {
-namespace {
-
-thread_local std::shared_ptr<FileSystem> tls_fs_s3_registry;
-
-bool match_s3_shared(std::string_view uri) {
-    return is_s3_uri(uri);
-}
-
-bool match_s3_unique(std::string_view uri, const FSOptions&) {
-    return is_s3_uri(uri);
-}
-
-StatusOr<std::shared_ptr<FileSystem>> create_s3_shared(std::string_view) {
-    if (tls_fs_s3_registry == nullptr) {
-        tls_fs_s3_registry.reset(new_fs_s3(FSOptions()).release());
-    }
-    return tls_fs_s3_registry;
-}
-
-StatusOr<std::unique_ptr<FileSystem>> create_s3_unique(std::string_view, const FSOptions& options) {
-    return new_fs_s3(options);
-}
-
-} // namespace
-
-FileSystemProvider new_s3_file_system_provider(int priority) {
-    return {
-            .id = "s3",
-            .priority = priority,
-            .match_shared = match_s3_shared,
-            .create_shared = create_s3_shared,
-            .match_unique = match_s3_unique,
-            .create_unique = create_s3_unique,
-    };
-}
-
-} // namespace fs
 
 void close_s3_clients() {
     S3ClientFactory::instance().close();

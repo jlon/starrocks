@@ -14,8 +14,8 @@
 
 package com.starrocks.connector.paimon;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
-import com.google.common.util.concurrent.MoreExecutors;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionName;
@@ -42,23 +42,16 @@ import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.hive.ConnectorTableMetadataProcessor;
 import com.starrocks.credential.CloudConfiguration;
 import com.starrocks.credential.CloudType;
-import com.starrocks.ha.FrontendNodeType;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.MetadataMgr;
-import com.starrocks.server.NodeMgr;
 import com.starrocks.sql.analyzer.AstToStringBuilder;
 import com.starrocks.sql.ast.ColWithComment;
 import com.starrocks.sql.ast.CreateViewStmt;
 import com.starrocks.sql.ast.DropTableStmt;
-import com.starrocks.sql.ast.KeyPartitionRef;
 import com.starrocks.sql.ast.QualifiedName;
 import com.starrocks.sql.ast.TableRef;
-import com.starrocks.sql.ast.TruncateTablePartitionStmt;
-import com.starrocks.sql.ast.TruncateTableStmt;
 import com.starrocks.sql.ast.expression.BinaryType;
-import com.starrocks.sql.ast.expression.SlotRef;
-import com.starrocks.sql.ast.expression.StringLiteral;
 import com.starrocks.sql.common.StarRocksPlannerException;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptimizerContext;
@@ -74,7 +67,6 @@ import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rule.transformation.ExternalScanPartitionPruneRule;
 import com.starrocks.sql.optimizer.statistics.ColumnStatistic;
 import com.starrocks.sql.parser.NodePosition;
-import com.starrocks.system.Frontend;
 import com.starrocks.type.ArrayType;
 import com.starrocks.type.DateType;
 import com.starrocks.type.FloatType;
@@ -86,7 +78,6 @@ import mockit.Expectations;
 import mockit.Mock;
 import mockit.MockUp;
 import mockit.Mocked;
-import mockit.Verifications;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.CachingCatalog;
 import org.apache.paimon.catalog.Catalog;
@@ -108,12 +99,9 @@ import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.reader.RecordReaderIterator;
 import org.apache.paimon.schema.Schema;
-import org.apache.paimon.schema.SchemaManager;
-import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.stats.ColStats;
 import org.apache.paimon.stats.Statistics;
 import org.apache.paimon.table.FileStoreTable;
-import org.apache.paimon.table.FormatTable;
 import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.BatchTableWrite;
 import org.apache.paimon.table.sink.BatchWriteBuilder;
@@ -141,7 +129,6 @@ import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.TimestampType;
 import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.SerializationUtils;
-import org.apache.paimon.utils.SnapshotManager;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -166,7 +153,6 @@ import static org.apache.paimon.io.DataFileMeta.EMPTY_MAX_KEY;
 import static org.apache.paimon.io.DataFileMeta.EMPTY_MIN_KEY;
 import static org.apache.paimon.stats.SimpleStats.EMPTY_STATS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -246,7 +232,7 @@ public class PaimonMetadataTest {
         };
         com.starrocks.catalog.Table table = metadata.getTable(connectContext, "db1", "tbl1");
         PaimonTable paimonTable = (PaimonTable) table;
-        org.junit.jupiter.api.Assertions.assertTrue(metadata.tableExists(connectContext, "db1", "tbl1"));
+        assertTrue(metadata.tableExists(connectContext, "db1", "tbl1"));
         assertEquals("db1", paimonTable.getCatalogDBName());
         assertEquals("tbl1", paimonTable.getCatalogTableName());
         assertEquals("CREATE TABLE `tbl1` (\n" +
@@ -259,9 +245,9 @@ public class PaimonMetadataTest {
         assertEquals(Lists.newArrayList("col1"), paimonTable.getPartitionColumnNames());
         assertEquals("hdfs://127.0.0.1:10000/paimon", paimonTable.getTableLocation());
         assertEquals(IntegerType.INT, paimonTable.getBaseSchema().get(0).getType());
-        org.junit.jupiter.api.Assertions.assertTrue(paimonTable.getBaseSchema().get(0).isAllowNull());
+        assertTrue(paimonTable.getBaseSchema().get(0).isAllowNull());
         assertEquals(FloatType.DOUBLE, paimonTable.getBaseSchema().get(1).getType());
-        org.junit.jupiter.api.Assertions.assertTrue(paimonTable.getBaseSchema().get(1).isAllowNull());
+        assertTrue(paimonTable.getBaseSchema().get(1).isAllowNull());
         assertEquals("paimon_catalog", paimonTable.getCatalogName());
         assertEquals("paimon_catalog.db1.tbl1.fake_uuid", paimonTable.getUUID());
 
@@ -395,451 +381,41 @@ public class PaimonMetadataTest {
                 Lists.newArrayList("dt=2024-01-01", "dt=__DEFAULT_PARTITION__"));
     }
 
-    private static CachingPaimonCatalog newCachingCatalog(Catalog wrapped) {
-        Options options = new Options();
-        // default max-num is 0, i.e. no partition cache at all
-        options.set(CatalogOptions.CACHE_PARTITION_MAX_NUM, 1000L);
-        // inline executor: the queued refresh runs before maybeRefreshAsync returns
-        return newCachingCatalog(wrapped, 60L);
-    }
-
-    private static CachingPaimonCatalog newCachingCatalog(Catalog wrapped, long refreshIntervalSec) {
-        Options options = new Options();
-        options.set(CatalogOptions.CACHE_PARTITION_MAX_NUM, 1000L);
-        // inline executor: the queued refresh runs before maybeRefreshAsync returns
-        return new CachingPaimonCatalog("paimon_catalog", wrapped, options,
-                MoreExecutors.newDirectExecutorService(), refreshIntervalSec);
-    }
-
     @Test
-    public void testAccessQueuesRefresh(@Mocked FileStoreTable paimonTable,
-                                        @Mocked SnapshotManager snapshotManager) throws Exception {
-        Identifier id = new Identifier("db", "tbl");
+    public void testRefreshPaimonMetadata() throws Catalog.DatabaseNotExistException {
         new Expectations() {
             {
-                paimonNativeCatalog.getTable(id);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                snapshotManager.latestSnapshotId();
-                result = 6L;
+                paimonNativeCatalog.listDatabases();
+                result = ImmutableList.of("db");
+                paimonNativeCatalog.listTables((String) any);
+                result = ImmutableList.of("tbl");
             }
         };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-
-        // the access itself queues the refresh, no caller has to ask for it
-        cachingCatalog.getTable(id);
-        assertEquals(CachingPaimonCatalog.revision(6L, -1L), cachingCatalog.getLastRefreshedRevision().get(id));
+        ConnectorTableMetadataProcessor connectorTableMetadataProcessor = new ConnectorTableMetadataProcessor();
+        connectorTableMetadataProcessor.registerPaimonCatalog("paimon_catalog", paimonNativeCatalog);
+        connectorTableMetadataProcessor.refreshPaimonCatalog();
     }
 
     @Test
-    public void testRefreshQueueHonorsMinInterval(@Mocked FileStoreTable paimonTable,
-                                                  @Mocked SnapshotManager snapshotManager) throws Exception {
-        Identifier id = new Identifier("db", "tbl");
+    public void testRefreshPaimonCatalogUnsupportedTableType(@Mocked CachingCatalog cachingCatalog)
+            throws Exception {
         new Expectations() {
             {
-                paimonNativeCatalog.getTable(id);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                snapshotManager.latestSnapshotId();
-                returns(5L, 9L);
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog, 3600L);
-
-        // the first access refreshes and stamps the time
-        cachingCatalog.getTable(id);
-        assertEquals(CachingPaimonCatalog.revision(5L, -1L), cachingCatalog.getLastRefreshedRevision().get(id));
-
-        // within the interval further accesses leave the lake alone, the daemon still covers it:
-        // had a refresh run, the revision would have moved to the lake's snapshot 9
-        cachingCatalog.getTable(id);
-        cachingCatalog.getTable(id);
-        assertEquals(CachingPaimonCatalog.revision(5L, -1L), cachingCatalog.getLastRefreshedRevision().get(id));
-    }
-
-    @Test
-    public void testRefreshQueueOffWhenIntervalNotPositive(@Mocked FileStoreTable paimonTable,
-                                                           @Mocked SnapshotManager snapshotManager) throws Exception {
-        Identifier id = new Identifier("db", "tbl");
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable(id);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                minTimes = 0;
-                snapshotManager.latestSnapshotId();
-                result = 6L;
-                minTimes = 0;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog, 0L);
-
-        cachingCatalog.getTable(id);
-        assertTrue(cachingCatalog.getLastRefreshedRevision().isEmpty());
-    }
-
-    @Test
-    public void testRefreshQueueSkipsSystemAndBranchTables(@Mocked FileStoreTable paimonTable,
-                                                           @Mocked SnapshotManager snapshotManager) throws Exception {
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable((Identifier) any);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                minTimes = 0;
-                snapshotManager.latestSnapshotId();
-                result = 6L;
-                minTimes = 0;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-
-        // a branch pins a fixed version, it never goes stale
-        Identifier branch = new Identifier("db", "tbl$branch_dev");
-        cachingCatalog.getTable(branch);
-        assertNull(cachingCatalog.getLastRefreshedRevision().get(branch));
-
-        // a system table has no snapshot of its own; the base table it reads through still counts
-        Identifier system = new Identifier("db", "tbl$snapshots");
-        cachingCatalog.getTable(system);
-        assertNull(cachingCatalog.getLastRefreshedRevision().get(system));
-    }
-
-    @Test
-    public void testBackgroundRefreshChangedTable(@Mocked FileStoreTable paimonTable,
-                                                  @Mocked SnapshotManager snapshotManager) throws Exception {
-        Identifier id = new Identifier("db", "tbl");
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable(id);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                snapshotManager.latestSnapshotId();
-                result = 5L;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        cachingCatalog.getTable(id);
-        ConnectorTableMetadataProcessor processor = new ConnectorTableMetadataProcessor();
-        processor.registerPaimonCatalog("paimon_catalog", cachingCatalog);
-        processor.refreshPaimonCachingCatalog();
-        assertEquals(CachingPaimonCatalog.revision(5L, -1L), cachingCatalog.getLastRefreshedRevision().get(id));
-        // dropped and reloaded by the refresh
-        assertEquals(1, cachingCatalog.estimatedCacheSizes().tableCacheSize());
-    }
-
-    @Test
-    public void testBackgroundRefreshSkipsUnchangedSnapshot(@Mocked FileStoreTable paimonTable,
-                                                            @Mocked SnapshotManager snapshotManager) throws Exception {
-        Identifier id = new Identifier("db", "tbl");
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable(id);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                snapshotManager.latestSnapshotId();
-                result = 5L;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        cachingCatalog.getTable(id);
-        cachingCatalog.getLastRefreshedRevision().put(id, CachingPaimonCatalog.revision(5L, -1L));
-        cachingCatalog.refreshCatalog();
-        // the cached entry survived the round
-        assertEquals(1, cachingCatalog.estimatedCacheSizes().tableCacheSize());
-    }
-
-    @Test
-    public void testBackgroundRefreshOnSchemaOnlyChange(@Mocked FileStoreTable paimonTable,
-                                                        @Mocked SnapshotManager snapshotManager,
-                                                        @Mocked SchemaManager schemaManager,
-                                                        @Mocked TableSchema tableSchema) throws Exception {
-        Identifier id = new Identifier("db", "tbl");
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable(id);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                snapshotManager.latestSnapshotId();
-                result = 5L;
-                paimonTable.schemaManager();
-                result = schemaManager;
-                schemaManager.latest();
-                result = java.util.Optional.of(tableSchema);
-                tableSchema.id();
-                result = 2L;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        cachingCatalog.getTable(id);
-        cachingCatalog.getLastRefreshedRevision().put(id, CachingPaimonCatalog.revision(5L, 1L));
-        // schema id moved, snapshot did not: still a change
-        cachingCatalog.refreshCatalog();
-        assertEquals(CachingPaimonCatalog.revision(5L, 2L), cachingCatalog.getLastRefreshedRevision().get(id));
-        // dropped and reloaded by the refresh
-        assertEquals(1, cachingCatalog.estimatedCacheSizes().tableCacheSize());
-    }
-
-    @Test
-    public void testBackgroundRefreshSkipsNonDataTable(@Mocked FormatTable formatTable) throws Exception {
-        Identifier id = new Identifier("db", "format_tbl");
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable(id);
-                result = formatTable;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        cachingCatalog.getTable(id);
-        cachingCatalog.refreshCatalog();
-        assertTrue(cachingCatalog.getLastRefreshedRevision().isEmpty());
-        // the cached entry survived the round
-        assertEquals(1, cachingCatalog.estimatedCacheSizes().tableCacheSize());
-    }
-
-    @Test
-    public void testBackgroundRefreshEvictsIdleTable() {
-        Identifier id = new Identifier("db", "tbl");
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        long idleWindowSec = Config.background_refresh_metadata_time_secs_since_last_access_secs;
-        cachingCatalog.getTableLatestAccessTime().put(id, System.currentTimeMillis() - (idleWindowSec + 10) * 1000);
-        cachingCatalog.getLastRefreshedRevision().put(id, CachingPaimonCatalog.revision(5L, 1L));
-        cachingCatalog.refreshCatalog();
-        assertTrue(cachingCatalog.getTableLatestAccessTime().isEmpty());
-        assertTrue(cachingCatalog.getLastRefreshedRevision().isEmpty());
-    }
-
-    @Test
-    public void testBackgroundRefreshEvictsTableOnFailure(@Mocked FileStoreTable paimonTable,
-                                                          @Mocked SnapshotManager snapshotManager,
-                                                          @Mocked SchemaManager schemaManager,
-                                                          @Mocked TableSchema tableSchema) throws Exception {
-        Identifier id = new Identifier("db", "object_tbl");
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable(id);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                snapshotManager.latestSnapshotId();
-                result = 5L;
-                paimonTable.schemaManager();
-                result = schemaManager;
-                schemaManager.latest();
-                result = java.util.Optional.of(tableSchema);
-                tableSchema.id();
-                result = 0L;
-                // refreshPartitions delegates down to listPartitions
-                paimonNativeCatalog.listPartitions(id);
+                cachingCatalog.listDatabases();
+                result = ImmutableList.of("db");
+                cachingCatalog.listTables("db");
+                result = ImmutableList.of("object_tbl", "normal_tbl");
+                cachingCatalog.refreshPartitions(new Identifier("db", "object_tbl"));
                 result = new ClassCastException(
                         "class org.apache.paimon.table.object.ObjectTableImpl cannot be cast to " +
                                 "class org.apache.paimon.table.FileStoreTable");
+                cachingCatalog.refreshPartitions(new Identifier("db", "normal_tbl"));
             }
         };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        cachingCatalog.getTable(id);
-        // must not throw: the table is evicted instead
-        cachingCatalog.refreshCatalog();
-        assertTrue(cachingCatalog.getTableLatestAccessTime().isEmpty());
-        assertTrue(cachingCatalog.getLastRefreshedRevision().isEmpty());
-    }
-
-    @Test
-    public void testManualRefreshTableReachesPartitionCache(@Mocked FileStoreTable paimonNativeTable) throws Exception {
-        List<DataField> fields = new ArrayList<>();
-        fields.add(new DataField(1, "col2", new IntType(false)));
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable((Identifier) any);
-                result = paimonNativeTable;
-                paimonNativeTable.rowType().getFields();
-                result = fields;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        PaimonMetadata newMetadata = new PaimonMetadata("paimon_catalog", new HdfsEnvironment(), cachingCatalog,
-                new ConnectorProperties(ConnectorType.PAIMON));
-        com.starrocks.catalog.Table table = newMetadata.getTable(connectContext, "db1", "tbl1");
-        newMetadata.refreshTable("db1", table, new ArrayList<>(), false);
-        // REFRESH EXTERNAL TABLE must reach the partition cache
-        new Verifications() {
-            {
-                paimonNativeCatalog.listPartitions(new Identifier("db1", "tbl1"));
-                minTimes = 1;
-            }
-        };
-    }
-
-    @Test
-    public void testInvalidateTableKeepsAccessTime() {
-        Identifier id = new Identifier("db", "tbl");
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        cachingCatalog.getTableLatestAccessTime().put(id, System.currentTimeMillis());
-        cachingCatalog.getLastRefreshedRevision().put(id, CachingPaimonCatalog.revision(5L, 1L));
-        cachingCatalog.invalidateTable(id);
-        // ledgers cleared, but the table stays in the refresh set
-        assertTrue(cachingCatalog.getLastRefreshedRevision().isEmpty());
-        assertEquals(1, cachingCatalog.getTableLatestAccessTime().size());
-        assertEquals(0, cachingCatalog.estimatedCacheSizes().tableCacheSize());
-    }
-
-    @Test
-    public void testBackgroundRefreshOnSnapshotRollback(@Mocked FileStoreTable paimonTable,
-                                                        @Mocked SnapshotManager snapshotManager) throws Exception {
-        Identifier id = new Identifier("db", "tbl");
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable(id);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                snapshotManager.latestSnapshotId();
-                result = 3L;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        cachingCatalog.getTable(id);
-        cachingCatalog.getLastRefreshedRevision().put(id, CachingPaimonCatalog.revision(5L, -1L));
-        // rollbackTo moves the snapshot backwards: still a change
-        cachingCatalog.refreshCatalog();
-        assertEquals(CachingPaimonCatalog.revision(3L, -1L), cachingCatalog.getLastRefreshedRevision().get(id));
-        // dropped and reloaded by the refresh
-        assertEquals(1, cachingCatalog.estimatedCacheSizes().tableCacheSize());
-    }
-
-    @Test
-    public void testAccessTimeSkipsSystemAndBranchTables(@Mocked FileStoreTable paimonTable) throws Exception {
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable((Identifier) any);
-                result = paimonTable;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        // a branch reference pins a fixed version
-        cachingCatalog.getTable(new Identifier("db", "tbl$branch_dev"));
-        assertTrue(cachingCatalog.getTableLatestAccessTime().isEmpty());
-        // a system table resolves through its base table, so the base table is what gets recorded
-        cachingCatalog.getTable(new Identifier("db", "tbl$snapshots"));
-        Assertions.assertThat(cachingCatalog.getTableLatestAccessTime().keySet())
-                .containsExactly(new Identifier("db", "tbl"));
-    }
-
-    @Test
-    public void testNegativeIdleWindowNeverEvicts(@Mocked FileStoreTable paimonTable,
-                                                  @Mocked SnapshotManager snapshotManager) throws Exception {
-        Identifier id = new Identifier("db", "tbl");
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable(id);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                snapshotManager.latestSnapshotId();
-                result = 5L;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        cachingCatalog.getTableLatestAccessTime().put(id, 0L);
-        long saved = Config.background_refresh_metadata_time_secs_since_last_access_secs;
-        Config.background_refresh_metadata_time_secs_since_last_access_secs = -1;
-        try {
-            cachingCatalog.refreshCatalog();
-        } finally {
-            Config.background_refresh_metadata_time_secs_since_last_access_secs = saved;
-        }
-        assertEquals(1, cachingCatalog.getTableLatestAccessTime().size());
-        assertEquals(CachingPaimonCatalog.revision(5L, -1L), cachingCatalog.getLastRefreshedRevision().get(id));
-    }
-
-    @Test
-    public void testBackgroundRefreshSkipsEmptyTable(@Mocked FileStoreTable paimonTable,
-                                                     @Mocked SnapshotManager snapshotManager) throws Exception {
-        Identifier id = new Identifier("db", "tbl");
-        new Expectations() {
-            {
-                paimonNativeCatalog.getTable(id);
-                result = paimonTable;
-                paimonTable.snapshotManager();
-                result = snapshotManager;
-                snapshotManager.latestSnapshotId();
-                result = null;
-            }
-        };
-        CachingPaimonCatalog cachingCatalog = newCachingCatalog(paimonNativeCatalog);
-        cachingCatalog.getTable(id);
-        cachingCatalog.refreshCatalog();
-        assertTrue(cachingCatalog.getLastRefreshedRevision().isEmpty());
-        // the cached entry survived the round
-        assertEquals(1, cachingCatalog.estimatedCacheSizes().tableCacheSize());
-    }
-
-    @Test
-    public void testBackgroundRefreshLifecycleWithRealCatalog() throws Exception {
-        java.nio.file.Path tmpDir = Files.createTempDirectory("tmp_");
-        Options catalogOptions = new Options();
-        catalogOptions.setString(CatalogOptions.WAREHOUSE.key(), tmpDir.toString());
-        // mirror PaimonConnector: without it the partition cache is disabled (default max-num is 0)
-        catalogOptions.setString("cache.partition.max-num", "1000");
-        CatalogContext context = CatalogContext.create(catalogOptions);
-        // same chain PaimonConnector builds
-        Catalog unwrapped = CatalogFactory.createUnwrappedCatalog(context, CatalogFactory.class.getClassLoader());
-        CachingPaimonCatalog realCatalog = new CachingPaimonCatalog("paimon_catalog", unwrapped, catalogOptions,
-                MoreExecutors.newDirectExecutorService(), 60L);
-
-        realCatalog.createDatabase("test_db", true);
-        Schema.Builder schemaBuilder = Schema.newBuilder();
-        schemaBuilder.partitionKeys("dt");
-        schemaBuilder.column("dt", DataTypes.STRING());
-        schemaBuilder.column("user", DataTypes.STRING());
-        Options options = new Options();
-        options.set(CoreOptions.BUCKET, 2);
-        options.set(CoreOptions.BUCKET_KEY, "user");
-        schemaBuilder.options(options.toMap());
-        Identifier id = Identifier.create("test_db", "test_tbl");
-        realCatalog.createTable(id, schemaBuilder.build(), true);
-        org.apache.paimon.table.Table table = realCatalog.getTable(id);
-
-        // snapshot 1: partition dt=1
-        BatchWriteBuilder writeBuilder = table.newBatchWriteBuilder();
-        try (BatchTableWrite write = writeBuilder.newWrite()) {
-            write.write(GenericRow.of(BinaryString.fromString("1"), BinaryString.fromString("u1")));
-            try (BatchTableCommit commit = writeBuilder.newCommit()) {
-                commit.commit(write.prepareCommit());
-            }
-        }
-
-        CachingPaimonCatalog cachingCatalog = realCatalog;
-        cachingCatalog.getTable(id);
-        cachingCatalog.refreshCatalog();
-        assertEquals(CachingPaimonCatalog.revision(1L, 0L), cachingCatalog.getLastRefreshedRevision().get(id));
-        assertEquals(1, cachingCatalog.listPartitions(id).size());
-
-        // snapshot 2: new partition dt=2
-        writeBuilder = table.newBatchWriteBuilder();
-        try (BatchTableWrite write = writeBuilder.newWrite()) {
-            write.write(GenericRow.of(BinaryString.fromString("2"), BinaryString.fromString("u1")));
-            try (BatchTableCommit commit = writeBuilder.newCommit()) {
-                commit.commit(write.prepareCommit());
-            }
-        }
-        // our cache still serves the old list, the lake already has two
-        assertEquals(1, cachingCatalog.listPartitions(id).size());
-        assertEquals(2, unwrapped.listPartitions(id).size());
-        cachingCatalog.refreshCatalog();
-        assertEquals(CachingPaimonCatalog.revision(2L, 0L), cachingCatalog.getLastRefreshedRevision().get(id));
-        assertEquals(2, cachingCatalog.listPartitions(id).size());
-
-        // no write: the ledger stays put
-        cachingCatalog.refreshCatalog();
-        assertEquals(CachingPaimonCatalog.revision(2L, 0L), cachingCatalog.getLastRefreshedRevision().get(id));
+        ConnectorTableMetadataProcessor processor = new ConnectorTableMetadataProcessor();
+        processor.registerPaimonCatalog("paimon_catalog", cachingCatalog);
+        // should not throw — the ClassCastException on object_tbl should be caught and logged
+        processor.refreshPaimonCatalog();
     }
 
     @Test
@@ -1567,7 +1143,9 @@ public class PaimonMetadataTest {
         HdfsEnvironment environment = new HdfsEnvironment();
         ConnectorProperties properties = new ConnectorProperties(ConnectorType.PAIMON);
         PaimonMetadata metadata = new PaimonMetadata("paimon", environment, catalog, properties);
+        long snapshotId;
         ConstantOperator constantOperator;
+        ConnectorTableVersion tableVersion;
 
         //2 check
         //2.1 check startVersion and endVersion are empty
@@ -1590,630 +1168,6 @@ public class PaimonMetadataTest {
     }
 
     @Test
-    public void testTruncateTable() throws Exception {
-        GlobalStateMgr globalStateMgr = GlobalStateMgr.getCurrentState();
-        NodeMgr nodeMgr = new NodeMgr();
-        Frontend frontend = new Frontend(0, FrontendNodeType.LEADER, "", "localhost", 0);
-        frontend.setAlive(true);
-
-        new Expectations() {
-            {
-                GlobalStateMgr.getCurrentState();
-                minTimes = 0;
-                result = globalStateMgr;
-            }
-        };
-
-        new Expectations(globalStateMgr) {
-            {
-                globalStateMgr.getNodeMgr();
-                minTimes = 0;
-                result = nodeMgr;
-            }
-        };
-
-        new Expectations(nodeMgr) {
-            {
-                nodeMgr.getMySelf();
-                minTimes = 0;
-                result = frontend;
-            }
-        };
-
-        new Expectations(frontend) {
-            {
-                frontend.getFeVersion();
-                minTimes = 0;
-                result = "test-version";
-            }
-        };
-
-        // 1 create catalog and table
-        java.nio.file.Path tmpDir = Files.createTempDirectory("paimon_truncate_test");
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(tmpDir.toString())));
-
-        catalog.createDatabase("test_db", true);
-        Schema schema = Schema.newBuilder()
-                .column("id", org.apache.paimon.types.DataTypes.STRING())
-                .column("name", org.apache.paimon.types.DataTypes.STRING())
-                .build();
-
-        Identifier identifier = Identifier.create("test_db", "test_table");
-        catalog.createTable(identifier, schema, true);
-
-        // insert data
-        org.apache.paimon.table.Table nativeTable = catalog.getTable(identifier);
-        BatchWriteBuilder writeBuilder = nativeTable.newBatchWriteBuilder();
-        BatchTableWrite write = writeBuilder.newWrite();
-        BatchTableCommit commit = writeBuilder.newCommit();
-
-        GenericRow record1 = GenericRow.of(BinaryString.fromString("1"), BinaryString.fromString("test1"));
-        GenericRow record2 = GenericRow.of(BinaryString.fromString("2"), BinaryString.fromString("test2"));
-        write.write(record1);
-        write.write(record2);
-        List<CommitMessage> messages = write.prepareCommit();
-        commit.commit(messages);
-
-        // verify data exists before truncate
-        long rowCountBefore = getRowCountFromTable(nativeTable);
-        assertTrue(rowCountBefore > 0);
-
-        // create PaimonMetadata and truncate the table
-        HdfsEnvironment environment = new HdfsEnvironment();
-        ConnectorProperties properties = new ConnectorProperties(ConnectorType.PAIMON);
-        PaimonMetadata metadata = new PaimonMetadata("paimon", environment, catalog, properties);
-
-        TruncateTableStmt truncateTableStmt = new TruncateTableStmt(
-                new TableRef(QualifiedName.of(List.of("paimon", "test_db", "test_table")), null, NodePosition.ZERO));
-        metadata.truncateTable(truncateTableStmt, new ConnectContext());
-
-        // verify data is deleted after truncate
-        nativeTable = catalog.getTable(identifier);
-        long rowCountAfter = getRowCountFromTable(nativeTable);
-        assertEquals(0, rowCountAfter);
-
-        // clean env
-        catalog.dropTable(identifier, true);
-        catalog.dropDatabase("test_db", true, true);
-        Files.delete(tmpDir);
-    }
-
-    @Test
-    public void testTruncatePartitionedTable() throws Exception {
-        // Create catalog and partitioned table
-        java.nio.file.Path tmpDir = Files.createTempDirectory("paimon_truncate_partition_test");
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(tmpDir.toString())));
-
-        catalog.createDatabase("test_db", true);
-        Schema schema = Schema.newBuilder()
-                .column("id", org.apache.paimon.types.DataTypes.STRING())
-                .column("dt", org.apache.paimon.types.DataTypes.STRING())
-                .column("name", org.apache.paimon.types.DataTypes.STRING())
-                .partitionKeys("dt")
-                .build();
-
-        Identifier identifier = Identifier.create("test_db", "test_partitioned_table");
-        catalog.createTable(identifier, schema, true);
-
-        // Insert data into different partitions
-        org.apache.paimon.table.Table nativeTable = catalog.getTable(identifier);
-        BatchWriteBuilder writeBuilder = nativeTable.newBatchWriteBuilder();
-        BatchTableWrite write = writeBuilder.newWrite();
-        BatchTableCommit commit = writeBuilder.newCommit();
-
-        // Insert data for partition dt='2023-11-20'
-        GenericRow record1 = GenericRow.of(
-                BinaryString.fromString("1"),
-                BinaryString.fromString("2023-11-20"),
-                BinaryString.fromString("test1"));
-        // Insert data for partition dt='2023-11-21'
-        GenericRow record2 = GenericRow.of(
-                BinaryString.fromString("2"),
-                BinaryString.fromString("2023-11-21"),
-                BinaryString.fromString("test2"));
-        // Insert data for partition dt='2023-11-20' again
-        GenericRow record3 = GenericRow.of(
-                BinaryString.fromString("3"),
-                BinaryString.fromString("2023-11-20"),
-                BinaryString.fromString("test3"));
-
-        write.write(record1);
-        write.write(record2);
-        write.write(record3);
-        List<CommitMessage> messages = write.prepareCommit();
-        commit.commit(messages);
-
-        // Verify data exists before truncate
-        long rowCountBefore = getRowCountFromTable(nativeTable);
-        assertEquals(3, rowCountBefore);
-
-        // Create PaimonMetadata and truncate partition dt='2023-11-20'
-        HdfsEnvironment environment = new HdfsEnvironment();
-        ConnectorProperties properties = new ConnectorProperties(ConnectorType.PAIMON);
-        PaimonMetadata metadata = new PaimonMetadata("paimon", environment, catalog, properties);
-
-        // TRUNCATE TABLE paimon.test_db.test_partitioned_table PARTITION (dt='2023-11-20')
-        KeyPartitionRef keyPartitionRef = new KeyPartitionRef(
-                Lists.newArrayList("dt"),
-                Lists.newArrayList(new StringLiteral("2023-11-20")),
-                NodePosition.ZERO);
-        TableRef tableRef = new TableRef(
-                QualifiedName.of(List.of("paimon", "test_db", "test_partitioned_table")),
-                null,
-                NodePosition.ZERO);
-        TruncateTablePartitionStmt truncateTableStmt = new TruncateTablePartitionStmt(tableRef, keyPartitionRef);
-        metadata.truncateTable(truncateTableStmt, new ConnectContext());
-
-        // Verify only partition dt='2023-11-20' is truncated, dt='2023-11-21' remains
-        nativeTable = catalog.getTable(identifier);
-        long rowCountAfter = getRowCountFromTable(nativeTable);
-        assertEquals(1, rowCountAfter); // Only record2 (dt='2023-11-21') remains
-
-        // Clean env
-        catalog.dropTable(identifier, true);
-        catalog.dropDatabase("test_db", true, true);
-        Files.delete(tmpDir);
-    }
-
-    @Test
-    public void testTruncatePartitionedTableWithMultiplePartitionColumns() throws Exception {
-        // Create catalog and table with multiple partition columns
-        java.nio.file.Path tmpDir = Files.createTempDirectory("paimon_truncate_multi_partition_test");
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(tmpDir.toString())));
-
-        catalog.createDatabase("test_db", true);
-        Schema schema = Schema.newBuilder()
-                .column("id", org.apache.paimon.types.DataTypes.STRING())
-                .column("dt", org.apache.paimon.types.DataTypes.STRING())
-                .column("region", org.apache.paimon.types.DataTypes.STRING())
-                .column("name", org.apache.paimon.types.DataTypes.STRING())
-                .partitionKeys("dt", "region")
-                .build();
-
-        Identifier identifier = Identifier.create("test_db", "test_multi_partition_table");
-        catalog.createTable(identifier, schema, true);
-
-        // Insert data
-        org.apache.paimon.table.Table nativeTable = catalog.getTable(identifier);
-        BatchWriteBuilder writeBuilder = nativeTable.newBatchWriteBuilder();
-        BatchTableWrite write = writeBuilder.newWrite();
-        BatchTableCommit commit = writeBuilder.newCommit();
-
-        // Insert data for (dt='2023-11-20', region='us')
-        GenericRow record1 = GenericRow.of(
-                BinaryString.fromString("1"),
-                BinaryString.fromString("2023-11-20"),
-                BinaryString.fromString("us"),
-                BinaryString.fromString("test1"));
-        // Insert data for (dt='2023-11-20', region='cn')
-        GenericRow record2 = GenericRow.of(
-                BinaryString.fromString("2"),
-                BinaryString.fromString("2023-11-20"),
-                BinaryString.fromString("cn"),
-                BinaryString.fromString("test2"));
-        // Insert data for (dt='2023-11-21', region='us')
-        GenericRow record3 = GenericRow.of(
-                BinaryString.fromString("3"),
-                BinaryString.fromString("2023-11-21"),
-                BinaryString.fromString("us"),
-                BinaryString.fromString("test3"));
-
-        write.write(record1);
-        write.write(record2);
-        write.write(record3);
-        List<CommitMessage> messages = write.prepareCommit();
-        commit.commit(messages);
-
-        // Verify data exists
-        long rowCountBefore = getRowCountFromTable(nativeTable);
-        assertEquals(3, rowCountBefore);
-
-        // Create PaimonMetadata and truncate partition (dt='2023-11-20', region='us')
-        HdfsEnvironment environment = new HdfsEnvironment();
-        ConnectorProperties properties = new ConnectorProperties(ConnectorType.PAIMON);
-        PaimonMetadata metadata = new PaimonMetadata("paimon", environment, catalog, properties);
-
-        // TRUNCATE TABLE paimon.test_db.test_multi_partition_table PARTITION (dt='2023-11-20', region='us')
-        KeyPartitionRef keyPartitionRef = new KeyPartitionRef(
-                Lists.newArrayList("dt", "region"),
-                Lists.newArrayList(
-                        new StringLiteral("2023-11-20"),
-                        new StringLiteral("us")),
-                NodePosition.ZERO);
-        TableRef tableRef = new TableRef(
-                QualifiedName.of(List.of("paimon", "test_db", "test_multi_partition_table")),
-                null,
-                NodePosition.ZERO);
-        TruncateTablePartitionStmt truncateTableStmt = new TruncateTablePartitionStmt(tableRef, keyPartitionRef);
-        metadata.truncateTable(truncateTableStmt, new ConnectContext());
-
-        // Verify only (dt='2023-11-20', region='us') is truncated
-        nativeTable = catalog.getTable(identifier);
-        long rowCountAfter = getRowCountFromTable(nativeTable);
-        assertEquals(2, rowCountAfter); // record2 and record3 remain
-
-        // Clean env
-        catalog.dropTable(identifier, true);
-        catalog.dropDatabase("test_db", true, true);
-        Files.delete(tmpDir);
-    }
-
-    @Test
-    public void testTruncatePartitionedTableWithPartialPartitionSpec() throws Exception {
-        // Test truncating with only one partition column when table has multiple partition columns
-        java.nio.file.Path tmpDir = Files.createTempDirectory("paimon_truncate_partial_partition_test");
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(tmpDir.toString())));
-
-        catalog.createDatabase("test_db", true);
-        Schema schema = Schema.newBuilder()
-                .column("id", org.apache.paimon.types.DataTypes.STRING())
-                .column("dt", org.apache.paimon.types.DataTypes.STRING())
-                .column("region", org.apache.paimon.types.DataTypes.STRING())
-                .column("name", org.apache.paimon.types.DataTypes.STRING())
-                .partitionKeys("dt", "region")
-                .build();
-
-        Identifier identifier = Identifier.create("test_db", "test_partial_partition_table");
-        catalog.createTable(identifier, schema, true);
-
-        // Insert data
-        org.apache.paimon.table.Table nativeTable = catalog.getTable(identifier);
-        BatchWriteBuilder writeBuilder = nativeTable.newBatchWriteBuilder();
-        BatchTableWrite write = writeBuilder.newWrite();
-        BatchTableCommit commit = writeBuilder.newCommit();
-
-        // Insert data for (dt='2023-11-20', region='us')
-        GenericRow record1 = GenericRow.of(
-                BinaryString.fromString("1"),
-                BinaryString.fromString("2023-11-20"),
-                BinaryString.fromString("us"),
-                BinaryString.fromString("test1"));
-        // Insert data for (dt='2023-11-20', region='cn')
-        GenericRow record2 = GenericRow.of(
-                BinaryString.fromString("2"),
-                BinaryString.fromString("2023-11-20"),
-                BinaryString.fromString("cn"),
-                BinaryString.fromString("test2"));
-        // Insert data for (dt='2023-11-21', region='us')
-        GenericRow record3 = GenericRow.of(
-                BinaryString.fromString("3"),
-                BinaryString.fromString("2023-11-21"),
-                BinaryString.fromString("us"),
-                BinaryString.fromString("test3"));
-
-        write.write(record1);
-        write.write(record2);
-        write.write(record3);
-        List<CommitMessage> messages = write.prepareCommit();
-        commit.commit(messages);
-
-        // Verify data exists
-        long rowCountBefore = getRowCountFromTable(nativeTable);
-        assertEquals(3, rowCountBefore);
-
-        // Create PaimonMetadata and truncate with partial partition spec (only dt='2023-11-20')
-        // This should truncate all partitions where dt='2023-11-20' (both region='us' and region='cn')
-        HdfsEnvironment environment = new HdfsEnvironment();
-        ConnectorProperties properties = new ConnectorProperties(ConnectorType.PAIMON);
-        PaimonMetadata metadata = new PaimonMetadata("paimon", environment, catalog, properties);
-
-        // TRUNCATE TABLE paimon.test_db.test_partial_partition_table PARTITION (dt='2023-11-20')
-        KeyPartitionRef keyPartitionRef = new KeyPartitionRef(
-                Lists.newArrayList("dt"),
-                Lists.newArrayList(new StringLiteral("2023-11-20")),
-                NodePosition.ZERO);
-        TableRef tableRef = new TableRef(
-                QualifiedName.of(List.of("paimon", "test_db", "test_partial_partition_table")),
-                null,
-                NodePosition.ZERO);
-        TruncateTablePartitionStmt truncateTableStmt = new TruncateTablePartitionStmt(tableRef, keyPartitionRef);
-        metadata.truncateTable(truncateTableStmt, new ConnectContext());
-
-        // Verify all partitions with dt='2023-11-20' are truncated
-        nativeTable = catalog.getTable(identifier);
-        long rowCountAfter = getRowCountFromTable(nativeTable);
-        assertEquals(1, rowCountAfter); // Only record3 (dt='2023-11-21', region='us') remains
-
-        // Clean env
-        catalog.dropTable(identifier, true);
-        catalog.dropDatabase("test_db", true, true);
-        Files.delete(tmpDir);
-    }
-
-    @Test
-    public void testTruncateTableNotExist() {
-        // Test truncate on non-existent table
-        java.nio.file.Path tmpDir = null;
-        try {
-            tmpDir = Files.createTempDirectory("paimon_truncate_not_exist_test");
-            Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(tmpDir.toString())));
-
-            catalog.createDatabase("test_db", true);
-
-            HdfsEnvironment environment = new HdfsEnvironment();
-            ConnectorProperties properties = new ConnectorProperties(ConnectorType.PAIMON);
-            PaimonMetadata metadata = new PaimonMetadata("paimon", environment, catalog, properties);
-
-            TableRef tableRef = new TableRef(
-                    QualifiedName.of(List.of("paimon", "test_db", "non_existent_table")),
-                    null,
-                    NodePosition.ZERO);
-            TruncateTableStmt truncateTableStmt = new TruncateTableStmt(tableRef);
-
-            ExceptionChecker.expectThrowsWithMsg(StarRocksConnectorException.class,
-                    "Failed to truncate paimon table: test_db.non_existent_table, table does not exist",
-                    () -> metadata.truncateTable(truncateTableStmt, new ConnectContext()));
-
-            catalog.dropDatabase("test_db", true, true);
-            Files.delete(tmpDir);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    @Test
-    public void testTruncateTableWithException(@Mocked org.apache.paimon.table.Table mockTable,
-                                               @Mocked BatchWriteBuilder mockWriteBuilder,
-                                               @Mocked BatchTableCommit mockCommit) throws Exception {
-        // Test exception handling in truncateTable
-        java.nio.file.Path tmpDir = Files.createTempDirectory("paimon_truncate_exception_test");
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(tmpDir.toString())));
-
-        catalog.createDatabase("test_db", true);
-        Schema schema = Schema.newBuilder()
-                .column("id", org.apache.paimon.types.DataTypes.STRING())
-                .column("name", org.apache.paimon.types.DataTypes.STRING())
-                .build();
-
-        Identifier identifier = Identifier.create("test_db", "test_table");
-        catalog.createTable(identifier, schema, true);
-
-        HdfsEnvironment environment = new HdfsEnvironment();
-        ConnectorProperties properties = new ConnectorProperties(ConnectorType.PAIMON);
-        PaimonMetadata metadata = new PaimonMetadata("paimon", environment, catalog, properties);
-
-        // Mock Catalog.getTable() to return mockTable
-        new Expectations(catalog) {
-            {
-                catalog.getTable(identifier);
-                result = mockTable;
-            }
-        };
-
-        // Mock Table.newBatchWriteBuilder() to return mockWriteBuilder
-        // Note: For interfaces, use Expectations() without parameter
-        new Expectations() {
-            {
-                mockTable.newBatchWriteBuilder();
-                result = mockWriteBuilder;
-            }
-        };
-
-        // Mock BatchWriteBuilder.newCommit() to return mockCommit
-        // Note: For interfaces, use Expectations() without parameter
-        new Expectations() {
-            {
-                mockWriteBuilder.newCommit();
-                result = mockCommit;
-            }
-        };
-
-        // Mock BatchTableCommit.truncateTable() to throw exception
-        // Note: For interfaces, use Expectations() without parameter
-        new Expectations() {
-            {
-                mockCommit.truncateTable();
-                result = new RuntimeException("Mock exception for testing");
-            }
-        };
-
-        TruncateTableStmt truncateTableStmt = new TruncateTableStmt(
-                new TableRef(QualifiedName.of(List.of("paimon", "test_db", "test_table")), null, NodePosition.ZERO));
-
-        ExceptionChecker.expectThrowsWithMsg(StarRocksConnectorException.class,
-                "Failed to truncate paimon table: test_db.test_table, error: Mock exception for testing",
-                () -> metadata.truncateTable(truncateTableStmt, new ConnectContext()));
-
-        catalog.dropTable(identifier, true);
-        catalog.dropDatabase("test_db", true, true);
-        Files.delete(tmpDir);
-    }
-
-    @Test
-    public void testTruncatePartitionWithNonLiteralExpr() throws Exception {
-        // Test buildPartitionMap with non-LiteralExpr
-        java.nio.file.Path tmpDir = Files.createTempDirectory("paimon_truncate_non_literal_test");
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(tmpDir.toString())));
-
-        catalog.createDatabase("test_db", true);
-        Schema schema = Schema.newBuilder()
-                .column("id", org.apache.paimon.types.DataTypes.STRING())
-                .column("dt", org.apache.paimon.types.DataTypes.STRING())
-                .partitionKeys("dt")
-                .build();
-
-        Identifier identifier = Identifier.create("test_db", "test_table");
-        catalog.createTable(identifier, schema, true);
-
-        HdfsEnvironment environment = new HdfsEnvironment();
-        ConnectorProperties properties = new ConnectorProperties(ConnectorType.PAIMON);
-        PaimonMetadata metadata = new PaimonMetadata("paimon", environment, catalog, properties);
-
-        // Create KeyPartitionRef with non-LiteralExpr (use SlotRef as an example)
-        SlotRef slotRef = new SlotRef(null, "dt");
-        KeyPartitionRef keyPartitionRef = new KeyPartitionRef(
-                Lists.newArrayList("dt"),
-                Lists.newArrayList(slotRef),
-                NodePosition.ZERO);
-        TableRef tableRef = new TableRef(
-                QualifiedName.of(List.of("paimon", "test_db", "test_table")),
-                null,
-                NodePosition.ZERO);
-        TruncateTablePartitionStmt truncateTableStmt = new TruncateTablePartitionStmt(tableRef, keyPartitionRef);
-
-        ExceptionChecker.expectThrowsWithMsg(StarRocksConnectorException.class,
-                "Partition value must be a literal expression, got: SlotRef",
-                () -> metadata.truncateTable(truncateTableStmt, new ConnectContext()));
-
-        catalog.dropTable(identifier, true);
-        catalog.dropDatabase("test_db", true, true);
-        Files.delete(tmpDir);
-    }
-
-    @Test
-    public void testTruncatePartitionOnUnpartitionedTable() throws Exception {
-        // Test truncate partition on unpartitioned table should throw error
-        java.nio.file.Path tmpDir = Files.createTempDirectory("paimon_truncate_unpartitioned_test");
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(tmpDir.toString())));
-
-        catalog.createDatabase("test_db", true);
-        Schema schema = Schema.newBuilder()
-                .column("id", org.apache.paimon.types.DataTypes.STRING())
-                .column("name", org.apache.paimon.types.DataTypes.STRING())
-                .build();
-
-        Identifier identifier = Identifier.create("test_db", "test_table");
-        catalog.createTable(identifier, schema, true);
-
-        HdfsEnvironment environment = new HdfsEnvironment();
-        ConnectorProperties properties = new ConnectorProperties(ConnectorType.PAIMON);
-        PaimonMetadata metadata = new PaimonMetadata("paimon", environment, catalog, properties);
-
-        // Try to truncate partition on unpartitioned table
-        KeyPartitionRef keyPartitionRef = new KeyPartitionRef(
-                Lists.newArrayList("dt"),
-                Lists.newArrayList(new StringLiteral("2023-11-20")),
-                NodePosition.ZERO);
-        TableRef tableRef = new TableRef(
-                QualifiedName.of(List.of("paimon", "test_db", "test_table")),
-                null,
-                NodePosition.ZERO);
-        TruncateTablePartitionStmt truncateTableStmt = new TruncateTablePartitionStmt(tableRef, keyPartitionRef);
-
-        ExceptionChecker.expectThrowsWithMsg(StarRocksConnectorException.class,
-                "Table [test_db.test_table] is not partitioned, cannot truncate partitions",
-                () -> metadata.truncateTable(truncateTableStmt, new ConnectContext()));
-
-        catalog.dropTable(identifier, true);
-        catalog.dropDatabase("test_db", true, true);
-        Files.delete(tmpDir);
-    }
-
-    @Test
-    public void testTruncatePartitionWithInvalidColumnName() throws Exception {
-        // Test truncate partition with invalid partition column name
-        java.nio.file.Path tmpDir = Files.createTempDirectory("paimon_truncate_invalid_column_test");
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(tmpDir.toString())));
-
-        catalog.createDatabase("test_db", true);
-        Schema schema = Schema.newBuilder()
-                .column("id", org.apache.paimon.types.DataTypes.STRING())
-                .column("dt", org.apache.paimon.types.DataTypes.STRING())
-                .column("name", org.apache.paimon.types.DataTypes.STRING())
-                .partitionKeys("dt")
-                .build();
-
-        Identifier identifier = Identifier.create("test_db", "test_table");
-        catalog.createTable(identifier, schema, true);
-
-        HdfsEnvironment environment = new HdfsEnvironment();
-        ConnectorProperties properties = new ConnectorProperties(ConnectorType.PAIMON);
-        PaimonMetadata metadata = new PaimonMetadata("paimon", environment, catalog, properties);
-
-        // Try to truncate partition with invalid column name (invalid_col instead of dt)
-        KeyPartitionRef keyPartitionRef = new KeyPartitionRef(
-                Lists.newArrayList("invalid_col"),
-                Lists.newArrayList(new StringLiteral("2023-11-20")),
-                NodePosition.ZERO);
-        TableRef tableRef = new TableRef(
-                QualifiedName.of(List.of("paimon", "test_db", "test_table")),
-                null,
-                NodePosition.ZERO);
-        TruncateTablePartitionStmt truncateTableStmt = new TruncateTablePartitionStmt(tableRef, keyPartitionRef);
-
-        ExceptionChecker.expectThrowsWithMsg(StarRocksConnectorException.class,
-                "Partition names in partition spec do not match table partition columns for table [test_db.test_table]",
-                () -> metadata.truncateTable(truncateTableStmt, new ConnectContext()));
-
-        catalog.dropTable(identifier, true);
-        catalog.dropDatabase("test_db", true, true);
-        Files.delete(tmpDir);
-    }
-
-    @Test
-    public void testPaimonTruncatePartitionsDirectBehavior() throws Exception {
-        // Test Paimon's truncatePartitions API behavior directly when partition doesn't exist
-        // This test bypasses StarRocks validation to see what Paimon API does
-        java.nio.file.Path tmpDir = Files.createTempDirectory("paimon_direct_truncate_test");
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(tmpDir.toString())));
-
-        catalog.createDatabase("test_db", true);
-        Schema schema = Schema.newBuilder()
-                .column("id", org.apache.paimon.types.DataTypes.STRING())
-                .column("dt", org.apache.paimon.types.DataTypes.STRING())
-                .column("name", org.apache.paimon.types.DataTypes.STRING())
-                .partitionKeys("dt")
-                .build();
-
-        Identifier identifier = Identifier.create("test_db", "test_table");
-        catalog.createTable(identifier, schema, true);
-
-        // Insert data only for partition dt='2023-11-20'
-        org.apache.paimon.table.Table nativeTable = catalog.getTable(identifier);
-        BatchWriteBuilder writeBuilder = nativeTable.newBatchWriteBuilder();
-        BatchTableWrite write = writeBuilder.newWrite();
-        BatchTableCommit commit = writeBuilder.newCommit();
-
-        GenericRow record1 = GenericRow.of(
-                BinaryString.fromString("1"),
-                BinaryString.fromString("2023-11-20"),
-                BinaryString.fromString("test1"));
-        write.write(record1);
-        List<CommitMessage> messages = write.prepareCommit();
-        commit.commit(messages);
-        commit.close();
-
-        // Verify data exists
-        long rowCountBefore = getRowCountFromTable(nativeTable);
-        assertEquals(1, rowCountBefore);
-
-        // Directly call Paimon's truncatePartitions API with non-existent partition
-        // This bypasses StarRocks validation to see Paimon's actual behavior
-        BatchTableCommit truncateCommit = nativeTable.newBatchWriteBuilder().newCommit();
-        Map<String, String> nonExistentPartition = new HashMap<>();
-        nonExistentPartition.put("dt", "2023-12-31"); // This partition doesn't exist
-
-        try {
-            // Call Paimon API directly - this will show us what Paimon does
-            truncateCommit.truncatePartitions(Collections.singletonList(nonExistentPartition));
-            truncateCommit.close();
-
-            // Check if Paimon silently did nothing (no-op) or threw an exception
-            // If we reach here, Paimon did not throw an exception
-            long rowCountAfter = getRowCountFromTable(nativeTable);
-            assertEquals(1, rowCountAfter); // Data should still exist if Paimon did nothing
-
-            // Log the behavior for documentation
-            System.out.println("Paimon truncatePartitions with non-existent partition: " +
-                    "No exception thrown, operation appears to be a no-op");
-        } catch (Exception e) {
-            // If Paimon throws an exception, log it
-            System.out.println("Paimon truncatePartitions with non-existent partition threw exception: " +
-                    e.getClass().getSimpleName() + ": " + e.getMessage());
-            truncateCommit.close();
-            throw e; // Re-throw to see what exception Paimon throws
-        }
-
-        catalog.dropTable(identifier, true);
-        catalog.dropDatabase("test_db", true, true);
-        Files.delete(tmpDir);
-    }
-
-    private long getRowCountFromTable(org.apache.paimon.table.Table table) throws Exception {
-        List<org.apache.paimon.table.source.Split> splits = table.newReadBuilder().newScan().plan().splits();
-        return PaimonMetadata.getRowCount(splits);
-    }
-
     public void testListPartitionNamesIsolationAcrossTables(@Mocked FileStoreTable mockPaimonTable1,
                                                             @Mocked FileStoreTable mockPaimonTable2)
             throws Catalog.TableNotExistException {

@@ -1,5 +1,4 @@
 ---
-sidebar_position: 20
 description: "StarRocks in Docker: 実データを使用したジョインによるクエリ"
 displayed_sidebar: docs
 ---

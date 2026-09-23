@@ -22,7 +22,6 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.gson.annotations.SerializedName;
 import com.starrocks.alter.AlterMVJobExecutor;
-import com.starrocks.alter.OptimizeTask;
 import com.starrocks.authentication.AuthenticationMgr;
 import com.starrocks.authorization.PrivilegeBuiltinConstants;
 import com.starrocks.authorization.PrivilegeException;
@@ -33,7 +32,6 @@ import com.starrocks.catalog.UserIdentity;
 import com.starrocks.catalog.system.SystemTable;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
-import com.starrocks.common.MaterializedViewExceptions;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.profile.Timer;
 import com.starrocks.common.profile.Tracers;
@@ -78,9 +76,9 @@ public class TaskRun implements Comparable<TaskRun> {
     public static final String START_TASK_RUN_ID = "START_TASK_RUN_ID";
     // Set on pinned-PCT batches only; value is the pinning job's START_TASK_RUN_ID.
     public static final String PINNED_REFRESH_JOB_ID = "PINNED_REFRESH_JOB_ID";
+    public static final String SUBMIT_USER_SYSTEM = "system";
     // Carries the batch's first-run start time so LAST_FRESHNESS_CONFIRMED_AT reflects the snapshot pinned at batch start.
     public static final String MV_FRESHNESS_BASELINE_TIME = "MV_FRESHNESS_BASELINE_TIME";
-    public static final String SUBMIT_USER_SYSTEM = "system";
     // Only used in FE's UT
     public static final String IS_TEST = "__IS_TEST__";
 
@@ -305,14 +303,8 @@ public class TaskRun implements Comparable<TaskRun> {
         context.getState().reset();
         context.setQueryId(UUID.fromString(status.getQueryId()));
         context.setIsLastStmt(true);
-        context.setMultiStmt(false);
+        context.setSingleStmt(true);
         context.resetSessionVariable();
-        if (task instanceof OptimizeTask) {
-            // OptimizeJobV2 executes its rewrite through a new task-run context, so the
-            // submitter's ConnectContext marker cannot reach the planner. Restore the marker
-            // from the task type before parsing and planning the internal INSERT.
-            context.setOptimizeRewrite(true);
-        }
         // Preserve critical session variables from parent context if available
         // This ensures that settings like enableSingleNodeSchedule are inherited
         if (parentRunCtx != null && parentRunCtx.getSessionVariable() != null) {
@@ -447,17 +439,6 @@ public class TaskRun implements Comparable<TaskRun> {
             task.incConsecutiveFailCount();
             LOG.warn("Failed to execute task run, task_id: {}, task_run_id: {}, failCount:{}",
                     taskId, taskRunId, task.getConsecutiveFailCount(), e);
-            if (Constants.TaskSource.MV.equals(task.getSource())
-                    && MaterializedViewExceptions.isIncrementalBreakingFailure(e)) {
-                MaterializedView mv = TaskBuilder.getMvFromTask(task);
-                // Permanent incremental breakage: inactivate the MV and rethrow. Don't kill/suspend the running
-                // refresh here -- that would eat the actionable error; the consecutive-failure path suspends the task.
-                if (mv != null && mv.isActive()) {
-                    AlterMVJobExecutor.inactiveMvAndLog(mv,
-                            MaterializedViewExceptions.inactiveReasonForIncrementalBreaking(mv.getName()));
-                    throw e;
-                }
-            }
             if (Constants.TaskSource.MV.equals(task.getSource()) && Config.max_task_consecutive_fail_count > 0 &&
                     task.getConsecutiveFailCount() >= Config.max_task_consecutive_fail_count) {
                 LOG.warn("Task {} has failed {} times continuously, so we disable it",

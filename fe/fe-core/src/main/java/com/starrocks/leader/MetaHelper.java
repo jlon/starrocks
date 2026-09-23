@@ -35,6 +35,7 @@
 package com.starrocks.leader;
 
 import com.google.common.base.Strings;
+import com.sleepycat.je.config.EnvironmentParams;
 import com.starrocks.common.Config;
 import com.starrocks.common.InvalidMetaDirException;
 import com.starrocks.common.io.IOUtils;
@@ -61,7 +62,6 @@ import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 public class MetaHelper {
@@ -89,18 +89,6 @@ public class MetaHelper {
 
     public static void downloadImageFile(String urlStr, int timeout, String journalId, File destDir)
             throws IOException {
-        downloadImageFile(urlStr, timeout, journalId, destDir, null);
-    }
-
-    /**
-     * Same as {@link #downloadImageFile(String, int, String, File)} but publishes the freshly
-     * opened {@link HttpURLConnection} to {@code onConnect} so the *calling* leader daemon can
-     * hold its own reference and {@link HttpURLConnection#disconnect() disconnect} it on demotion
-     * to break out of a stuck socket read. MetaHelper itself performs no cancellation.
-     */
-    public static void downloadImageFile(String urlStr, int timeout, String journalId, File destDir,
-                                         Consumer<HttpURLConnection> onConnect)
-            throws IOException {
         HttpURLConnection conn = null;
         String checksum = null;
         String destFilename = Storage.IMAGE + "." + journalId;
@@ -109,9 +97,6 @@ public class MetaHelper {
         try (FileOutputStream out = new FileOutputStream(partFile)) {
             URL url = new URL(urlStr);
             conn = (HttpURLConnection) url.openConnection();
-            if (onConnect != null) {
-                onConnect.accept(conn);
-            }
             conn.setConnectTimeout(timeout);
             conn.setReadTimeout(timeout);
 
@@ -164,25 +149,11 @@ public class MetaHelper {
     }
 
     public static void httpGet(String urlStr, int timeout) throws IOException {
-        httpGet(urlStr, timeout, null);
-    }
-
-    /**
-     * Same as {@link #httpGet(String, int)} but publishes the freshly opened
-     * {@link HttpURLConnection} to {@code onConnect} so the *calling* leader daemon can hold its
-     * own reference and {@link HttpURLConnection#disconnect() disconnect} it on demotion to break
-     * out of a stuck socket read (e.g. a checkpoint push that can otherwise block up to an hour).
-     * MetaHelper itself performs no cancellation.
-     */
-    public static void httpGet(String urlStr, int timeout, Consumer<HttpURLConnection> onConnect) throws IOException {
         URL url = new URL(urlStr);
         HttpURLConnection conn = null;
 
         try {
             conn = (HttpURLConnection) url.openConnection();
-            if (onConnect != null) {
-                onConnect.accept(conn);
-            }
             conn.setConnectTimeout(timeout);
             conn.setReadTimeout(timeout);
 
@@ -244,11 +215,10 @@ public class MetaHelper {
             throw new InvalidMetaDirException();
         }
 
-        long lowerFreeDiskSize = Config.bdbje_free_disk_size;
+        long lowerFreeDiskSize = Long.parseLong(EnvironmentParams.FREE_DISK.getDefault());
         FileStore store = Files.getFileStore(Paths.get(Config.meta_dir));
         if (store.getUsableSpace() < lowerFreeDiskSize) {
-            LOG.error("Free capacity left for meta dir: {} is less than {}. Free up space, or lower " +
-                            "bdbje_free_disk_size to start with less headroom and let bdb-je reclaim its own files",
+            LOG.error("Free capacity left for meta dir: {} is less than {}",
                     Config.meta_dir, new ByteSizeValue(lowerFreeDiskSize));
             throw new InvalidMetaDirException();
         }

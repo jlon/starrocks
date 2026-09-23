@@ -20,19 +20,15 @@
 #include <azure/identity.hpp>
 #include <azure/storage/blobs.hpp>
 
-#include "base/concurrency/stopwatch.hpp"
-#include "base/random/random.h"
-#include "common/config_object_storage_fwd.h"
+#include "common/config.h"
 #include "fs/azure/azblob_uri.h"
 #include "fs/azure/utils.h"
 #include "fs/credential/cloud_configuration_factory.h"
 #include "fs/encrypt_file.h"
-#include "fs/fs_options_helper.h"
-#include "fs/fs_registry.h"
-#include "fs/fs_scheme.h"
 #include "fs/output_stream_adapter.h"
 #include "io/io_profiler.h"
 #include "io/output_stream.h"
+#include "util/stopwatch.hpp"
 
 namespace starrocks {
 
@@ -277,7 +273,7 @@ Status AzBlobOutputStream::complete_multipart_upload() {
 
 class AzBlobClientFactory {
 public:
-    AzBlobClientFactory() = default;
+    AzBlobClientFactory() { srand(time(nullptr)); }
     ~AzBlobClientFactory() = default;
 
     BlobContainerClientPtr new_blob_container_client(const AzureCloudCredential& azure_cloud_credential,
@@ -326,7 +322,7 @@ BlobContainerClientPtr AzBlobClientFactory::new_blob_container_client(
         // shrinks the cache instead of only overwriting entries.
         const size_t max_items = std::max<int64_t>(1, config::object_storage_client_cache_size);
         while (!_client_cache.empty() && _client_cache.size() >= max_items) {
-            int32_t idx = ThreadLocalRandomUniform(static_cast<int32_t>(_client_cache.size()));
+            size_t idx = rand() % _client_cache.size();
             std::swap(_client_cache[idx], _client_cache.back());
             _client_cache.pop_back();
         }
@@ -383,7 +379,7 @@ BlobContainerClientPtr AzBlobClientFactory::create_blob_container_client(
 
 class AzBlobFileSystem : public FileSystem {
 public:
-    explicit AzBlobFileSystem(FSOptions options);
+    explicit AzBlobFileSystem(const FSOptions& options);
     ~AzBlobFileSystem() override = default;
 
     AzBlobFileSystem(const AzBlobFileSystem&) = delete;
@@ -488,11 +484,12 @@ private:
     AzBlobClientFactory* _factory;
 };
 
-AzBlobFileSystem::AzBlobFileSystem(FSOptions options) : _options(std::move(options)), _factory(blob_client_factory()) {}
+AzBlobFileSystem::AzBlobFileSystem(const FSOptions& options)
+        : _options(std::move(options)), _factory(blob_client_factory()) {}
 
 StatusOr<BlobContainerClientPtr> AzBlobFileSystem::new_blob_container_client(const AzBlobURI& uri) {
     // Create azure cloud credential from TCloudConfiguration.cloud_properties
-    const auto* t_cloud_configuration = FSOptionsHelper::cloud_configuration(_options);
+    const auto* t_cloud_configuration = _options.get_cloud_configuration();
     if (t_cloud_configuration == nullptr) {
         return Status::InvalidArgument("CloudConfiguration in FSOption is nullptr");
     }
@@ -551,32 +548,8 @@ StatusOr<std::unique_ptr<WritableFile>> AzBlobFileSystem::new_writable_file(cons
     return wrap_encrypted(std::make_unique<OutputStreamAdapter>(std::move(output_stream), fname), opts.encryption_info);
 }
 
-std::unique_ptr<FileSystem> new_fs_azblob(FSOptions options) {
-    return std::make_unique<AzBlobFileSystem>(std::move(options));
+std::unique_ptr<FileSystem> new_fs_azblob(const FSOptions& options) {
+    return std::make_unique<AzBlobFileSystem>(options);
 }
-
-namespace fs {
-namespace {
-
-bool match_azblob_unique(std::string_view uri, const FSOptions& options) {
-    return FSOptionsHelper::azure_use_native_sdk(options) && is_azblob_uri(uri);
-}
-
-StatusOr<std::unique_ptr<FileSystem>> create_azblob_unique(std::string_view, const FSOptions& options) {
-    return new_fs_azblob(options);
-}
-
-} // namespace
-
-FileSystemProvider new_azblob_file_system_provider(int priority) {
-    return {
-            .id = "azblob",
-            .priority = priority,
-            .match_unique = match_azblob_unique,
-            .create_unique = create_azblob_unique,
-    };
-}
-
-} // namespace fs
 
 } // namespace starrocks

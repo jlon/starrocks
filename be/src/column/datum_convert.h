@@ -14,14 +14,12 @@
 
 #pragma once
 
-#include "types/datum.h"
-#include "types/type_info.h"
-#include "types/type_info_allocator.h"
+#include "column/datum.h"
+#include "storage/types.h"
 
 namespace starrocks {
 
-Status datum_from_string(TypeInfo* type_info, Datum* dst, const std::string& str,
-                         const TypeInfoAllocator* type_info_allocator);
+Status datum_from_string(TypeInfo* type_info, Datum* dst, const std::string& str, MemPool* mem_pool);
 
 std::string datum_to_string(TypeInfo* type_info, const Datum& datum);
 

@@ -15,35 +15,19 @@
 set(LIBRARY_OUTPUT_PATH "${BUILD_DIR}/src/types")
 
 ADD_BE_LIB(Types
-    bitmap_value.cpp
-    datum.cpp
-    decimalv2_value.cpp
-    int128_to_double.cpp
-    hll.cpp
-    geo_type_descriptor.cpp
-    json_value.cpp
-    json_value_converter.cpp
-    simple_json_path.cpp
-    logical_type.cpp
     array_type_info.cpp
-    decimal_type_info.cpp
+    bitmap_value.cpp
+    date_value.cpp
+    hll.cpp
+    hll_sketch.cpp
+    large_int_value.cpp
+    logical_type.cpp
     map_type_info.cpp
     struct_type_info.cpp
-    type_info.cpp
-    agg_state_desc.cpp
-    type_descriptor.cpp
-    date_value.cpp
-    datetime_value.cpp
-    tdigest.cpp
-    time_types.cpp
     timestamp_value.cpp
-    variant.cpp
+    checker/type_checker.cpp
+    checker/type_checker_xml_loader.cpp
+    type_checker_manager.cpp
+    int256.cpp
     variant_value.cpp
-    geo_wkb.cpp
-)
-
-target_link_libraries(Types PRIVATE
-    re2
-    simdjson
-    velocypack
 )

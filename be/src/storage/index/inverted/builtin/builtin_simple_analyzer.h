@@ -18,7 +18,7 @@
 #include <string_view>
 #include <vector>
 
-#include "base/string/slice.h"
+#include "util/slice.h"
 
 namespace starrocks {
 

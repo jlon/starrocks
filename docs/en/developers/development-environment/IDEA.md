@@ -94,12 +94,10 @@ Many source files in FE need to be generated manually, otherwise IDEA will repor
 Execute the following command to automatically generate:
 
 ```bash
-make -C gensrc script
-./build.sh --be --configure-only
-cmake --build be/build_Release --target be_proto_codegen be_thrift_codegen
+cd gensrc
+make clean
+make
 ```
-
-The generated BE thrift/protobuf C++ files will appear under the active build directory, for example `be/build_Release/gensrc/gen_cpp`.
 
 ## Compile FE
 

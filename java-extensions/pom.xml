@@ -16,7 +16,6 @@
         <module>udf-examples</module>
         <module>hudi-reader</module>
         <module>paimon-reader</module>
-        <module>fluss-reader</module>
         <module>hive-reader</module>
         <module>hadoop-ext</module>
         <module>odps-reader</module>
@@ -43,13 +42,13 @@
         <jni-connector.version>1.0.0</jni-connector.version>
         <hadoop-ext.version>1.0.0</hadoop-ext.version>
         <java-utils.version>1.0.0</java-utils.version>
-        <io.netty.version>4.1.137.Final</io.netty.version>
+        <io.netty.version>4.1.136.Final</io.netty.version>
         <protobuf-java.version>3.25.5</protobuf-java.version>
         <nimbusds.version>9.37.2</nimbusds.version>
         <commons-io.version>2.14.0</commons-io.version>
         <gcs.connector.version>3.0.13</gcs.connector.version>
         <slf4j.version>1.7.36</slf4j.version>
-        <arrow.version>18.0.0</arrow.version>
+        <arrow.version>17.0.0</arrow.version>
         <jackson.version>2.21.4</jackson.version>
         <!-- jackson-annotations doesn't have 2.21.4 version released -->
         <jackson-annotations.version>2.21</jackson-annotations.version>
@@ -65,101 +64,9 @@
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
         <lz4-java.version>1.10.1</lz4-java.version>
         <httpclient5.version>5.4.3</httpclient5.version>
-        <httpcore5.version>5.4.3</httpcore5.version>
-        <bouncycastle.version>1.85</bouncycastle.version>
+        <bouncycastle.version>1.84</bouncycastle.version>
         <thrift.version>0.24.0</thrift.version>
-
-        <!-- Empty unless the jdk-allow-security-manager profile below activates it. -->
-        <security.manager.arg></security.manager.arg>
     </properties>
-
-    <profiles>
-        <!-- for custom internal repository -->
-        <profile>
-            <id>custom-env</id>
-            <activation>
-                <property>
-                    <name>env.CUSTOM_MAVEN_REPO</name>
-                </property>
-            </activation>
-
-            <repositories>
-                <repository>
-                    <id>custom-nexus</id>
-                    <url>${env.CUSTOM_MAVEN_REPO}</url>
-                </repository>
-            </repositories>
-
-            <pluginRepositories>
-                <pluginRepository>
-                    <id>custom-nexus</id>
-                    <url>${env.CUSTOM_MAVEN_REPO}</url>
-                </pluginRepository>
-            </pluginRepositories>
-        </profile>
-
-        <!-- for general repository -->
-        <profile>
-            <id>general-env</id>
-            <activation>
-                <property>
-                    <name>!env.CUSTOM_MAVEN_REPO</name>
-                </property>
-            </activation>
-
-            <repositories>
-                <!-- keep the central repository the first one among all repositories -->
-                <repository>
-                    <id>central</id>
-                    <name>central maven repo https</name>
-                    <url>https://repo.maven.apache.org/maven2/</url>
-                </repository>
-                <!-- for java-cup -->
-                <repository>
-                    <id>cloudera-public</id>
-                    <url>https://repository.cloudera.com/repository/public/</url>
-                </repository>
-                <repository>
-                    <id>cloudera</id>
-                    <url>https://repository.cloudera.com/repository/cloudera-repos/</url>
-                </repository>
-                <!-- for leveldbjni-all-1.8.jar,commons-crypto-1.0.0.jar on aarch64 -->
-                <repository>
-                    <id>kunpeng</id>
-                    <url>https://mirror.iscas.ac.cn/kunpeng/maven/</url>
-                </repository>
-            </repositories>
-
-            <pluginRepositories>
-                <pluginRepository>
-                    <id>central</id>
-                    <url>https://repo.maven.apache.org/maven2/</url>
-                </pluginRepository>
-                <!-- for cup-maven-plugin -->
-                <pluginRepository>
-                    <id>cloudera-public</id>
-                    <url>https://repository.cloudera.com/repository/public/</url>
-                </pluginRepository>
-            </pluginRepositories>
-        </profile>
-
-        <!-- UDFClassLoader installs a UDFSecurityManager when java.security.policy is set,
-             and SecurityTest installs one directly. JDK 18+ (JEP 411) rejects
-             System.setSecurityManager unless the JVM is started with
-             -Djava.security.manager=allow, so the test JVM needs the flag to exercise that
-             path. The range is bounded on both ends on purpose: the flag is a no-op on
-             JDK 17, and JDK 24+ (JEP 486) makes the launcher reject any value other than
-             'disallow', which would stop the test JVM from starting at all. -->
-        <profile>
-            <id>jdk-allow-security-manager</id>
-            <activation>
-                <jdk>[18,24)</jdk>
-            </activation>
-            <properties>
-                <security.manager.arg>-Djava.security.manager=allow</security.manager.arg>
-            </properties>
-        </profile>
-    </profiles>
 
     <dependencyManagement>
         <dependencies>
@@ -605,12 +512,6 @@
                 <artifactId>arrow-compression</artifactId>
                 <version>${arrow.version}</version>
             </dependency>
-
-            <dependency>
-                <groupId>org.apache.arrow</groupId>
-                <artifactId>arrow-c-data</artifactId>
-                <version>${arrow.version}</version>
-            </dependency>
             <!-- apache arrow -->
             <dependency>
                 <groupId>com.google.guava</groupId>
@@ -715,24 +616,6 @@
                 <groupId>org.apache.httpcomponents.client5</groupId>
                 <artifactId>httpclient5</artifactId>
                 <version>${httpclient5.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.apache.httpcomponents.core5</groupId>
-                <artifactId>httpcore5</artifactId>
-                <version>${httpcore5.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.apache.httpcomponents.core5</groupId>
-                <artifactId>httpcore5-h2</artifactId>
-                <version>${httpcore5.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.apache.httpcomponents.core5</groupId>
-                <artifactId>httpcore5-reactive</artifactId>
-                <version>${httpcore5.version}</version>
             </dependency>
 
         </dependencies>
@@ -853,7 +736,7 @@
                     <dependency>
                         <groupId>com.puppycrawl.tools</groupId>
                         <artifactId>checkstyle</artifactId>
-                        <version>10.21.1</version>
+                        <version>8.40</version>
                     </dependency>
                 </dependencies>
                 <configuration>

@@ -44,15 +44,6 @@ public:
     Status write_zone_map() override { return Status::OK(); }
 
     Status write_bitmap_index() override { return Status::OK(); }
-    // Same order and the same is_nullable() guard as write_ordinal_index().
-    void take_ordinal_index_builders(std::vector<DeferredOrdinalIndex>* out) override {
-        if (is_nullable()) {
-            _nulls_writer->take_ordinal_index_builders(out);
-        }
-        _offsets_writer->take_ordinal_index_builders(out);
-        _keys_writer->take_ordinal_index_builders(out);
-        _values_writer->take_ordinal_index_builders(out);
-    }
 
     Status write_bloom_filter_index() override { return Status::OK(); }
 
@@ -126,7 +117,6 @@ StatusOr<std::unique_ptr<ColumnWriter>> create_map_column_writer(const ColumnWri
         null_options.meta->set_length(1);
         null_options.meta->set_encoding(DEFAULT_ENCODING);
         null_options.meta->set_compression(opts.meta->compression());
-        null_options.meta->set_compression_level(opts.meta->compression_level());
         null_options.meta->set_is_nullable(false);
 
         TypeInfoPtr tinyint_type_info = get_type_info(TYPE_TINYINT);
@@ -143,7 +133,6 @@ StatusOr<std::unique_ptr<ColumnWriter>> create_map_column_writer(const ColumnWri
         offsets_options.meta->set_length(4);
         offsets_options.meta->set_encoding(DEFAULT_ENCODING);
         offsets_options.meta->set_compression(opts.meta->compression());
-        offsets_options.meta->set_compression_level(opts.meta->compression_level());
         offsets_options.meta->set_is_nullable(false);
         offsets_options.need_zone_map = false;
         offsets_options.need_bloom_filter = false;

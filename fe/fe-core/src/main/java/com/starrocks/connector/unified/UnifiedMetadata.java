@@ -16,13 +16,11 @@ package com.starrocks.connector.unified;
 
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.MvId;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.AlreadyExistsException;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.MetaNotFoundException;
-import com.starrocks.common.StarRocksException;
 import com.starrocks.common.profile.Tracers;
 import com.starrocks.common.tvr.TvrTableDeltaTrait;
 import com.starrocks.common.tvr.TvrTableSnapshot;
@@ -30,23 +28,18 @@ import com.starrocks.common.tvr.TvrVersionRange;
 import com.starrocks.connector.ConnectorMetadata;
 import com.starrocks.connector.ConnectorMetadataRequestContext;
 import com.starrocks.connector.ConnectorTableVersion;
-import com.starrocks.connector.DelegatingConnectorMetadata;
 import com.starrocks.connector.GetRemoteFilesParams;
 import com.starrocks.connector.MetaPreparationItem;
 import com.starrocks.connector.PartitionInfo;
 import com.starrocks.connector.RemoteFileInfo;
 import com.starrocks.connector.RemoteFileInfoSource;
 import com.starrocks.connector.SerializedMetaSpec;
-import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.hive.HiveMetadata;
 import com.starrocks.connector.metadata.MetadataTableType;
 import com.starrocks.credential.CloudConfiguration;
 import com.starrocks.qe.ConnectContext;
-import com.starrocks.qe.ShowResultSet;
-import com.starrocks.sql.ast.AlterTableStmt;
 import com.starrocks.sql.ast.CreateTableStmt;
 import com.starrocks.sql.ast.DropTableStmt;
-import com.starrocks.sql.ast.TruncateTableStmt;
 import com.starrocks.sql.optimizer.OptimizerContext;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
@@ -66,7 +59,7 @@ import static com.starrocks.catalog.Table.TableType.KUDU;
 import static com.starrocks.catalog.Table.TableType.PAIMON;
 import static java.util.Objects.requireNonNull;
 
-public class UnifiedMetadata implements ConnectorMetadata, DelegatingConnectorMetadata {
+public class UnifiedMetadata implements ConnectorMetadata {
     public static final String ICEBERG_TABLE_TYPE_NAME = "table_type";
     public static final String ICEBERG_TABLE_TYPE_VALUE = "iceberg";
     public static final String SPARK_TABLE_PROVIDER_KEY = "spark.sql.sources.provider";
@@ -124,7 +117,8 @@ public class UnifiedMetadata implements ConnectorMetadata, DelegatingConnectorMe
     }
 
     private ConnectorMetadata metadataOfTable(String dbName, String tblName) {
-        return metadataOfType(getTableType(dbName, tblName));
+        Table.TableType type = getTableType(dbName, tblName);
+        return metadataMap.get(type);
     }
 
     private ConnectorMetadata metadataOfTable(Table table) {
@@ -132,20 +126,7 @@ public class UnifiedMetadata implements ConnectorMetadata, DelegatingConnectorMe
         if (table.isHiveView()) {
             type = HIVE;
         }
-        return metadataOfType(type);
-    }
-
-    // Not every table type has an entry in metadataMap: PAIMON is only registered when the catalog was
-    // created with "paimon.catalog.warehouse", while the table type is inferred from the metastore
-    // properties alone. Every caller dereferences the result right away, so report the missing
-    // connector here instead of letting it surface as a NullPointerException.
-    private ConnectorMetadata metadataOfType(Table.TableType type) {
-        ConnectorMetadata metadata = metadataMap.get(type);
-        if (metadata == null) {
-            throw new StarRocksConnectorException("Table type %s is not available in this unified catalog, " +
-                    "the corresponding connector is not configured", type);
-        }
-        return metadata;
+        return metadataMap.get(type);
     }
 
     @Override
@@ -157,12 +138,6 @@ public class UnifiedMetadata implements ConnectorMetadata, DelegatingConnectorMe
     public TvrTableSnapshot getCurrentTvrSnapshot(String dbName, Table table) {
         ConnectorMetadata metadata = metadataOfTable(table);
         return metadata.getCurrentTvrSnapshot(dbName, table);
-    }
-
-    @Override
-    public TvrTableSnapshot acquireTvrSnapshot(String dbName, Table table, MvId mvId) {
-        ConnectorMetadata metadata = metadataOfTable(table);
-        return metadata.acquireTvrSnapshot(dbName, table, mvId);
     }
 
     @Override
@@ -242,11 +217,6 @@ public class UnifiedMetadata implements ConnectorMetadata, DelegatingConnectorMe
     }
 
     @Override
-    public ConnectorMetadata delegateFor(Table table) {
-        return metadataOfTable(table);
-    }
-
-    @Override
     public List<PartitionInfo> getPartitions(Table table, List<String> partitionNames) {
         ConnectorMetadata metadata = metadataOfTable(table);
         return metadata.getPartitions(table, partitionNames);
@@ -309,18 +279,6 @@ public class UnifiedMetadata implements ConnectorMetadata, DelegatingConnectorMe
     public void dropTable(ConnectContext context, DropTableStmt stmt) throws DdlException {
         ConnectorMetadata metadata = metadataOfTable(stmt.getDbName(), stmt.getTableName());
         metadata.dropTable(context, stmt);
-    }
-
-    @Override
-    public ShowResultSet alterTable(ConnectContext context, AlterTableStmt stmt) throws StarRocksException {
-        ConnectorMetadata metadata = metadataOfTable(stmt.getDbName(), stmt.getTableName());
-        return metadata.alterTable(context, stmt);
-    }
-
-    @Override
-    public void truncateTable(TruncateTableStmt truncateTableStmt, ConnectContext context) throws DdlException {
-        ConnectorMetadata metadata = metadataOfTable(truncateTableStmt.getDbName(), truncateTableStmt.getTblName());
-        metadata.truncateTable(truncateTableStmt, context);
     }
 
     @Override

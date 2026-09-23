@@ -21,7 +21,6 @@
 #include "runtime/runtime_state.h"
 
 #ifdef STARROCKS_JIT_ENABLE
-#include "exprs/jit/expr_jit_codegen.h"
 #include "exprs/jit/ir_helper.h"
 #endif
 
@@ -46,13 +45,7 @@ DEFINE_BINARY_FUNCTION_WITH_IMPL(AndImpl, l_value, r_value) {
     return l_value & r_value;
 }
 
-#ifdef STARROCKS_JIT_ENABLE
-class VectorizedAndCompoundPredicate final : public Predicate,
-                                             public JITCodegenNode
-#else
-class VectorizedAndCompoundPredicate final : public Predicate
-#endif
-{
+class VectorizedAndCompoundPredicate final : public Predicate {
 public:
     DEFINE_COMPOUND_CONSTRUCT(VectorizedAndCompoundPredicate);
 
@@ -90,8 +83,8 @@ public:
 
     StatusOr<LLVMDatum> generate_ir_impl(ExprContext* context, JITContext* jit_ctx) override {
         std::vector<LLVMDatum> datums(2);
-        ASSIGN_OR_RETURN(datums[0], ExprJITCodegen::generate_ir(context, _children[0], jit_ctx))
-        ASSIGN_OR_RETURN(datums[1], ExprJITCodegen::generate_ir(context, _children[1], jit_ctx))
+        ASSIGN_OR_RETURN(datums[0], _children[0]->generate_ir(context, jit_ctx))
+        ASSIGN_OR_RETURN(datums[1], _children[1]->generate_ir(context, jit_ctx))
         auto& b = jit_ctx->builder;
         LLVMDatum result(b);
         result.value = b.CreateAnd(datums[0].value, datums[1].value);
@@ -102,9 +95,8 @@ public:
     }
 
     std::string jit_func_name_impl(RuntimeState* state) const override {
-        return "{" + ExprJITCodegen::func_name(_children[0], state) + " & " +
-               ExprJITCodegen::func_name(_children[1], state) + "}" + (is_constant() ? "c:" : "") +
-               (is_nullable() ? "n:" : "") + type().debug_string();
+        return "{" + _children[0]->jit_func_name(state) + " & " + _children[1]->jit_func_name(state) + "}" +
+               (is_constant() ? "c:" : "") + (is_nullable() ? "n:" : "") + type().debug_string();
     }
 #endif
 
@@ -133,13 +125,7 @@ DEFINE_BINARY_FUNCTION_WITH_IMPL(OrImpl, l_value, r_value) {
     return l_value | r_value;
 }
 
-#ifdef STARROCKS_JIT_ENABLE
-class VectorizedOrCompoundPredicate final : public Predicate,
-                                            public JITCodegenNode
-#else
-class VectorizedOrCompoundPredicate final : public Predicate
-#endif
-{
+class VectorizedOrCompoundPredicate final : public Predicate {
 public:
     DEFINE_COMPOUND_CONSTRUCT(VectorizedOrCompoundPredicate);
     StatusOr<ColumnPtr> evaluate_checked(ExprContext* context, Chunk* ptr) override {
@@ -177,8 +163,8 @@ public:
 
     StatusOr<LLVMDatum> generate_ir_impl(ExprContext* context, JITContext* jit_ctx) override {
         std::vector<LLVMDatum> datums(2);
-        ASSIGN_OR_RETURN(datums[0], ExprJITCodegen::generate_ir(context, _children[0], jit_ctx))
-        ASSIGN_OR_RETURN(datums[1], ExprJITCodegen::generate_ir(context, _children[1], jit_ctx))
+        ASSIGN_OR_RETURN(datums[0], _children[0]->generate_ir(context, jit_ctx))
+        ASSIGN_OR_RETURN(datums[1], _children[1]->generate_ir(context, jit_ctx))
         auto& b = jit_ctx->builder;
         LLVMDatum result(b);
         result.value = b.CreateOr(datums[0].value, datums[1].value);
@@ -189,9 +175,8 @@ public:
     }
 
     std::string jit_func_name_impl(RuntimeState* state) const override {
-        return "{" + ExprJITCodegen::func_name(_children[0], state) + " | " +
-               ExprJITCodegen::func_name(_children[1], state) + "}" + (is_constant() ? "c:" : "") +
-               (is_nullable() ? "n:" : "") + type().debug_string();
+        return "{" + _children[0]->jit_func_name(state) + " | " + _children[1]->jit_func_name(state) + "}" +
+               (is_constant() ? "c:" : "") + (is_nullable() ? "n:" : "") + type().debug_string();
     }
 #endif
 
@@ -210,13 +195,7 @@ DEFINE_UNARY_FN_WITH_IMPL(CompoundPredNot, l) {
     return !l;
 }
 
-#ifdef STARROCKS_JIT_ENABLE
-class VectorizedNotCompoundPredicate final : public Predicate,
-                                             public JITCodegenNode
-#else
-class VectorizedNotCompoundPredicate final : public Predicate
-#endif
-{
+class VectorizedNotCompoundPredicate final : public Predicate {
 public:
     DEFINE_COMPOUND_CONSTRUCT(VectorizedNotCompoundPredicate);
     StatusOr<ColumnPtr> evaluate_checked(ExprContext* context, Chunk* ptr) override {
@@ -244,7 +223,7 @@ public:
     }
 
     StatusOr<LLVMDatum> generate_ir_impl(ExprContext* context, JITContext* jit_ctx) override {
-        ASSIGN_OR_RETURN(LLVMDatum datum, ExprJITCodegen::generate_ir(context, _children[0], jit_ctx))
+        ASSIGN_OR_RETURN(LLVMDatum datum, _children[0]->generate_ir(context, jit_ctx))
         auto& b = jit_ctx->builder;
         LLVMDatum result(b);
         result.value = b.CreateSelect(IRHelper::bool_to_cond(b, datum.value), b.getInt8(0), b.getInt8(1));
@@ -253,7 +232,7 @@ public:
     }
 
     std::string jit_func_name_impl(RuntimeState* state) const override {
-        return "{!" + ExprJITCodegen::func_name(_children[0], state) + "}" + (is_constant() ? "c:" : "") +
+        return "{!" + _children[0]->jit_func_name(state) + "}" + (is_constant() ? "c:" : "") +
                (is_nullable() ? "n:" : "") + type().debug_string();
     }
 #endif

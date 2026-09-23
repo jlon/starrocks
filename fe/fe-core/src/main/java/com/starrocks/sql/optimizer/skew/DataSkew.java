@@ -15,7 +15,6 @@ package com.starrocks.sql.optimizer.skew;
 
 import com.google.common.collect.Lists;
 import com.starrocks.common.Pair;
-import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.optimizer.statistics.ColumnStatistic;
 import com.starrocks.sql.optimizer.statistics.Statistics;
 
@@ -23,7 +22,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;
 import javax.validation.constraints.NotNull;
 
 public class DataSkew {
@@ -64,13 +62,12 @@ public class DataSkew {
             this(type, additionalInfo, Optional.empty());
         }
 
-        public boolean isSkewed() {
-            return type != SkewType.NOT_SKEWED;
+        public SkewInfo(SkewType type, Optional<List<Pair<String, Long>>> maybeMcvs) {
+            this(type, AdditionalInfo.NONE, maybeMcvs);
         }
 
-        public Optional<Map<String, Long>> getMcvs() {
-            return maybeMcvs.map(mcvs -> mcvs.stream() //
-                    .collect(Collectors.toMap(pair -> pair.first, pair -> pair.second)));
+        public boolean isSkewed() {
+            return type != SkewType.NOT_SKEWED;
         }
     }
 
@@ -111,7 +108,7 @@ public class DataSkew {
 
         final var mcv = histogram.getMCV();
 
-        if (mcv.isEmpty()) {
+        if (mcv == null) {
             return new McvSkewInfo(false, AdditionalInfo.NO_MCV);
         }
 
@@ -150,20 +147,6 @@ public class DataSkew {
     }
 
     /**
-     * In some cases the row count in statistics can be inaccurate,
-     * and enforcing skew detection in those cases can lead to false positives.
-     * This utility checks whether the inaccurate stats should be ignored for
-     * skew detection based on the session variable enableSkewDetectWithInaccurateStats
-     */
-    private static boolean shouldEnforceRowCountAccuracy() {
-        ConnectContext ctx = ConnectContext.get();
-        if (ctx != null && ctx.getSessionVariable() != null) {
-            return !ctx.getSessionVariable().isEnableSkewDetectWithInaccurateStats();
-        }
-        return true;
-    }
-
-    /**
      * Utility method to get detailed information about if a column is skewed and how it is skewed.
      */
     public static SkewInfo getColumnSkewInfo(@NotNull Statistics statistics, @NotNull ColumnStatistic columnStatistic) {
@@ -175,8 +158,7 @@ public class DataSkew {
      */
     public static SkewInfo getColumnSkewInfo(@NotNull Statistics statistics, @NotNull ColumnStatistic columnStatistic,
                                              Thresholds thresholds) {
-        final var rowCount = statistics.getOutputRowCount();
-        if (rowCount < 1 || (statistics.isTableRowCountMayInaccurate() && shouldEnforceRowCountAccuracy())) {
+        if (statistics.isTableRowCountMayInaccurate() || statistics.getOutputRowCount() < 1) {
             // Without sufficient information we can not make a decision.
             return new SkewInfo(SkewType.NOT_SKEWED, AdditionalInfo.INACCURATE_ROW_COUNT);
         }
@@ -209,8 +191,7 @@ public class DataSkew {
                                                    @NotNull ColumnStatistic columnStatistic,
                                                    Thresholds thresholds,
                                                    double singleMcvThreshold) {
-        if (statistics.getOutputRowCount() < 1 ||
-                (statistics.isTableRowCountMayInaccurate() && shouldEnforceRowCountAccuracy())) {
+        if (statistics.isTableRowCountMayInaccurate() || statistics.getOutputRowCount() < 1) {
             return new SkewCandidates(false, List.of(), Optional.empty(), Optional.empty(), Optional.empty());
         }
 
@@ -255,16 +236,5 @@ public class DataSkew {
     /* Always using default thresholds */
     public static boolean isColumnSkewed(@NotNull Statistics statistics, @NotNull ColumnStatistic columnStatistic) {
         return isColumnSkewed(statistics, columnStatistic, DEFAULT_THRESHOLDS);
-    }
-
-    public static long getOverlappingMcvRowCount(Map<String, Long> mcvs, Map<String, Long> otherMcvs) {
-        if (mcvs.isEmpty() || otherMcvs.isEmpty()) {
-            return 0;
-        }
-
-        return mcvs.entrySet().stream() //
-                .filter(mcv -> otherMcvs.containsKey(mcv.getKey())) //
-                .mapToLong(Map.Entry::getValue) //
-                .sum();
     }
 }

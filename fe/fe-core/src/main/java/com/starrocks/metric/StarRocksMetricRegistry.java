@@ -64,6 +64,6 @@ public class StarRocksMetricRegistry {
     }
 
     public synchronized void removeMetrics(String name) {
-        metrics.removeIf(m -> m.getName().equals(name));
+        metrics = metrics.stream().filter(m -> !(m.getName().equals(name))).collect(Collectors.toList());
     }
 }

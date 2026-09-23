@@ -20,9 +20,9 @@
 
 #include "common/statusor.h"
 #include "storage/olap_common.h"
-#include "storage_primitive/range.h"
-#include "storage_primitive/rowid_types.h"
-#include "storage_primitive/zone_map_detail.h"
+#include "storage/range.h"
+#include "storage/rowset/common.h"
+#include "storage/zone_map_detail.h"
 #include "types/logical_type.h"
 
 namespace starrocks {

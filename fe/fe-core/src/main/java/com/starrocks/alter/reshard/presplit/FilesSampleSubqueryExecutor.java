@@ -17,6 +17,7 @@ package com.starrocks.alter.reshard.presplit;
 import com.google.common.annotations.VisibleForTesting;
 import com.starrocks.catalog.Column;
 import com.starrocks.common.StarRocksException;
+import com.starrocks.common.util.SqlUtils;
 import com.starrocks.warehouse.cngroup.ComputeResource;
 
 import java.util.List;
@@ -81,6 +82,12 @@ abstract class FilesSampleSubqueryExecutor extends AbstractSqlSampleSubqueryExec
                 source.totalFileBytes(), source.computeResource(),
                 columnIdentsOf(sortKeyColumns), columnIdentsOf(partitionSourceColumns),
                 sortKeyColumns, partitionSourceColumns);
+    }
+
+    private static List<String> columnIdentsOf(List<Column> columns) {
+        return columns.stream()
+                .map(column -> SqlUtils.getIdentSql(column.getName()))
+                .collect(Collectors.toList());
     }
 
     /**

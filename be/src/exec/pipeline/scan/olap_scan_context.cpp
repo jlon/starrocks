@@ -14,18 +14,10 @@
 
 #include "exec/pipeline/scan/olap_scan_context.h"
 
-#include "common/config_scan_io_fwd.h"
-#include "compute_env/global_dict/fragment_dict_state.h"
-#include "compute_env/global_dict/parser.h"
 #include "exec/olap_scan_node.h"
+#include "exec/olap_scan_prepare.h"
 #include "exec/pipeline/fragment_context.h"
-#include "exec/pipeline/query_context.h"
-#include "exec/pipeline/scan/glm_manager.h"
-#include "exec/runtime_compat/runtime_state_helper.h"
-#include "exec_primitive/runtime_filter/runtime_filter_probe.h"
-#ifdef STARROCKS_JIT_ENABLE
-#include "exprs/jit/expr_jit_pass.h"
-#endif
+#include "exprs/runtime_filter_bank.h"
 #include "storage/tablet.h"
 
 namespace starrocks::pipeline {
@@ -37,11 +29,7 @@ Status ConcurrentJitRewriter::rewrite(std::vector<ExprContext*>& expr_ctxs, Obje
     }
     _barrier.arrive();
     for (int i = _id.fetch_add(1); i < expr_ctxs.size(); i = _id.fetch_add(1)) {
-#ifdef STARROCKS_JIT_ENABLE
-        auto st = ExprJITPass::rewrite_context(expr_ctxs[i], pool);
-#else
-        auto st = Status::OK();
-#endif
+        auto st = expr_ctxs[i]->rewrite_jit_expr(pool);
         if (!st.ok()) {
             _errors++;
         }
@@ -95,41 +83,18 @@ void OlapScanContext::close(RuntimeState* state) {
     _rowset_release_guard.reset();
 }
 
-Status OlapScanContext::capture_tablet_rowsets(RuntimeState* state,
-                                               const std::vector<TInternalScanRange*>& olap_scan_ranges) {
+Status OlapScanContext::capture_tablet_rowsets(const std::vector<TInternalScanRange*>& olap_scan_ranges) {
     std::vector<std::vector<RowsetSharedPtr>> tablet_rowsets;
     tablet_rowsets.resize(olap_scan_ranges.size());
     _tablets.resize(olap_scan_ranges.size());
-
-    const auto& olap_scan_node_desc = scan_node()->thrift_olap_scan_node();
-    bool enable_glm = olap_scan_node_desc.__isset.enable_global_late_materialization &&
-                      olap_scan_node_desc.enable_global_late_materialization;
-
-    if (enable_glm) {
-        int32_t scan_node_id = scan_node()->id();
-        auto* glm_mgr = state->query_runtime_state()->global_late_materialization_ctx_mgr();
-        auto* obj_pool = state->query_runtime_state()->object_pool();
-        auto creator = [&]() {
-            auto* ctx = obj_pool->add(new OlapScanLazyMaterializationContext());
-            return ctx;
-        };
-        _glm_ctx = (OlapScanLazyMaterializationContext*)glm_mgr->get_or_create_ctx(scan_node_id, creator);
-        _glm_ctx->set_scan_node(olap_scan_node_desc);
-    }
-
     for (int i = 0; i < olap_scan_ranges.size(); ++i) {
         auto* scan_range = olap_scan_ranges[i];
 
         ASSIGN_OR_RETURN(TabletSharedPtr tablet, OlapScanNode::get_tablet(scan_range));
         ASSIGN_OR_RETURN(tablet_rowsets[i], OlapScanNode::capture_tablet_rowsets(tablet, scan_range));
-        auto version = strtoul(scan_range->version.c_str(), nullptr, 10);
+
         VLOG(2) << "capture tablet rowsets: " << tablet->full_name() << ", rowsets: " << tablet_rowsets[i].size()
                 << ", version: " << scan_range->version << ", gtid: " << scan_range->gtid;
-
-        if (_glm_ctx) {
-            int32_t tablet_id = scan_range->tablet_id;
-            _glm_ctx->capture_rowsets(tablet_id, version, tablet_rowsets[i]);
-        }
 
         _tablets[i] = std::move(tablet);
     }
@@ -179,9 +144,9 @@ Status OlapScanContext::parse_conjuncts(RuntimeState* state, const std::vector<E
     opts.scan_keys_unlimited = true;
     opts.max_scan_key_num = max_scan_key_num;
     opts.enable_column_expr_predicate = enable_column_expr_predicate;
-    opts.pred_tree_params = state->fragment_runtime_state()->pred_tree_params();
+    opts.pred_tree_params = state->fragment_ctx()->pred_tree_params();
 
-    _conjuncts_manager = std::make_unique<ScanConjunctsManager>(opts);
+    _conjuncts_manager = std::make_unique<ScanConjunctsManager>(std::move(opts));
     ScanConjunctsManager& cm = *_conjuncts_manager;
 
     // Parse conjuncts via _conjuncts_manager.
@@ -192,13 +157,9 @@ Status OlapScanContext::parse_conjuncts(RuntimeState* state, const std::vector<E
     cm.get_not_push_down_conjuncts(&_not_push_down_conjuncts);
 
     // rewrite after push down scan predicate, scan predicate should rewrite by local-dict
-    auto* fragment_dict_state = state->fragment_dict_state();
-    DCHECK(fragment_dict_state != nullptr);
-    RETURN_IF_ERROR(
-            fragment_dict_state->mutable_dict_optimize_parser()->rewrite_conjuncts(state, &_not_push_down_conjuncts));
+    RETURN_IF_ERROR(state->mutable_dict_optimize_parser()->rewrite_conjuncts(&_not_push_down_conjuncts));
 
-    WARN_IF_ERROR(
-            _jit_rewriter.rewrite(_not_push_down_conjuncts, &_obj_pool, RuntimeStateHelper::is_jit_enabled(state)), "");
+    WARN_IF_ERROR(_jit_rewriter.rewrite(_not_push_down_conjuncts, &_obj_pool, state->is_jit_enabled()), "");
 
     return Status::OK();
 }

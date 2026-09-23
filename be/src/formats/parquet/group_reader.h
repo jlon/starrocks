@@ -16,16 +16,11 @@
 
 #include <atomic>
 #include <memory>
-#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
-#include "cache/cache_options.h"
-#include "cache/scan/shared_buffered_input_stream.h"
-#include "column/column_access_path.h"
 #include "column/vectorized_fwd.h"
 #include "common/global_types.h"
 #include "common/object_pool.h"
@@ -33,26 +28,26 @@
 #include "common/statusor.h"
 #include "exprs/expr_context.h"
 #include "formats/parquet/column_reader.h"
-#include "formats/parquet/column_reader_factory.h"
 #include "formats/parquet/metadata.h"
 #include "formats/parquet/utils.h"
-#include "formats/scan_context.h"
 #include "gen_cpp/parquet_types.h"
+#include "io/shared_buffered_input_stream.h"
 #include "runtime/descriptors.h"
-#include "storage_primitive/range.h"
-#include "storage_primitive/runtime_filter_predicate.h"
+#include "runtime/runtime_state.h"
+#include "storage/range.h"
 
 namespace starrocks {
 class RandomAccessFile;
-struct FormatScannerStats;
+struct HdfsScannerStats;
+struct HdfsScannerContext;
 class ExprContext;
 class TIcebergSchemaField;
+class THdfsScanRange;
 
 namespace parquet {
 class ColumnMaterializer;
 class FileMetaData;
 class LazyMaterializationContext;
-class VariantProjectionHandler;
 } // namespace parquet
 struct TypeDescriptor;
 } // namespace starrocks
@@ -72,9 +67,6 @@ struct GroupReaderParam {
         const TIcebergSchemaField* t_lake_schema_field = nullptr;
 
         bool decode_needed;
-        bool is_extended_variant_virtual = false;
-        std::string source_variant_column_name;
-        std::string variant_virtual_leaf_path;
 
         const TypeDescriptor& slot_type() const { return slot_desc->type(); }
         const SlotId slot_id() const { return slot_desc->id(); }
@@ -86,7 +78,7 @@ struct GroupReaderParam {
     // Always non-null when used from FileReader; may be null in unit tests.
     // Non-const because unit tests need to populate the context fields after
     // construction; GroupReader treats it as read-only by convention.
-    FormatScanContext* scan_ctx = nullptr;
+    HdfsScannerContext* scanner_ctx = nullptr;
 
     // conjunct_ctxs that column is materialized in group reader
     // Mutable per-group-reader shallow copy of the scanner context's by_slot map;
@@ -96,9 +88,9 @@ struct GroupReaderParam {
     // columns
     std::vector<Column> read_cols;
 
-    FormatScannerStats* stats = nullptr;
+    HdfsScannerStats* stats = nullptr;
 
-    SharedBufferedInputStream* sb_stream = nullptr;
+    io::SharedBufferedInputStream* sb_stream = nullptr;
 
     int chunk_size = 0;
 
@@ -115,17 +107,19 @@ struct GroupReaderParam {
 
     // Kept directly in GroupReaderParam for test-compatibility; also used by
     // _get_extended_bigint_value() to read extended_columns from the scan range.
+
     int32_t scan_range_id = -1;
+    const THdfsScanRange* scan_range = nullptr;
 };
 
 class GroupReader {
-    friend class VariantProjectionHandler;
-
 public:
     GroupReader(GroupReaderParam& param, int row_group_number, SkipRowsContextPtr skip_rows_ctx,
                 int64_t row_group_first_row);
     ~GroupReader();
 
+    // init used to init column reader, and devide active/lazy
+    // then we can use inited column collect io range.
     Status init();
     Status prepare();
     const tparquet::ColumnChunk* get_chunk_metadata(SlotId slot_id);
@@ -134,7 +128,7 @@ public:
     uint64_t get_row_group_first_row() const { return _row_group_first_row; }
     const tparquet::RowGroup* get_row_group_metadata() const;
     Status get_next(ChunkPtr* chunk, size_t* row_count);
-    void collect_io_ranges(std::vector<SharedBufferedInputStream::IORange>* ranges, int64_t* end_offset,
+    void collect_io_ranges(std::vector<io::SharedBufferedInputStream::IORange>* ranges, int64_t* end_offset,
                            ColumnIOTypeFlags types = ColumnIOType::PAGES);
 
     SparseRange<uint64_t> get_range() const { return _range; }
@@ -143,16 +137,15 @@ public:
     bool& get_is_group_filtered() { return _is_group_filtered; }
 
 private:
-    // ── Initialization ───────────────────────────────────────────────────────
     void _set_end_offset(int64_t value) { _end_offset = value; }
+
     Status _create_column_readers();
     StatusOr<ColumnReaderPtr> _create_reserved_iceberg_column_reader(const SlotDescriptor* slot, int32_t field_id);
     StatusOr<Datum> _get_extended_bigint_value(SlotId slot_id) const;
     StatusOr<ColumnReaderPtr> _create_column_reader(const GroupReaderParam::Column& column);
-    void _process_columns_and_conjunct_ctxs();
-    bool _try_to_use_dict_filter(const GroupReaderParam::Column& column, ExprContext* ctx,
-                                 std::vector<std::string>& sub_field_path, bool is_decode_needed);
     Status _prepare_column_readers() const;
+    // Extract dict filter columns and conjuncts
+    void _process_columns_and_conjunct_ctxs();
 
     // ── get_next() pipeline phases ───────────────────────────────────────────
 
@@ -179,25 +172,12 @@ private:
     //    lazy_ctx must still be attached.  Returns true if rows survive.
     StatusOr<bool> _evaluate_compound_predicates(const Range<uint64_t>& r, RowGroupScanState& state);
 
-    // 4. Fetch variant sources (unconditional) and evaluate deferred variant
-    //    conjuncts (conditional).  Returns true if rows survive.
-    StatusOr<bool> _evaluate_variant_predicates(const Range<uint64_t>& r, RowGroupScanState& state);
-
-    // 4.1 Probe join runtime filters against decoded rows, ANDing into chunk_filter
-    //     so non-matching rows are dropped before lazy columns are materialized.
-    //     Returns true if rows survive.
-    StatusOr<bool> _evaluate_runtime_filters(const Range<uint64_t>& r, RowGroupScanState& state);
-
-    // 5. Apply combined chunk_filter, compute post-filter range (internal),
-    //    and backfill lazy physical columns + lazy variant sources.
+    // 4. Apply combined chunk_filter, compute post-filter range (internal),
+    //    and backfill lazy physical columns.
     //    Returns true if rows survive filtering; false to skip this range.
     StatusOr<bool> _filter_and_backfill_lazy(const Range<uint64_t>& r, RowGroupScanState& state);
 
-    // Build the subset of scan_ctx->runtime_filter_preds that this row group can
-    // actually serve. Called once per row group after column classification.
-    void _setup_runtime_filter_predicates();
-
-    // 6. Emit output: variant projections → physical columns into destination chunk.
+    // 5. Emit output: physical columns into destination chunk.
     Status _emit_output_columns(RowGroupScanState& state, ChunkPtr* chunk, size_t* row_count);
 
     // ── Member variables ─────────────────────────────────────────────────────
@@ -214,28 +194,8 @@ private:
     // still lives in GroupReader until the next refactor steps.
     std::unique_ptr<ColumnMaterializer> _column_materializer;
 
-    // ── Variant handler (always present; empty() when no variant columns) ───
-    std::unique_ptr<VariantProjectionHandler> _variant;
-
     // dict value is empty after conjunct eval, file group can be skipped
     bool _is_group_filtered = false;
-
-    // ── Join runtime filter pushdown ───────────────────────────────────────
-    // Per-row-group subset of scan_ctx->runtime_filter_preds, holding only the
-    // predicates whose probe column this row group can supply. The subset is
-    // required for correctness -- RuntimeFilterPredicates::evaluate() looks up every
-    // predicate's column, so a predicate we cannot serve must not be in the list, and
-    // which columns exist differs per file after schema evolution. The predicate
-    // objects themselves are shared with the scanner context; only this container
-    // (which carries the adaptive-sampling state) is per-GroupReader.
-    RuntimeFilterPredicates _rf_predicates;
-    // Probe columns, in predicate order. `is_active` selects where the decoded column
-    // comes from: the active chunk, or an on-demand materialize_slot() lazy read.
-    struct RuntimeFilterProbeColumn {
-        SlotId slot_id;
-        bool is_active;
-    };
-    std::vector<RuntimeFilterProbeColumn> _rf_probe_columns;
 
     // param for read row group
     const GroupReaderParam& _param;

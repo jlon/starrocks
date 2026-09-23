@@ -102,10 +102,9 @@ public class CommitRateLimiter {
         setAllowCommitTimeOnce(partitionIds);
 
         long txnId = transactionState.getTransactionId();
-        long abortTime = transactionState.getTimeoutDeadlineMs();
+        long abortTime = transactionState.getPrepareTime() + transactionState.getTimeoutMs();
 
         if (transactionState.getAllowCommitTimeMs() >= abortTime) {
-            transactionState.clearTemporaryReason();
             throw new CommitFailedException("Txn " + txnId + " timed out due to ingestion slowdown", txnId);
         }
         if (transactionState.getAllowCommitTimeMs() > currentTimeMs) {
@@ -113,12 +112,11 @@ public class CommitRateLimiter {
                     transactionState.getAllowCommitTimeMs() - currentTimeMs,
                     transactionState.getWriteDurationMs());
             // it will show in `show proc '/transactions/xxx/running'`
-            transactionState.setTemporaryReason("Partition's compaction score is larger than " + slowdownThreshold() +
+            transactionState.setReason("Partition's compaction score is larger than " + slowdownThreshold() +
                     ", delay commit for " + (transactionState.getAllowCommitTimeMs() - currentTimeMs) + "ms." +
                     " You can try to increase compaction concurrency.");
             throw new CommitRateExceededException(txnId, transactionState.getAllowCommitTimeMs());
         }
-        transactionState.clearTemporaryReason();
         long upperBound = compactionScoreUpperBound();
         if (upperBound > 0) {
             Optional<Pair<Long, Double>> partitionAndScore = anyCompactionScoreExceedsUpperBound(partitionIds, upperBound);

@@ -39,29 +39,18 @@
 #include <string>
 #include <vector>
 
-#include "base/string/slice.h"
-#include "base/testutil/assert.h"
-#include "base/testutil/sync_point.h"
-#include "base/utility/defer_op.h"
-#include "column/chunk_factory.h"
 #include "column/datum_tuple.h"
-#include "common/config_compaction_fwd.h"
-#include "common/config_exec_fwd.h"
-#include "common/config_storage_fwd.h"
-#include "common/config_vector_index_fwd.h"
-#include "exec/exec_env.h"
-#include "fs/fs_factory.h"
 #include "fs/fs_util.h"
 #include "gen_cpp/data.pb.h"
 #include "gen_cpp/olap_file.pb.h"
 #include "gtest/gtest.h"
+#include "runtime/exec_env.h"
 #include "runtime/mem_pool.h"
 #include "runtime/mem_tracker.h"
 #include "storage/chunk_helper.h"
-#include "storage/index/index_descriptor.h"
-#include "storage/index/inverted/inverted_index_common.h"
+#include "storage/chunk_iterator.h"
+#include "storage/empty_iterator.h"
 #include "storage/rowset/rowset_factory.h"
-#include "storage/rowset/rowset_meta.h"
 #include "storage/rowset/rowset_options.h"
 #include "storage/rowset/rowset_writer.h"
 #include "storage/rowset/rowset_writer_context.h"
@@ -73,10 +62,10 @@
 #include "storage/tablet_reader.h"
 #include "storage/tablet_schema.h"
 #include "storage/tablet_schema_helper.h"
+#include "storage/union_iterator.h"
 #include "storage/update_manager.h"
-#include "storage_primitive/chunk_iterator.h"
-#include "storage_primitive/empty_iterator.h"
-#include "storage_primitive/union_iterator.h"
+#include "testutil/assert.h"
+#include "testutil/sync_point.h"
 
 using std::string;
 
@@ -289,7 +278,7 @@ void RowsetTest::test_final_merge(bool has_merge_condition = false) {
     auto schema = ChunkHelper::convert_schema(tablet->tablet_schema());
 
     {
-        auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, config::vector_chunk_size);
         auto cols = chunk->columns();
         for (auto i = 0; i < rows_per_segment; i++) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -303,7 +292,7 @@ void RowsetTest::test_final_merge(bool has_merge_condition = false) {
     }
 
     {
-        auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, config::vector_chunk_size);
         auto cols = chunk->columns();
         for (auto i = rows_per_segment / 2; i < rows_per_segment + rows_per_segment / 2; i++) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -317,7 +306,7 @@ void RowsetTest::test_final_merge(bool has_merge_condition = false) {
     }
 
     {
-        auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, config::vector_chunk_size);
         auto cols = chunk->columns();
         for (auto i = rows_per_segment; i < rows_per_segment * 2; i++) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -340,7 +329,7 @@ void RowsetTest::test_final_merge(bool has_merge_condition = false) {
         size_t count = 0;
         for (size_t seg_id = 0; seg_id < rowset->rowset_meta()->num_segments(); seg_id++) {
             SegmentReadOptions seg_options;
-            ASSIGN_OR_ABORT(seg_options.fs, FileSystemFactory::CreateSharedFromString("posix://"));
+            ASSIGN_OR_ABORT(seg_options.fs, FileSystem::CreateSharedFromString("posix://"));
             seg_options.stats = &_stats;
             std::string segment_file =
                     Rowset::segment_file_path(writer_context.rowset_path_prefix, writer_context.rowset_id, seg_id);
@@ -352,7 +341,7 @@ void RowsetTest::test_final_merge(bool has_merge_condition = false) {
 
             ASSERT_TRUE(seg_iterator->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
 
-            auto chunk = ChunkFactory::new_chunk(schema, 100);
+            auto chunk = ChunkHelper::new_chunk(schema, 100);
             while (true) {
                 auto st = seg_iterator->get_next(chunk.get());
                 if (st.is_end_of_file()) {
@@ -394,7 +383,7 @@ void RowsetTest::test_final_merge(bool has_merge_condition = false) {
         TabletReader reader(tablet, Version(0, 2), schema);
         auto iter = create_tablet_iterator(reader, schema);
         ASSERT_TRUE(iter != nullptr);
-        auto chunk = ChunkFactory::new_chunk(iter->schema(), 100);
+        auto chunk = ChunkHelper::new_chunk(iter->schema(), 100);
         size_t count = 0;
         while (true) {
             auto st = iter->get_next(chunk.get());
@@ -457,7 +446,7 @@ TEST_F(RowsetTest, FinalMergeVerticalTest) {
     auto schema = ChunkHelper::convert_schema(tablet->tablet_schema());
 
     {
-        auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, config::vector_chunk_size);
         auto cols = chunk->columns();
         for (auto i = 0; i < rows_per_segment; i++) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -471,7 +460,7 @@ TEST_F(RowsetTest, FinalMergeVerticalTest) {
     }
 
     {
-        auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, config::vector_chunk_size);
         auto cols = chunk->columns();
         for (auto i = rows_per_segment / 2; i < rows_per_segment + rows_per_segment / 2; i++) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -485,7 +474,7 @@ TEST_F(RowsetTest, FinalMergeVerticalTest) {
     }
 
     {
-        auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, config::vector_chunk_size);
         auto cols = chunk->columns();
         for (auto i = rows_per_segment; i < rows_per_segment * 2; i++) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -508,7 +497,7 @@ TEST_F(RowsetTest, FinalMergeVerticalTest) {
         size_t count = 0;
         for (size_t seg_id = 0; seg_id < rowset->rowset_meta()->num_segments(); seg_id++) {
             SegmentReadOptions seg_options;
-            ASSIGN_OR_ABORT(seg_options.fs, FileSystemFactory::CreateSharedFromString("posix://"));
+            ASSIGN_OR_ABORT(seg_options.fs, FileSystem::CreateSharedFromString("posix://"));
             seg_options.stats = &_stats;
 
             std::string segment_file =
@@ -521,7 +510,7 @@ TEST_F(RowsetTest, FinalMergeVerticalTest) {
 
             const auto& seg_iterator = res.value();
             ASSERT_TRUE(seg_iterator->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
-            auto chunk = ChunkFactory::new_chunk(seg_iterator->schema(), 100);
+            auto chunk = ChunkHelper::new_chunk(seg_iterator->schema(), 100);
             while (true) {
                 auto st = seg_iterator->get_next(chunk.get());
                 if (st.is_end_of_file()) {
@@ -563,7 +552,7 @@ TEST_F(RowsetTest, FinalMergeVerticalTest) {
         TabletReader reader(tablet, Version(0, 2), schema);
         auto iter = create_tablet_iterator(reader, schema);
         ASSERT_TRUE(iter != nullptr);
-        auto chunk = ChunkFactory::new_chunk(iter->schema(), 100);
+        auto chunk = ChunkHelper::new_chunk(iter->schema(), 100);
         size_t count = 0;
         while (true) {
             auto st = iter->get_next(chunk.get());
@@ -595,7 +584,7 @@ TEST_F(RowsetTest, FinalMergeVerticalTest) {
 }
 
 static ssize_t read_and_compare(const ChunkIteratorPtr& iter, int64_t nkeys) {
-    auto full_chunk = ChunkFactory::new_chunk(iter->schema(), nkeys);
+    auto full_chunk = ChunkHelper::new_chunk(iter->schema(), nkeys);
     auto cols = full_chunk->columns();
     for (size_t i = 0; i < nkeys / 4; i++) {
         cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -616,7 +605,7 @@ static ssize_t read_and_compare(const ChunkIteratorPtr& iter, int64_t nkeys) {
         cols[3]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(3)));
     }
     size_t count = 0;
-    auto chunk = ChunkFactory::new_chunk(iter->schema(), 100);
+    auto chunk = ChunkHelper::new_chunk(iter->schema(), 100);
     while (true) {
         auto st = iter->get_next(chunk.get());
         if (st.is_end_of_file()) {
@@ -664,7 +653,7 @@ TEST_F(RowsetTest, FinalMergeVerticalPartialTest) {
     auto schema = ChunkHelper::convert_schema(partial_schema);
 
     {
-        auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, config::vector_chunk_size);
         auto cols = chunk->columns();
         for (auto i = 0; i < rows_per_segment; i++) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -677,7 +666,7 @@ TEST_F(RowsetTest, FinalMergeVerticalPartialTest) {
     }
 
     {
-        auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, config::vector_chunk_size);
         auto cols = chunk->columns();
         for (auto i = rows_per_segment / 2; i < rows_per_segment + rows_per_segment / 2; i++) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -690,7 +679,7 @@ TEST_F(RowsetTest, FinalMergeVerticalPartialTest) {
     }
 
     {
-        auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, config::vector_chunk_size);
         auto cols = chunk->columns();
         for (auto i = rows_per_segment; i < rows_per_segment * 2; i++) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -731,7 +720,7 @@ TEST_F(RowsetTest, VerticalWriteTest) {
         // k1 k2
         std::vector<uint32_t> column_indexes{0, 1};
         auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows % chunk_size; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -748,7 +737,7 @@ TEST_F(RowsetTest, VerticalWriteTest) {
         // v1
         std::vector<uint32_t> column_indexes{2};
         auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows % chunk_size; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -777,7 +766,7 @@ TEST_F(RowsetTest, VerticalWriteTest) {
 
     const auto& iterator = res.value();
     int count = 0;
-    auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+    auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
     while (true) {
         chunk->reset();
         auto st = iterator->get_next(chunk.get());
@@ -813,7 +802,7 @@ TEST_F(RowsetTest, LoadFailedTest) {
         // k1 k2 v
         std::vector<uint32_t> column_indexes{0, 1, 2};
         auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows / chunk_size + 1; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -859,7 +848,7 @@ TEST_F(RowsetTest, SegmentWriteTest) {
         // k1 k2 v
         std::vector<uint32_t> column_indexes{0, 1, 2};
         auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows / chunk_size + 1; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -889,7 +878,7 @@ TEST_F(RowsetTest, SegmentWriteTest) {
 
     const auto& iterator = res.value();
     int count = 0;
-    auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+    auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
     while (true) {
         chunk->reset();
         auto st = iterator->get_next(chunk.get());
@@ -910,7 +899,7 @@ TEST_F(RowsetTest, SegmentWriteTest) {
     writer_context.rowset_path_prefix = config::storage_root_path + "/data/rowset_test_seg";
     ASSERT_TRUE(RowsetFactory::create_rowset_writer(writer_context, &segment_rowset_writer).ok());
 
-    std::shared_ptr<FileSystem> fs = FileSystemFactory::CreateSharedFromString(rowset->rowset_path()).value();
+    std::shared_ptr<FileSystem> fs = FileSystem::CreateSharedFromString(rowset->rowset_path()).value();
 
     for (int i = 0; i < seg_infos.size(); ++i) {
         auto& seg_info = seg_infos[i];
@@ -944,7 +933,7 @@ TEST_F(RowsetTest, SegmentWriteTest) {
 
         const auto& iterator = res.value();
         int count = 0;
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         while (true) {
             chunk->reset();
             auto st = iterator->get_next(chunk.get());
@@ -981,7 +970,7 @@ TEST_F(RowsetTest, SegmentRewriterAutoIncrementTest) {
     {
         std::vector<uint32_t> column_indexes{0, 1, 2};
         auto schema = ChunkHelper::convert_schema(partial_tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows / chunk_size + 1; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -1000,7 +989,7 @@ TEST_F(RowsetTest, SegmentRewriterAutoIncrementTest) {
     ASSERT_EQ(2, rowset->rowset_meta()->num_segments());
     rowset->load();
 
-    std::shared_ptr<FileSystem> fs = FileSystemFactory::CreateSharedFromString(rowset->rowset_path()).value();
+    std::shared_ptr<FileSystem> fs = FileSystem::CreateSharedFromString(rowset->rowset_path()).value();
     std::string file_name = Rowset::segment_file_path(rowset->rowset_path(), rowset->rowset_id(), 0);
 
     auto partial_segment = *Segment::open(fs, FileInfo{file_name}, 0, partial_tablet_schema);
@@ -1013,7 +1002,7 @@ TEST_F(RowsetTest, SegmentRewriterAutoIncrementTest) {
     for (auto i = 0; i < read_column_ids.size(); ++i) {
         const auto read_column_id = read_column_ids[i];
         auto tablet_column = tablet_schema->column(read_column_id);
-        auto column = ChunkFactory::column_from_field_type(tablet_column.type(), tablet_column.is_nullable());
+        auto column = ChunkHelper::column_from_field_type(tablet_column.type(), tablet_column.is_nullable());
         write_columns[i] = column->clone_empty();
         for (auto j = 0; j < num_rows; ++j) {
             write_columns[i]->append_datum(Datum(static_cast<int32_t>(j + read_column_ids[i])));
@@ -1053,7 +1042,7 @@ TEST_F(RowsetTest, SegmentRewriterAutoIncrementReadErrorTest) {
     {
         std::vector<uint32_t> column_indexes{0, 1, 2};
         auto schema = ChunkHelper::convert_schema(partial_tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows / chunk_size + 1; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -1076,7 +1065,7 @@ TEST_F(RowsetTest, SegmentRewriterAutoIncrementReadErrorTest) {
     MutableColumns write_columns(read_column_ids.size());
     for (auto i = 0; i < read_column_ids.size(); ++i) {
         auto tablet_column = tablet_schema->column(read_column_ids[i]);
-        auto column = ChunkFactory::column_from_field_type(tablet_column.type(), tablet_column.is_nullable());
+        auto column = ChunkHelper::column_from_field_type(tablet_column.type(), tablet_column.is_nullable());
         write_columns[i] = column->clone_empty();
         for (auto j = 0; j < num_rows; ++j) {
             write_columns[i]->append_datum(Datum(static_cast<int32_t>(j + read_column_ids[i])));
@@ -1118,7 +1107,7 @@ TEST_F(RowsetTest, SegmentRewriterAutoIncrementRowCountMismatchTest) {
     {
         std::vector<uint32_t> column_indexes{0, 1, 2};
         auto schema = ChunkHelper::convert_schema(partial_tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows / chunk_size + 1; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -1141,7 +1130,7 @@ TEST_F(RowsetTest, SegmentRewriterAutoIncrementRowCountMismatchTest) {
     MutableColumns write_columns(read_column_ids.size());
     for (auto i = 0; i < read_column_ids.size(); ++i) {
         auto tablet_column = tablet_schema->column(read_column_ids[i]);
-        auto column = ChunkFactory::column_from_field_type(tablet_column.type(), tablet_column.is_nullable());
+        auto column = ChunkHelper::column_from_field_type(tablet_column.type(), tablet_column.is_nullable());
         write_columns[i] = column->clone_empty();
         for (auto j = 0; j < num_rows; ++j) {
             write_columns[i]->append_datum(Datum(static_cast<int32_t>(j + read_column_ids[i])));
@@ -1181,7 +1170,7 @@ TEST_F(RowsetTest, SegmentDeleteWriteTest) {
     Int64Column deletes;
     std::unique_ptr<SegmentPB> seg_info = std::make_unique<SegmentPB>();
     {
-        auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, config::vector_chunk_size);
         auto cols = chunk->columns();
         for (auto i = 0; i < num_rows; i++) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
@@ -1206,7 +1195,7 @@ TEST_F(RowsetTest, SegmentDeleteWriteTest) {
     writer_context.rowset_path_prefix = config::storage_root_path + "/data/rowset_test_delete";
     ASSERT_TRUE(RowsetFactory::create_rowset_writer(writer_context, &segment_rowset_writer).ok());
 
-    std::shared_ptr<FileSystem> fs = FileSystemFactory::CreateSharedFromString(rowset->rowset_path()).value();
+    std::shared_ptr<FileSystem> fs = FileSystem::CreateSharedFromString(rowset->rowset_path()).value();
 
     auto seg_path = rowset->segment_file_path(rowset->rowset_path(), rowset->rowset_id(), 0);
     auto seg_del_path = rowset->segment_del_file_path(rowset->rowset_path(), rowset->rowset_id(), 0);
@@ -1226,409 +1215,5 @@ TEST_F(RowsetTest, SegmentDeleteWriteTest) {
     auto st = segment_rowset_writer->flush_segment(*seg_info, data);
     LOG(INFO) << st;
     ASSERT_TRUE(st.ok());
-}
-
-static std::shared_ptr<TabletSchema> create_gin_tablet_schema(const std::string& imp_lib) {
-    TabletSchemaPB schema_pb;
-    schema_pb.set_keys_type(DUP_KEYS);
-    schema_pb.set_num_short_key_columns(1);
-    schema_pb.set_num_rows_per_row_block(1024);
-    schema_pb.set_next_column_unique_id(3);
-
-    ColumnPB* k1 = schema_pb.add_column();
-    k1->set_unique_id(1);
-    k1->set_name("k1");
-    k1->set_type("INT");
-    k1->set_is_key(true);
-    k1->set_length(4);
-    k1->set_index_length(4);
-    k1->set_is_nullable(false);
-
-    ColumnPB* v1 = schema_pb.add_column();
-    v1->set_unique_id(2);
-    v1->set_name("v1");
-    v1->set_type("VARCHAR");
-    v1->set_is_key(false);
-    v1->set_length(64);
-    v1->set_is_nullable(false);
-
-    TabletIndexPB* index_pb = schema_pb.add_table_indices();
-    index_pb->set_index_id(100);
-    index_pb->set_index_name("gin_v1");
-    index_pb->set_index_type(GIN);
-    index_pb->add_col_unique_id(2);
-    index_pb->set_index_properties(R"({"common_properties":{")" + INVERTED_IMP_KEY + R"(":")" + imp_lib + R"("}})");
-
-    return std::make_shared<TabletSchema>(schema_pb);
-}
-
-static RowsetSharedPtr create_gin_rowset(const TabletSchemaCSPtr& schema, const std::string& dir,
-                                         const RowsetId& rowset_id) {
-    RowsetMetaPB rowset_meta_pb;
-    rowset_meta_pb.set_rowset_id(rowset_id.to_string());
-    rowset_meta_pb.set_tablet_id(12345);
-    rowset_meta_pb.set_tablet_schema_hash(1111);
-    rowset_meta_pb.set_partition_id(1);
-    rowset_meta_pb.set_rowset_type(BETA_ROWSET);
-    rowset_meta_pb.set_rowset_state(VISIBLE);
-    rowset_meta_pb.set_start_version(2);
-    rowset_meta_pb.set_end_version(2);
-    rowset_meta_pb.set_num_rows(1);
-    rowset_meta_pb.set_num_segments(1);
-    rowset_meta_pb.set_total_disk_size(1);
-    rowset_meta_pb.set_data_disk_size(1);
-    rowset_meta_pb.set_index_disk_size(0);
-    rowset_meta_pb.set_empty(false);
-    rowset_meta_pb.set_creation_time(time(nullptr));
-
-    auto rowset_meta = std::make_shared<RowsetMeta>(rowset_meta_pb);
-    return Rowset::create(schema, dir, rowset_meta, nullptr);
-}
-
-static void create_dummy_segment_file(const std::string& dir, const RowsetId& rowset_id) {
-    ASSIGN_OR_ABORT(auto wfile, FileSystem::Default()->new_writable_file(Rowset::segment_file_path(dir, rowset_id, 0)));
-    ASSERT_OK(wfile->append("dummy segment"));
-    ASSERT_OK(wfile->close());
-}
-
-// Builtin GIN lives inside the segment file, so there is no standalone .ivt directory to relocate.
-TEST_F(RowsetTest, link_files_to_skips_builtin_gin_index) {
-    auto schema = create_gin_tablet_schema(TYPE_BUILTIN);
-    const std::string src_dir = config::storage_root_path + "/data/rowset_test";
-    const std::string dst_dir = config::storage_root_path + "/data/link_builtin_gin";
-    ASSERT_TRUE(fs::create_directories(dst_dir).ok());
-
-    RowsetId rowset_id = StorageEngine::instance()->next_rowset_id();
-    create_dummy_segment_file(src_dir, rowset_id);
-    auto rowset = create_gin_rowset(schema, src_dir, rowset_id);
-
-    RowsetId new_rowset_id = StorageEngine::instance()->next_rowset_id();
-    ASSERT_OK(rowset->link_files_to(dst_dir, new_rowset_id));
-    ASSERT_TRUE(fs::path_exist(Rowset::segment_file_path(dst_dir, new_rowset_id, 0)));
-}
-
-// CLucene keeps a standalone directory, so a missing one must still be reported.
-TEST_F(RowsetTest, link_files_to_reports_missing_clucene_gin_index) {
-    auto schema = create_gin_tablet_schema(TYPE_CLUCENE);
-    const std::string src_dir = config::storage_root_path + "/data/rowset_test";
-    const std::string dst_dir = config::storage_root_path + "/data/link_clucene_gin";
-    ASSERT_TRUE(fs::create_directories(dst_dir).ok());
-
-    RowsetId rowset_id = StorageEngine::instance()->next_rowset_id();
-    create_dummy_segment_file(src_dir, rowset_id);
-    auto rowset = create_gin_rowset(schema, src_dir, rowset_id);
-
-    RowsetId new_rowset_id = StorageEngine::instance()->next_rowset_id();
-    auto st = rowset->link_files_to(dst_dir, new_rowset_id);
-    ASSERT_FALSE(st.ok());
-    ASSERT_TRUE(st.is_not_found()) << st.to_string();
-}
-
-TEST_F(RowsetTest, copy_files_to_skips_builtin_gin_index) {
-    auto schema = create_gin_tablet_schema(TYPE_BUILTIN);
-    const std::string src_dir = config::storage_root_path + "/data/rowset_test";
-    const std::string dst_dir = config::storage_root_path + "/data/copy_builtin_gin";
-    ASSERT_TRUE(fs::create_directories(dst_dir).ok());
-
-    RowsetId rowset_id = StorageEngine::instance()->next_rowset_id();
-    create_dummy_segment_file(src_dir, rowset_id);
-    auto rowset = create_gin_rowset(schema, src_dir, rowset_id);
-
-    auto res = rowset->copy_files_to(dst_dir);
-    ASSERT_TRUE(res.ok()) << res.status().to_string();
-    ASSERT_TRUE(fs::path_exist(Rowset::segment_file_path(dst_dir, rowset_id, 0)));
-}
-
-TEST_F(RowsetTest, copy_files_to_reports_missing_clucene_gin_index) {
-    auto schema = create_gin_tablet_schema(TYPE_CLUCENE);
-    const std::string src_dir = config::storage_root_path + "/data/rowset_test";
-    const std::string dst_dir = config::storage_root_path + "/data/copy_clucene_gin";
-    ASSERT_TRUE(fs::create_directories(dst_dir).ok());
-
-    RowsetId rowset_id = StorageEngine::instance()->next_rowset_id();
-    create_dummy_segment_file(src_dir, rowset_id);
-    auto rowset = create_gin_rowset(schema, src_dir, rowset_id);
-
-    auto res = rowset->copy_files_to(dst_dir);
-    ASSERT_FALSE(res.ok());
-    ASSERT_TRUE(res.status().is_not_found()) << res.status().to_string();
-}
-
-TEST_F(RowsetTest, copy_files_to_reports_existing_index_path) {
-    auto schema = create_gin_tablet_schema(TYPE_CLUCENE);
-    const std::string src_dir = config::storage_root_path + "/data/rowset_test";
-    const std::string dst_dir = config::storage_root_path + "/data/copy_existing_gin";
-    ASSERT_TRUE(fs::create_directories(dst_dir).ok());
-
-    RowsetId rowset_id = StorageEngine::instance()->next_rowset_id();
-    create_dummy_segment_file(src_dir, rowset_id);
-    auto rowset = create_gin_rowset(schema, src_dir, rowset_id);
-
-    std::string dst_index_path = IndexDescriptor::inverted_index_file_path(dst_dir, rowset_id.to_string(), 0, 100);
-    ASSERT_TRUE(fs::create_directories(dst_index_path).ok());
-
-    auto res = rowset->copy_files_to(dst_dir);
-    ASSERT_FALSE(res.ok());
-    ASSERT_TRUE(res.status().is_already_exist()) << res.status().to_string();
-    std::string err = res.status().to_string();
-    ASSERT_TRUE(err.find(dst_index_path) != std::string::npos) << err;
-}
-
-TEST_F(RowsetTest, remove_skips_builtin_gin_index) {
-    auto schema = create_gin_tablet_schema(TYPE_BUILTIN);
-    const std::string src_dir = config::storage_root_path + "/data/rowset_test";
-
-    RowsetId rowset_id = StorageEngine::instance()->next_rowset_id();
-    create_dummy_segment_file(src_dir, rowset_id);
-    auto rowset = create_gin_rowset(schema, src_dir, rowset_id);
-
-    ASSERT_OK(rowset->remove());
-    ASSERT_FALSE(fs::path_exist(Rowset::segment_file_path(src_dir, rowset_id, 0)));
-}
-
-// remove() tolerates a missing CLucene directory: merge_status filters is_not_found.
-TEST_F(RowsetTest, remove_tolerates_missing_clucene_gin_index) {
-    auto schema = create_gin_tablet_schema(TYPE_CLUCENE);
-    const std::string src_dir = config::storage_root_path + "/data/rowset_test";
-
-    RowsetId rowset_id = StorageEngine::instance()->next_rowset_id();
-    create_dummy_segment_file(src_dir, rowset_id);
-    auto rowset = create_gin_rowset(schema, src_dir, rowset_id);
-
-    ASSERT_OK(rowset->remove());
-    ASSERT_FALSE(fs::path_exist(Rowset::segment_file_path(src_dir, rowset_id, 0)));
-}
-
-TEST_F(RowsetTest, horizontal_writer_dtor_skips_builtin_gin_index) {
-    auto tablet_schema = create_gin_tablet_schema(TYPE_BUILTIN);
-
-    RowsetWriterContext writer_context;
-    create_rowset_writer_context(12345, tablet_schema, &writer_context);
-    writer_context.rowset_id = StorageEngine::instance()->next_rowset_id();
-    writer_context.writer_type = kHorizontal;
-
-    std::unique_ptr<RowsetWriter> rowset_writer;
-    ASSERT_OK(RowsetFactory::create_rowset_writer(writer_context, &rowset_writer));
-
-    auto schema = ChunkHelper::convert_schema(tablet_schema);
-    auto chunk = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
-    auto cols = chunk->columns();
-    cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(1)));
-    cols[1]->as_mutable_ptr()->append_datum(Datum(Slice("apple")));
-    ASSERT_OK(rowset_writer->add_chunk(*chunk));
-    ASSERT_OK(rowset_writer->flush());
-
-    std::string segment_path =
-            Rowset::segment_file_path(writer_context.rowset_path_prefix, writer_context.rowset_id, 0);
-    ASSERT_TRUE(fs::path_exist(segment_path));
-
-    // Destroying an unbuilt writer runs the garbage cleanup path, which must skip the
-    // builtin GIN index directory handling.
-    rowset_writer.reset();
-    ASSERT_FALSE(fs::path_exist(segment_path));
-}
-
-TEST_F(RowsetTest, vertical_writer_dtor_skips_builtin_gin_index) {
-    auto tablet_schema = create_gin_tablet_schema(TYPE_BUILTIN);
-
-    RowsetWriterContext writer_context;
-    create_rowset_writer_context(12345, tablet_schema, &writer_context);
-    writer_context.rowset_id = StorageEngine::instance()->next_rowset_id();
-    writer_context.writer_type = kVertical;
-    writer_context.max_rows_per_segment = 4096;
-
-    std::unique_ptr<RowsetWriter> rowset_writer;
-    ASSERT_OK(RowsetFactory::create_rowset_writer(writer_context, &rowset_writer));
-
-    {
-        std::vector<uint32_t> column_indexes{0};
-        auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, 16);
-        chunk->columns()[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(1)));
-        ASSERT_OK(rowset_writer->add_columns(*chunk, column_indexes, true));
-        ASSERT_OK(rowset_writer->flush_columns());
-    }
-
-    std::string segment_path =
-            Rowset::segment_file_path(writer_context.rowset_path_prefix, writer_context.rowset_id, 0);
-    ASSERT_TRUE(fs::path_exist(segment_path));
-
-    rowset_writer.reset();
-    ASSERT_FALSE(fs::path_exist(segment_path));
-}
-
-namespace {
-
-constexpr int64_t kVectorIndexId = 100;
-
-// id(BIGINT key) + v(ARRAY<FLOAT>) with an HNSW vector index on v. The index is a standalone
-// .vi file next to the segment, not part of the segment file.
-std::shared_ptr<TabletSchema> create_vector_index_tablet_schema() {
-    TabletSchemaPB schema_pb;
-    schema_pb.set_keys_type(DUP_KEYS);
-    schema_pb.set_num_short_key_columns(1);
-    schema_pb.set_num_rows_per_row_block(1024);
-    schema_pb.set_next_column_unique_id(3);
-
-    auto* col0 = schema_pb.add_column();
-    col0->set_unique_id(0);
-    col0->set_name("id");
-    col0->set_type("BIGINT");
-    col0->set_is_key(true);
-    col0->set_is_nullable(false);
-    col0->set_length(8);
-    col0->set_index_length(8);
-    col0->set_aggregation("NONE");
-
-    auto* col1 = schema_pb.add_column();
-    col1->set_unique_id(1);
-    col1->set_name("v");
-    col1->set_type("ARRAY");
-    col1->set_is_key(false);
-    col1->set_is_nullable(false);
-    col1->set_length(24);
-    col1->set_aggregation("NONE");
-    auto* child = col1->add_children_columns();
-    child->set_unique_id(2);
-    child->set_name("element");
-    child->set_type("FLOAT");
-    child->set_is_key(false);
-    child->set_is_nullable(true);
-    child->set_length(4);
-    child->set_aggregation("NONE");
-
-    auto* idx = schema_pb.add_table_indices();
-    idx->set_index_id(kVectorIndexId);
-    idx->set_index_name("idx_v");
-    idx->set_index_type(IndexType::VECTOR);
-    idx->add_col_unique_id(1);
-    idx->set_index_properties(
-            R"({"common_properties":{"index_type":"hnsw","dim":"3","metric_type":"l2_distance","is_vector_normed":"false"},"index_properties":{"efconstruction":"40","m":"16"},"search_properties":{"efsearch":"40"}})");
-
-    return TabletSchema::create(schema_pb);
-}
-
-void append_vector_rows(Chunk* chunk, const std::vector<uint32_t>& column_indexes, size_t num_rows) {
-    for (size_t i = 0; i < num_rows; ++i) {
-        size_t c = 0;
-        for (uint32_t column_index : column_indexes) {
-            if (column_index == 0) {
-                chunk->columns()[c]->as_mutable_ptr()->append_datum(Datum(static_cast<int64_t>(i)));
-            } else {
-                DatumArray arr{Datum(static_cast<float>(i)), Datum(static_cast<float>(i + 1)),
-                               Datum(static_cast<float>(i + 2))};
-                chunk->columns()[c]->as_mutable_ptr()->append_datum(Datum(arr));
-            }
-            ++c;
-        }
-    }
-}
-
-// data_disk_size must be the column-data bytes of the segment files: the standalone .vi bytes
-// are part of index_disk_size, but subtracting them from the segment file size as well drives
-// data_disk_size below zero as soon as the .vi outweighs the data (small vectors + HNSW graph).
-// The negative value then wraps through size_t in compaction statistics, produces negative
-// compaction scores and finally a SIGFPE in CompactionUtils::get_segment_max_rows.
-void check_vector_index_rowset_sizes(const RowsetSharedPtr& rowset, const RowsetWriterContext& ctx,
-                                     int64_t expected_num_rows) {
-    const auto& meta = rowset->rowset_meta();
-    ASSERT_EQ(expected_num_rows, meta->num_rows());
-    ASSERT_GE(meta->num_segments(), 1);
-
-    int64_t segment_file_bytes = 0;
-    int64_t standalone_index_bytes = 0;
-    for (int64_t seg = 0; seg < meta->num_segments(); ++seg) {
-        std::string segment_path = Rowset::segment_file_path(ctx.rowset_path_prefix, ctx.rowset_id, seg);
-        ASSIGN_OR_ABORT(auto seg_size, FileSystem::Default()->get_file_size(segment_path));
-        segment_file_bytes += static_cast<int64_t>(seg_size);
-
-        std::string vi_path = IndexDescriptor::vector_index_file_path(ctx.rowset_path_prefix, ctx.rowset_id.to_string(),
-                                                                      seg, kVectorIndexId);
-        ASSERT_TRUE(fs::path_exist(vi_path)) << vi_path;
-        ASSIGN_OR_ABORT(auto vi_size, FileSystem::Default()->get_file_size(vi_path));
-        ASSERT_GT(vi_size, 0);
-        standalone_index_bytes += static_cast<int64_t>(vi_size);
-    }
-
-    const int64_t data = static_cast<int64_t>(meta->data_disk_size());
-    const int64_t index = static_cast<int64_t>(meta->index_disk_size());
-    const int64_t total = static_cast<int64_t>(meta->total_disk_size());
-    const int64_t standalone = meta->standalone_index_size();
-    ASSERT_GT(data, 0) << "data=" << data << " index=" << index << " total=" << total;
-    ASSERT_GE(index, standalone_index_bytes);
-    ASSERT_EQ(total, data + index);
-    // The persisted standalone_index_size must equal the on-disk .vi bytes, so a consumer that
-    // starts from the segment file size (e.g. the primary-key apply path) can recover the
-    // embedded-only index bytes.
-    ASSERT_EQ(standalone, standalone_index_bytes);
-    // column data + embedded index == segment file bytes; the .vi is outside the segment files.
-    ASSERT_EQ(segment_file_bytes, data + (index - standalone));
-}
-
-} // namespace
-
-TEST_F(RowsetTest, horizontal_writer_standalone_vector_index_not_subtracted_from_data_size) {
-    const int32_t saved_threshold = config::config_vector_index_default_build_threshold;
-    config::config_vector_index_default_build_threshold = 1;
-    DeferOp restore([&] { config::config_vector_index_default_build_threshold = saved_threshold; });
-
-    auto tablet_schema = create_vector_index_tablet_schema();
-    RowsetWriterContext writer_context;
-    create_rowset_writer_context(12345, tablet_schema, &writer_context);
-    writer_context.rowset_id = StorageEngine::instance()->next_rowset_id();
-    writer_context.writer_type = kHorizontal;
-    writer_context.max_rows_per_segment = 4096;
-
-    std::unique_ptr<RowsetWriter> rowset_writer;
-    ASSERT_OK(RowsetFactory::create_rowset_writer(writer_context, &rowset_writer));
-
-    const size_t num_rows = 64;
-    std::vector<uint32_t> column_indexes{0, 1};
-    auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-    auto chunk = ChunkFactory::new_chunk(schema, num_rows);
-    append_vector_rows(chunk.get(), column_indexes, num_rows);
-    ASSERT_OK(rowset_writer->add_chunk(*chunk));
-    ASSERT_OK(rowset_writer->flush());
-
-    RowsetSharedPtr rowset = rowset_writer->build().value();
-    check_vector_index_rowset_sizes(rowset, writer_context, num_rows);
-}
-
-TEST_F(RowsetTest, vertical_writer_standalone_vector_index_not_subtracted_from_data_size) {
-    const int32_t saved_threshold = config::config_vector_index_default_build_threshold;
-    config::config_vector_index_default_build_threshold = 1;
-    DeferOp restore([&] { config::config_vector_index_default_build_threshold = saved_threshold; });
-
-    auto tablet_schema = create_vector_index_tablet_schema();
-    RowsetWriterContext writer_context;
-    create_rowset_writer_context(12345, tablet_schema, &writer_context);
-    writer_context.rowset_id = StorageEngine::instance()->next_rowset_id();
-    writer_context.writer_type = kVertical;
-    writer_context.max_rows_per_segment = 4096;
-
-    std::unique_ptr<RowsetWriter> rowset_writer;
-    ASSERT_OK(RowsetFactory::create_rowset_writer(writer_context, &rowset_writer));
-
-    const size_t num_rows = 64;
-    {
-        std::vector<uint32_t> column_indexes{0};
-        auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, num_rows);
-        append_vector_rows(chunk.get(), column_indexes, num_rows);
-        ASSERT_OK(rowset_writer->add_columns(*chunk, column_indexes, true));
-        ASSERT_OK(rowset_writer->flush_columns());
-    }
-    {
-        std::vector<uint32_t> column_indexes{1};
-        auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, num_rows);
-        append_vector_rows(chunk.get(), column_indexes, num_rows);
-        ASSERT_OK(rowset_writer->add_columns(*chunk, column_indexes, false));
-        ASSERT_OK(rowset_writer->flush_columns());
-    }
-    ASSERT_OK(rowset_writer->final_flush());
-
-    RowsetSharedPtr rowset = rowset_writer->build().value();
-    check_vector_index_rowset_sizes(rowset, writer_context, num_rows);
 }
 } // namespace starrocks

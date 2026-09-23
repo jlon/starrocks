@@ -17,63 +17,106 @@ set(LIBRARY_OUTPUT_PATH "${BUILD_DIR}/src/runtime")
 # where to put generated binaries
 set(EXECUTABLE_OUTPUT_PATH "${BUILD_DIR}/src/runtime")
 
-set(RUNTIME_SRCS
-    byte_buffer.cpp
-    message_body_sink.cpp
-    current_thread.cpp
-    chunk_accumulator.cpp
-    chunk_helper.cpp
+set(RUNTIME_FILES
+    broker_mgr.cpp
+    buffer_control_block.cpp
+    buffer_control_result_writer.cpp
+    client_cache.cpp
+    local_pass_through_buffer.cpp
+    lookup_stream_mgr.cpp
+    data_stream_mgr.cpp
+    sender_queue.cpp
+    data_stream_sender.cpp
+    multi_cast_data_stream_sink.cpp
+    datetime_value.cpp
     descriptors.cpp
-    descriptors_ext.cpp
-    runtime_state.cpp
-    mem_tracker.cpp
+    exec_env.cpp
+    exec.cpp
+    global_variables.cpp
+    user_function_cache.cpp
+    jdbc_driver_manager.cpp
     mem_pool.cpp
-    runtime_filter.cpp
-    runtime_filter_layout.cpp
-    runtime_filter_builder.cpp
-    runtime_filter_factory.cpp
-    runtime_filter_cache.cpp
-    bucket_aware_partition.cpp
+    plan_fragment_executor.cpp
+    result_sink.cpp
+    result_buffer_mgr.cpp
+    runtime_state.cpp
+    decimalv2_value.cpp
+    fragment_mgr.cpp
+    load_path_mgr.cpp
+    dummy_load_path_mgr.cpp
+    types.cpp
+    agg_state_desc.cpp
+    mem_tracker.cpp
+    data_stream_recvr.cpp
+    export_sink.cpp
+    load_channel_mgr.cpp
+    load_channel.cpp
+    local_tablets_channel.cpp
+    snapshot_loader.cpp
     query_statistics.cpp
-    runtime_metrics.cpp
-    time_guard.cpp
-    type_pack.cpp
-    load_fail_point.cpp
+    message_body_sink.cpp
+    stream_load/transaction_mgr.cpp
+    stream_load/stream_load_context.cpp
+    stream_load/stream_load_executor.cpp
+    stream_load/stream_load_pipe.cpp
+    stream_load/time_bounded_stream_load_pipe.cpp
+    batch_write/isomorphic_batch_write.cpp
+    batch_write/batch_write_mgr.cpp
+    batch_write/batch_write_util.cpp
+    batch_write/txn_state_cache.cpp
+    routine_load/data_consumer.cpp
+    routine_load/data_consumer_group.cpp
+    routine_load/data_consumer_pool.cpp
+    routine_load/routine_load_task_executor.cpp
+    small_file_mgr.cpp
+    record_batch_queue.cpp
+    result_queue_mgr.cpp
+    memory_scratch_sink.cpp
+    external_scan_context_mgr.cpp
+    mysql_result_writer.cpp
+    http_result_writer.cpp
+    file_result_writer.cpp
+    statistic_result_writer.cpp
+    metadata_result_writer.cpp
+    variable_result_writer.cpp
+    arrow_result_writer.cpp
     memory/roaring_hook.cpp
     memory/system_allocator.cpp
-    memory/tracked_allocator.cpp
     memory/mem_chunk_allocator.cpp
-    memory/memory_allocator.cpp
-    memory/memory_lock.cpp
-    memory/jemalloc_conf_updater.cpp
-    exception_stack.cpp
-    prof/heap_prof.cpp
-    serde/chunk_encode_context.cpp
-    serde/protobuf_chunk_serde.cpp
+    memory/column_allocator.cpp
+    chunk_cursor.cpp
+    sorted_chunks_merger.cpp
+    tablets_channel.cpp
+    time_types.cpp
+    runtime_filter_worker.cpp
+    global_dict/decoder.cpp
+    global_dict/parser.cpp
+    global_dict/miscs.cpp
+    global_dict/types.cpp
+    current_thread.cpp
+    runtime_filter_cache.cpp
+    lake_tablets_channel.cpp
+    lake_snapshot_loader.cpp
+    profile_report_worker.cpp
+    schema_table_sink.cpp
+    command_executor.cpp
+    iceberg_table_sink.cpp
+    hive_table_sink.cpp
+    table_function_table_sink.cpp
+    blackhole_table_sink.cpp
+    dictionary_cache_sink.cpp
+    type_pack.cpp
+    customized_result_writer.cpp
+    int128_to_double.cpp
     diagnose_daemon.cpp
-    process_memory_metrics.cpp
-    runtime_env.cpp
-    global_thread_pools.cpp
-    java/java_env.cpp
-    java/java_global_ref.cpp
-    java/java_runtime.cpp
-    java/native_method_helper.cpp
-    java/jvm_metrics.cpp
-    java/jvm_helper.cpp
-    java/jvm_class.cpp
+    load_fail_point.cpp
+)
+
+set(RUNTIME_FILES ${RUNTIME_FILES}
+    mysql_table_writer.cpp
+    mysql_table_sink.cpp
 )
 
 ADD_BE_LIB(Runtime
-    ${RUNTIME_SRCS}
-)
-
-target_link_libraries(Runtime PUBLIC
-    Platform
-    ChunkCore
-    ColumnCore
-    Types
-    Common
-    Base
-    Gutil
-    StarRocksGen
-)
+    ${RUNTIME_FILES}
+    )

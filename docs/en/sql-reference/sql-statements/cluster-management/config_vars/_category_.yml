@@ -3,5 +3,4 @@ label: 'Configuration variables'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: config_vars
+  type: generated-index

@@ -35,7 +35,7 @@ public:
                                         LogicalType field_type, std::unique_ptr<InvertedReader>* res) override;
 
 private:
-    BuiltinPlugin() = default;
+    BuiltinPlugin() {}
 };
 
 } // namespace starrocks

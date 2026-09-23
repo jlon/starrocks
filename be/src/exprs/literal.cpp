@@ -24,7 +24,6 @@
 #include "types/constexpr.h"
 
 #ifdef STARROCKS_JIT_ENABLE
-#include "column/raw_data_visitor.h"
 #include "exprs/jit/ir_helper.h"
 #endif
 
@@ -193,9 +192,7 @@ StatusOr<LLVMDatum> VectorizedLiteral::generate_ir_impl(ExprContext* context, JI
     if (only_null) {
         ASSIGN_OR_RETURN(datum.value, IRHelper::create_ir_number(jit_ctx->builder, _type.type, 0));
     } else {
-        RawDataVisitor rv;
-        RETURN_IF_ERROR(_value->accept(&rv));
-        ASSIGN_OR_RETURN(datum.value, IRHelper::load_ir_number(jit_ctx->builder, _type.type, rv.result()));
+        ASSIGN_OR_RETURN(datum.value, IRHelper::load_ir_number(jit_ctx->builder, _type.type, _value->raw_data()));
     }
     return datum;
 }

@@ -17,13 +17,8 @@
 #include <boost/algorithm/string.hpp>
 #include <mutex>
 
-#include "compute_env/workgroup/work_group.h"
 #include "exec/schema_scanner.h"
-#include "exec/schema_scanner_factory.h"
-#include "exec/schema_scanner_factory_adapter.h"
-#include "exprs/chunk_predicate_evaluator.h"
-#include "runtime/descriptors_ext.h"
-#include "runtime/runtime_state.h"
+#include "exec/workgroup/work_group.h"
 
 namespace starrocks::pipeline {
 
@@ -50,8 +45,10 @@ Status SchemaChunkSource::prepare(RuntimeState* state) {
 
     _filter_timer = ADD_TIMER(_runtime_profile, "FilterTime");
 
-    ASSIGN_OR_RETURN(_schema_scanner, create_schema_scanner(resolve_schema_scanner_factory(state->exec_env()),
-                                                            schema_table->schema_table_type()));
+    _schema_scanner = SchemaScanner::create(schema_table->schema_table_type());
+    if (_schema_scanner == nullptr) {
+        return Status::InternalError("schema scanner get null pointer");
+    }
 
     RETURN_IF_ERROR(_schema_scanner->init(param, _ctx->object_pool()));
 
@@ -199,7 +196,7 @@ Status SchemaChunkSource::_read_chunk(RuntimeState* state, ChunkPtr* chunk) {
             SCOPED_TIMER(_filter_timer);
             auto& conjunct_ctxs = _ctx->conjunct_ctxs();
             if (!conjunct_ctxs.empty()) {
-                RETURN_IF_ERROR(ChunkPredicateEvaluator::eval_conjuncts(conjunct_ctxs, chunk_dst.get()));
+                RETURN_IF_ERROR(ExecNode::eval_conjuncts(conjunct_ctxs, chunk_dst.get()));
             }
         }
         row_num = chunk_dst->num_rows();

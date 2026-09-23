@@ -21,9 +21,9 @@
 #include <mutex>
 #include <vector>
 
-#include "base/random/random.h"
 #include "fs/credential/cloud_configuration.h"
 #include "fs/fs.h"
+#include "util/random.h"
 
 namespace Aws::S3 {
 class S3Client;
@@ -34,14 +34,6 @@ namespace starrocks {
 std::unique_ptr<FileSystem> new_fs_s3(const FSOptions& options);
 void close_s3_clients();
 
-namespace fs {
-
-struct FileSystemProvider;
-
-FileSystemProvider new_s3_file_system_provider(int priority = 10);
-
-} // namespace fs
-
 class S3ClientFactory {
 public:
     using ClientConfiguration = Aws::Client::ClientConfiguration;
@@ -51,10 +43,8 @@ public:
     using AWSCloudConfigurationPtr = std::shared_ptr<AWSCloudConfiguration>;
 
     static S3ClientFactory& instance() {
-        // Process-lifetime by design: cached clients are closed explicitly before AWS SDK teardown.
-        // Destroying this singleton during static teardown can race with SDK cleanup.
-        static auto* obj = new S3ClientFactory();
-        return *obj;
+        static S3ClientFactory obj;
+        return obj;
     }
 
     // Indicates the different S3 operation of using the client.
@@ -91,7 +81,7 @@ public:
     // Only use for UT
     bool find_client_cache_keys_by_config_TEST(const Aws::Client::ClientConfiguration& config,
                                                AWSCloudConfiguration* cloud_config = nullptr) {
-        return _find_client_cache_keys_by_config_TEST(config, cloud_config);
+        return _find_client_cache_keys_by_config_TEST(config);
     }
 
 private:

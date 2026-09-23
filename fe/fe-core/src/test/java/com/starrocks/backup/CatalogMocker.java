@@ -593,7 +593,7 @@ public class CatalogMocker {
     }
 
     public static GlobalStateMgr fetchAdminCatalog() {
-        new FakeEditLog();
+        FakeEditLog fakeEditLog = new FakeEditLog();
 
         GlobalStateMgr globalStateMgr = Deencapsulation.newInstance(GlobalStateMgr.class);
 

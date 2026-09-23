@@ -49,14 +49,8 @@ public class DictionaryMgrTest {
     @Mocked
     private SystemInfoService systemInfoService;
 
-    private Backend availableBackend = new Backend(1, "127.0.0.1", 1234);
-    private Backend unavailableBackend = new Backend(3, "127.0.0.3", 1234);
-    private ComputeNode availableComputeNode = new ComputeNode(2, "127.0.0.2", 1235);
-    private ComputeNode unavailableComputeNode = new ComputeNode(4, "127.0.0.4", 1235);
-    private List<Backend> backends = Arrays.asList(availableBackend, unavailableBackend);
-    private List<ComputeNode> computeNodes = Arrays.asList(availableComputeNode, unavailableComputeNode);
-    private List<Backend> availableBackends = Arrays.asList(availableBackend);
-    private List<ComputeNode> availableComputeNodes = Arrays.asList(availableComputeNode);
+    private List<Backend> backends = Arrays.asList(new Backend(1, "127.0.0.1", 1234));
+    private List<ComputeNode> computeNodes = Arrays.asList(new ComputeNode(2, "127.0.0.2", 1235));
 
     private DictionaryMgr dictionaryMgr = new DictionaryMgr();
 
@@ -108,14 +102,6 @@ public class DictionaryMgrTest {
                 systemInfoService.getComputeNodes();
                 minTimes = 0;
                 result = computeNodes;
-
-                systemInfoService.getAvailableBackends();
-                minTimes = 0;
-                result = availableBackends;
-
-                systemInfoService.getAvailableComputeNodes();
-                minTimes = 0;
-                result = availableComputeNodes;
             }
         };
 
@@ -132,18 +118,10 @@ public class DictionaryMgrTest {
         };
     }
 
-    // Regression: fillBackendsOrComputeNodes must use the available (live) node set. backends/computeNodes
-    // carry an extra unavailable node absent from the available set, so reverting to getBackends/
-    // getComputeNodes would pull it in here and fail this test.
     @Test
     public void testGetBeOrCn() throws Exception {
         List<TNetworkAddress> nodes = Lists.newArrayList();
         dictionaryMgr.fillBackendsOrComputeNodes(nodes);
-
-        Assertions.assertTrue(nodes.contains(availableBackend.getBrpcAddress()));
-        Assertions.assertTrue(nodes.contains(availableComputeNode.getBrpcAddress()));
-        Assertions.assertFalse(nodes.contains(unavailableBackend.getBrpcAddress()));
-        Assertions.assertFalse(nodes.contains(unavailableComputeNode.getBrpcAddress()));
     }
 
     @Test

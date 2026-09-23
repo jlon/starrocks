@@ -19,9 +19,6 @@
 #include <utility>
 
 #include "exec/chunks_sorter_topn.h"
-#include "exprs/expr_executor.h"
-#include "exprs/expr_factory.h"
-#include "runtime/runtime_state.h"
 
 namespace starrocks::pipeline {
 
@@ -45,9 +42,9 @@ LocalPartitionTopnContext::LocalPartitionTopnContext(
 }
 
 Status LocalPartitionTopnContext::prepare(RuntimeState* state, RuntimeProfile* runtime_profile) {
-    RETURN_IF_ERROR(ExprFactory::create_expr_trees(state->obj_pool(), _t_partition_exprs, &_partition_exprs, state));
-    RETURN_IF_ERROR(ExprExecutor::prepare(_partition_exprs, state));
-    RETURN_IF_ERROR(ExprExecutor::open(_partition_exprs, state));
+    RETURN_IF_ERROR(Expr::create_expr_trees(state->obj_pool(), _t_partition_exprs, &_partition_exprs, state));
+    RETURN_IF_ERROR(Expr::prepare(_partition_exprs, state));
+    RETURN_IF_ERROR(Expr::open(_partition_exprs, state));
     for (auto& expr : _partition_exprs) {
         auto& type_desc = expr->root()->type();
         if (!type_desc.support_groupby()) {
@@ -93,9 +90,9 @@ Status LocalPartitionTopnContext::prepare_pre_agg(RuntimeState* state) {
         for (int j = 0; j < desc.nodes[0].num_children; ++j) {
             ++node_idx;
             Expr* expr = nullptr;
-            RETURN_IF_ERROR(ExprFactory::create_expr_from_thrift_nodes(state->obj_pool(), desc.nodes, &node_idx, &expr,
-                                                                       state, true));
-            ExprContext* ctx = state->obj_pool()->add(new ExprContext(expr));
+            ExprContext* ctx = nullptr;
+            RETURN_IF_ERROR(Expr::create_tree_from_thrift_with_jit(state->obj_pool(), desc.nodes, nullptr, &node_idx,
+                                                                   &expr, &ctx, state));
             _pre_agg->_agg_expr_ctxs[i].emplace_back(ctx);
         }
 
@@ -107,7 +104,6 @@ Status LocalPartitionTopnContext::prepare_pre_agg(RuntimeState* state) {
 
         // Collect arg_typedescs for aggregate function.
         std::vector<FunctionContext::TypeDesc> arg_typedescs;
-        arg_typedescs.reserve(fn.arg_types.size());
         for (auto& type : fn.arg_types) {
             arg_typedescs.push_back(TypeDescriptor::from_thrift(type));
         }
@@ -161,8 +157,8 @@ Status LocalPartitionTopnContext::prepare_pre_agg(RuntimeState* state) {
     }
 
     for (const auto& ctx : _pre_agg->_agg_expr_ctxs) {
-        RETURN_IF_ERROR(ExprExecutor::prepare(ctx, state));
-        RETURN_IF_ERROR(ExprExecutor::open(ctx, state));
+        RETURN_IF_ERROR(Expr::prepare(ctx, state));
+        RETURN_IF_ERROR(Expr::open(ctx, state));
     }
 
     return Status::OK();
@@ -383,7 +379,8 @@ LocalPartitionTopnContextFactory::LocalPartitionTopnContextFactory(
         std::vector<bool> is_asc_order, std::vector<bool> is_null_first, const std::vector<TExpr>& t_partition_exprs,
         bool enable_pre_agg, const std::vector<TExpr>& t_pre_agg_exprs,
         const std::vector<TSlotId>& t_pre_agg_output_slot_id, int64_t offset, int64_t limit, std::string sort_keys,
-        bool has_outer_join_child, const std::vector<RuntimeFilterBuildDescriptor*>&)
+        const std::vector<OrderByType>& order_by_types, bool has_outer_join_child,
+        const std::vector<RuntimeFilterBuildDescriptor*>&)
         : _topn_type(topn_type),
           _sort_exprs(sort_exprs),
           _is_asc_order(std::move(is_asc_order)),
@@ -411,8 +408,8 @@ LocalPartitionTopnContext* LocalPartitionTopnContextFactory::create(int32_t driv
 }
 
 Status LocalPartitionTopnContextFactory::prepare(RuntimeState* state) {
-    RETURN_IF_ERROR(ExprExecutor::prepare(_sort_exprs, state));
-    RETURN_IF_ERROR(ExprExecutor::open(_sort_exprs, state));
+    RETURN_IF_ERROR(Expr::prepare(_sort_exprs, state));
+    RETURN_IF_ERROR(Expr::open(_sort_exprs, state));
     return Status::OK();
 }
 

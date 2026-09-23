@@ -38,7 +38,7 @@
 #include "column/vectorized_fwd.h"
 #include "common/status.h"
 #include "fs/fs.h"
-#include "types/type_descriptor.h"
+#include "runtime/types.h"
 
 namespace parquet {
 class RowGroupWriter;

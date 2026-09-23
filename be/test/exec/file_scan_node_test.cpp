@@ -18,16 +18,13 @@
 #include <memory>
 
 #include "column/column_helper.h"
-#include "common/config_exec_fwd.h"
-#include "common/config_metrics_fwd.h"
-#include "common/metrics/process_metrics_registry.h"
-#include "common/system/disk_info.h"
-#include "common/system/mem_info.h"
 #include "exec/connector_scan_node.h"
-#include "exec/exec_env.h"
 #include "runtime/descriptor_helper.h"
+#include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
 #include "storage/storage_engine.h"
+#include "util/disk_info.h"
+#include "util/mem_info.h"
 
 //TODO: test multi thread
 //TODO: test runtime filter
@@ -39,7 +36,6 @@ public:
         config::enable_metric_calculator = false;
 
         _exec_env = ExecEnv::GetInstance();
-        _exec_env->process_metrics_registry()->root_registry()->set_collect_hook_enabled(true);
 
         _create_runtime_state();
         _pool = _runtime_state->obj_pool();
@@ -119,8 +115,7 @@ void FileScanNodeTest::_create_runtime_state() {
     TUniqueId fragment_id;
     TQueryOptions query_options;
     TQueryGlobals query_globals;
-    _runtime_state = std::make_shared<RuntimeState>(fragment_id, query_options, query_globals,
-                                                    &_exec_env->query_execution_services(), _exec_env);
+    _runtime_state = std::make_shared<RuntimeState>(fragment_id, query_options, query_globals, _exec_env);
     TUniqueId id;
     _mem_tracker = std::make_shared<MemTracker>(-1, "olap scanner test");
     _runtime_state->init_mem_trackers(id);

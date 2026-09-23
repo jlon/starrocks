@@ -18,30 +18,27 @@
 #include <utility>
 #include <vector>
 
-#include "column/chunk.h"
 #include "column/column_helper.h"
-#include "column/flat_json/json_flat_path.h"
-#include "column/flat_json/json_flattener.h"
-#include "column/flat_json/json_merger.h"
 #include "column/json_column.h"
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
-#include "common/config_json_flat_fwd.h"
-#include "common/runtime_profile.h"
+#include "common/config.h"
 #include "common/status.h"
 #include "common/statusor.h"
 #include "exprs/function_context.h"
-#include "exprs/hyper_json_transformer.h"
 #include "exprs/json_functions.h"
 #include "exprs/jsonpath.h"
 #include "gutil/casts.h"
+#include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
+#include "runtime/types.h"
 #include "storage/rowset/column_iterator.h"
 #include "storage/rowset/column_iterator_decorator.h"
 #include "storage/rowset/column_reader.h"
 #include "storage/rowset/scalar_column_iterator.h"
 #include "types/logical_type.h"
-#include "types/type_descriptor.h"
+#include "util/json_flattener.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks {
 
@@ -105,10 +102,10 @@ public:
             : _reader(reader),
               _null_iter(std::move(null_iter)),
               _flat_iters(std::move(field_iters)),
-              _target_paths(target_paths),
-              _target_types(target_types),
-              _source_paths(source_paths),
-              _source_types(source_types),
+              _target_paths(std::move(target_paths)),
+              _target_types(std::move(target_types)),
+              _source_paths(std::move(source_paths)),
+              _source_types(std::move(source_types)),
               _need_remain(need_remain){};
 
     ~JsonFlatColumnIterator() override {
@@ -250,7 +247,7 @@ Status JsonFlatColumnIterator::_read(JsonColumn* json_column, FUNC read_fn) {
     } else {
         // convert mutable columns to immutable columns
         Columns immutable_columns = ColumnHelper::to_columns(std::move(columns));
-        RETURN_IF_ERROR(transformer->trans(immutable_columns));
+        RETURN_IF_ERROR(transformer->trans(std::move(immutable_columns)));
         auto result = transformer->mutable_result();
         json_column->set_flat_columns(_target_paths, _target_types, std::move(result));
     }
@@ -481,8 +478,8 @@ public:
             : _reader(reader),
               _null_iter(std::move(null_iter)),
               _all_iter(std::move(all_iter)),
-              _src_paths(src_paths),
-              _src_types(src_types){};
+              _src_paths(std::move(src_paths)),
+              _src_types(std::move(src_types)){};
 
     ~JsonMergeIterator() override = default;
 
@@ -675,10 +672,7 @@ public:
             : ColumnIteratorDecorator(source_iter.release(), kTakesOwnership),
               _path(std::move(path)),
               _type(type),
-              // JsonFunctions only needs RuntimeState as FunctionContext backing here. Constant-path JSON
-              // extraction does not access ExecEnv-backed services, so a local state keeps rowset reads independent
-              // from the process-global ExecEnv singleton.
-              _state(TQueryGlobals{}),
+              _state(ExecEnv::GetInstance()),
               _mem_pool(),
               _source_chunk() {
         // prepare the source chunk

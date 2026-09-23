@@ -19,8 +19,6 @@
 #include "exec/pipeline/scan/lake_meta_scan_prepare_operator.h"
 #include "exec/pipeline/scan/meta_scan_context.h"
 #include "exec/pipeline/scan/meta_scan_operator.h"
-#include "exec/pipeline/scan/morsel_queue_factory.h"
-#include "runtime/runtime_state.h"
 
 namespace starrocks {
 
@@ -77,7 +75,8 @@ Status LakeMetaScanNode::get_next(RuntimeState* state, ChunkPtr* chunk, bool* eo
     return Status::OK();
 }
 
-StatusOr<pipeline::OpFactories> LakeMetaScanNode::decompose_to_pipeline(pipeline::PipelineBuilderContext* context) {
+std::vector<std::shared_ptr<pipeline::OperatorFactory>> LakeMetaScanNode::decompose_to_pipeline(
+        pipeline::PipelineBuilderContext* context) {
     auto exec_group = context->find_exec_group_by_plan_node_id(_id);
     context->set_current_execution_group(exec_group);
     auto* morsel_queue_factory = context->morsel_queue_factory_of_source_operator(id());

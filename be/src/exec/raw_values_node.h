@@ -14,29 +14,30 @@
 
 #pragma once
 
-#include "common/statusor.h"
+#include "exec/exec_node.h"
 #include "exec/pipeline/set/raw_values_source_operator.h"
-#include "exec/pipeline_node.h"
-#include "types/type_descriptor.h"
+#include "runtime/types.h"
 
 namespace starrocks {
 
 // RawValuesNode is optimized for large constant lists.
 // It avoids expensive expression evaluation by directly constructing
 // columns from typed raw data (List<Long> or List<String>).
-class RawValuesNode final : public PipelineNode {
+class RawValuesNode final : public ExecNode {
 public:
     RawValuesNode(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs);
     ~RawValuesNode() override;
 
     Status init(const TPlanNode& tnode, RuntimeState* state) override;
+    Status prepare(RuntimeState* state) override;
+    Status open(RuntimeState* state) override;
     void close(RuntimeState* state) override;
 
-    StatusOr<pipeline::OpFactories> decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
+    pipeline::OpFactories decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
 
 private:
     const int _tuple_id;
-    [[maybe_unused]] const TupleDescriptor* _tuple_desc = nullptr;
+    const TupleDescriptor* _tuple_desc = nullptr;
 
     TypeDescriptor _constant_type;
     std::vector<int64_t> _long_values;

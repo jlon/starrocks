@@ -37,9 +37,7 @@ import org.apache.hudi.common.model.HoodieLogFile;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
-import org.apache.hudi.common.table.view.HoodieTableFileSystemView;
 import org.apache.hudi.common.util.Option;
-import org.apache.hudi.metadata.HoodieTableMetadata;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration;
 import org.apache.logging.log4j.LogManager;
@@ -54,6 +52,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import static org.apache.hudi.common.table.view.FileSystemViewManager.createInMemoryFileSystemViewWithTimeline;
 
 public class HudiRemoteFileIO implements RemoteFileIO {
     private static final Logger LOG = LogManager.getLogger(HudiRemoteFileIO.class);
@@ -77,12 +76,8 @@ public class HudiRemoteFileIO implements RemoteFileIO {
                 HoodieTimeline timeline = metaClient.getCommitsAndCompactionTimeline().filterCompletedInstants();
                 Option<HoodieInstant> lastInstant = timeline.lastInstant();
                 if (lastInstant.isPresent()) {
-                    // Reuse the metadata readers across this scan. The default factory hardcodes
-                    // reuse = false, so every partition reopens them and re-reads the rollback
-                    // metadata that opening them recomputes.
-                    HoodieTableMetadata tableMetadata = HoodieTableMetadata.create(
-                            engineContext, metaClient.getStorage(), metadataConfig, ctx.tableLocation, true);
-                    ctx.hudiFsView = new HoodieTableFileSystemView(tableMetadata, metaClient, timeline);
+                    ctx.hudiFsView =
+                            createInMemoryFileSystemViewWithTimeline(engineContext, metaClient, metadataConfig, timeline);
                     ctx.hudiLastInstant = lastInstant.get();
                     ctx.hudiTimeline = timeline;
                 }

@@ -12,29 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "exprs/map_expr.h"
-
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
 #include <utility>
 
-#include "base/string/slice.h"
+#include "column/binary_column.h"
 #include "column/column_helper.h"
+#include "exprs/array_expr.h"
 #include "exprs/mock_vectorized_expr.h"
 #include "testutil/column_test_helper.h"
+#include "testutil/exprs_test_helper.h"
+#include "testutil/parallel_test.h"
 #include "types/logical_type.h"
+#include "util/slice.h"
 
 namespace starrocks {
-
-static std::unique_ptr<Expr> create_map_expr(const TypeDescriptor& type) {
-    TExprNode node;
-    node.__set_node_type(TExprNodeType::MAP_EXPR);
-    node.__set_is_nullable(true);
-    node.__set_type(type.to_thrift());
-    node.__set_num_children(0);
-    return std::unique_ptr<Expr>(MapExprFactory::from_thrift(node));
-}
 
 class MapExprTest : public ::testing::Test {
 protected:
@@ -70,7 +63,7 @@ TEST_F(MapExprTest, test_evaluate) {
 
     // {}
     {
-        auto expr = create_map_expr(type_map_int_str);
+        auto expr(ExprsTestHelper::create_map_expr(type_map_int_str));
         auto result = expr->evaluate(nullptr, nullptr);
         EXPECT_EQ(1, result->size());
         ASSERT_TRUE(result->is_map());
@@ -79,7 +72,7 @@ TEST_F(MapExprTest, test_evaluate) {
 
     // one key-value pair
     {
-        auto expr = create_map_expr(type_map_int_str);
+        auto expr(ExprsTestHelper::create_map_expr(type_map_int_str));
         expr->add_child(new_mock_expr(ColumnTestHelper::build_column<int32_t>({1, 3, 6}), LogicalType::TYPE_INT));
         TypeDescriptor type_varchar(LogicalType::TYPE_VARCHAR);
         type_varchar.len = 10;
@@ -91,7 +84,7 @@ TEST_F(MapExprTest, test_evaluate) {
 
     // more key-value pairs with duplicated keys
     {
-        auto expr = create_map_expr(type_map_int_str);
+        auto expr(ExprsTestHelper::create_map_expr(type_map_int_str));
         expr->add_child(new_mock_expr(ColumnTestHelper::build_column<int32_t>({1, 3, 6}), LogicalType::TYPE_INT));
         TypeDescriptor type_varchar(LogicalType::TYPE_VARCHAR);
         type_varchar.len = 10;
@@ -121,7 +114,7 @@ TEST_F(MapExprTest, test_const_evaluate) {
 
     // {}
     {
-        auto expr = create_map_expr(type_map_int_str);
+        auto expr(ExprsTestHelper::create_map_expr(type_map_int_str));
         auto result = expr->evaluate(nullptr, nullptr);
         EXPECT_EQ(1, result->size());
         ASSERT_TRUE(result->is_map());
@@ -130,7 +123,7 @@ TEST_F(MapExprTest, test_const_evaluate) {
 
     // one key-value pair
     {
-        auto expr = create_map_expr(type_map_int_str);
+        auto expr(ExprsTestHelper::create_map_expr(type_map_int_str));
         expr->add_child(
                 new_mock_expr(ColumnHelper::create_const_column<LogicalType::TYPE_INT>(1, 1), LogicalType::TYPE_INT));
         TypeDescriptor type_varchar(LogicalType::TYPE_VARCHAR);
@@ -146,7 +139,7 @@ TEST_F(MapExprTest, test_const_evaluate) {
 
     // more key-value pairs with duplicated keys
     {
-        auto expr = create_map_expr(type_map_int_str);
+        auto expr(ExprsTestHelper::create_map_expr(type_map_int_str));
         expr->add_child(
                 new_mock_expr(ColumnHelper::create_const_column<LogicalType::TYPE_INT>(1, 1), LogicalType::TYPE_INT));
         TypeDescriptor type_varchar(LogicalType::TYPE_VARCHAR);
@@ -164,6 +157,46 @@ TEST_F(MapExprTest, test_const_evaluate) {
         EXPECT_TRUE(result->is_map());
         ASSERT_EQ("{1:'a',4:'x'}", result->debug_string());
     }
+}
+
+// NOLINTNEXTLINE
+GROUP_SLOW_PARALLEL_TEST(MapExprOverflowTest, test_flatten_bytes_exceed_uint32_capacity) {
+    // Two key-value pairs (4 children) whose value columns share one 2100-row x 1MB
+    // varchar column, so the flattened value column is ~4.4GB and overflows
+    // BinaryColumn's uint32 offsets. Expect an explicit CapacityLimitExceed error.
+    // Transient peak memory is ~13GB due to bytes vector growth.
+    TypeDescriptor type_varchar(LogicalType::TYPE_VARCHAR);
+    type_varchar.len = 1048576;
+    TypeDescriptor type_map;
+    type_map.type = LogicalType::TYPE_MAP;
+    type_map.children.push_back(type_varchar);
+    type_map.children.push_back(type_varchar);
+
+    const size_t num_rows = 2100;
+    const std::string payload(1024 * 1024, 'x');
+    auto fat_column_builder = BinaryColumn::create();
+    auto key1_column_builder = BinaryColumn::create();
+    auto key2_column_builder = BinaryColumn::create();
+    fat_column_builder->reserve(num_rows);
+    for (size_t i = 0; i < num_rows; i++) {
+        fat_column_builder->append(Slice(payload));
+        key1_column_builder->append(Slice("k1"));
+        key2_column_builder->append(Slice("k2"));
+    }
+    BinaryColumn::Ptr fat_column = std::move(fat_column_builder);
+    BinaryColumn::Ptr key1_column = std::move(key1_column_builder);
+    BinaryColumn::Ptr key2_column = std::move(key2_column_builder);
+
+    ObjectPool pool;
+    std::unique_ptr<Expr> expr(ExprsTestHelper::create_map_expr(type_map));
+    expr->add_child(pool.add(new MockExpr(type_varchar, key1_column)));
+    expr->add_child(pool.add(new MockExpr(type_varchar, fat_column)));
+    expr->add_child(pool.add(new MockExpr(type_varchar, key2_column)));
+    expr->add_child(pool.add(new MockExpr(type_varchar, fat_column)));
+
+    auto result = expr->evaluate_checked(nullptr, nullptr);
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().is_capacity_limit_exceeded());
 }
 
 } // namespace starrocks

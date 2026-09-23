@@ -20,7 +20,6 @@ import com.staros.exception.ExceptionCode;
 import com.staros.exception.StarException;
 import com.staros.journal.JournalSystem;
 import com.starrocks.common.Config;
-import com.starrocks.common.Pair;
 import com.starrocks.common.util.Daemon;
 import com.starrocks.common.util.Util;
 import com.starrocks.journal.Journal;
@@ -61,9 +60,7 @@ public class StarOSBDBJEJournalSystem implements JournalSystem {
 
         journalWriter = new JournalWriter(bdbjeJournal, journalQueue);
 
-        // StarMgr writes its own separate journal and is never fenced by leader demotion, so its EditLog's
-        // WAL admission gate is always open.
-        editLog = new EditLog(journalQueue, true);
+        editLog = new EditLog(journalQueue);
 
         replayedJournalId = new AtomicLong(0L);
 
@@ -75,7 +72,7 @@ public class StarOSBDBJEJournalSystem implements JournalSystem {
         BlockingQueue<JournalTask> journalQueue = new ArrayBlockingQueue<JournalTask>(Config.metadata_journal_queue_size);
         StarOSBDBJEJournalSystem journalSystem = new StarOSBDBJEJournalSystem(journal);
         journalSystem.journalWriter = new JournalWriter(journalSystem.bdbjeJournal, journalQueue);
-        journalSystem.editLog = new EditLog(journalQueue, true);
+        journalSystem.editLog = new EditLog(journalQueue);
         return journalSystem;
     }
 
@@ -83,7 +80,7 @@ public class StarOSBDBJEJournalSystem implements JournalSystem {
     public StarOSBDBJEJournalSystem(Journal journal) {
         bdbjeJournal = journal;
         replayedJournalId = new AtomicLong(0L);
-        editLog = new EditLog(null, true);
+        editLog = new EditLog(null);
     }
 
     public long getReplayId() {
@@ -120,8 +117,7 @@ public class StarOSBDBJEJournalSystem implements JournalSystem {
             long replayEndTime = System.currentTimeMillis();
             LOG.info("finish star manager replay in " + (replayEndTime - replayStartTime) + " msec.");
 
-            Pair<Long, Long> journalIdRange = bdbjeJournal.getJournalIdRange();
-            journalWriter.init(journalIdRange.first, journalIdRange.second);
+            journalWriter.init(bdbjeJournal.getMaxJournalId());
 
             journalWriter.startDaemon();
         } catch (Exception e) {

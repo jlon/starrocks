@@ -165,13 +165,13 @@ public class DictionaryMgr implements Writable, GsonPostProcessable {
     }
 
     public static void fillBackendsOrComputeNodes(List<TNetworkAddress> nodes) {
-        List<Backend> backends = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getAvailableBackends();
+        List<Backend> backends = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackends();
         for (Backend backend : backends) {
             nodes.add(backend.getBrpcAddress());
         }
 
         List<ComputeNode> computeNodes =
-                GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getAvailableComputeNodes();
+                GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getComputeNodes();
         for (ComputeNode cn : computeNodes) {
             nodes.add(cn.getBrpcAddress());
         }

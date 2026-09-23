@@ -3,5 +3,4 @@ label: 'Asynchronous materialized views'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: async_mv
+  type: generated-index

@@ -36,26 +36,19 @@
 
 #include <gperftools/profiler.h>
 
-#ifdef __APPLE__
-#include <stdlib.h>
-#endif
-
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <mutex>
 
-#include "common/config_path_fwd.h"
+#include "common/config.h"
+#include "common/prof/heap_prof.h"
 #include "common/status.h"
 #include "common/tracer.h"
+#include "http/ev_http_server.h"
+#include "http/http_channel.h"
+#include "http/http_headers.h"
+#include "http/http_request.h"
 #include "io/io_profiler.h"
-#include "platform/http/ev_http_server.h"
-#include "platform/http/http_channel.h"
-#include "platform/http/http_headers.h"
-#include "platform/http/http_request.h"
-#include "runtime/prof/heap_prof.h"
 
 namespace starrocks {
 
@@ -160,14 +153,6 @@ void IOProfileAction::handle(HttpRequest* req) {
 }
 
 void CmdlineAction::handle(HttpRequest* req) {
-#ifdef __APPLE__
-    const char* prog_name = getprogname();
-    if (prog_name == nullptr || prog_name[0] == '\0') {
-        HttpChannel::send_reply(req, "read cmdline failed");
-        return;
-    }
-    HttpChannel::send_reply(req, prog_name);
-#else
     FILE* fp = fopen("/proc/self/cmdline", "r");
     if (fp == nullptr) {
         std::string str = "Unable to open file: /proc/self/cmdline";
@@ -183,7 +168,6 @@ void CmdlineAction::handle(HttpRequest* req) {
     std::string str = buf;
 
     HttpChannel::send_reply(req, str);
-#endif
 }
 
 void SymbolAction::handle(HttpRequest* req) {

@@ -3,5 +3,4 @@ label: '视图'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: View
+  type: generated-index

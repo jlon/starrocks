@@ -14,91 +14,24 @@
 
 package com.starrocks.sql;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.starrocks.catalog.IcebergTable;
 import com.starrocks.connector.iceberg.ScalarOperatorToIcebergExpr;
 import com.starrocks.planner.IcebergScanNode;
-import com.starrocks.planner.PlanFragment;
 import com.starrocks.planner.PlanNode;
 import com.starrocks.planner.SlotId;
-import com.starrocks.qe.ConnectContext;
-import com.starrocks.qe.SessionVariable;
 import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.ast.expression.SlotRef;
-import com.starrocks.sql.optimizer.base.DistributionProperty;
-import com.starrocks.sql.optimizer.base.DistributionSpec;
-import com.starrocks.sql.optimizer.base.HashDistributionDesc;
-import com.starrocks.sql.optimizer.base.PhysicalPropertySet;
-import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.plan.ExecPlan;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * Shared utilities for Iceberg DML planners (DeletePlanner, UpdatePlanner, future MergePlanner).
  */
 public class IcebergPlannerUtils {
-
-    public static PhysicalPropertySet createShuffleProperty(IcebergTable icebergTable,
-                                                             List<ColumnRefOperator> outputColumns) {
-        List<String> names = outputColumns.stream()
-                .map(ColumnRefOperator::getName)
-                .collect(Collectors.toList());
-        return createShuffleProperty(icebergTable, outputColumns, names);
-    }
-
-    /**
-     * Overload that matches partition columns by explicit column names rather than
-     * ColumnRefOperator.getName(). Needed for MERGE INTO where CASE expressions cause
-     * ColumnRefFactory to assign generic names like "case", losing the original column name.
-     *
-     * @param outputColumnNames the column names from the Analyzer's SELECT list aliases
-     */
-    public static PhysicalPropertySet createShuffleProperty(IcebergTable icebergTable,
-                                                             List<ColumnRefOperator> outputColumns,
-                                                             List<String> outputColumnNames) {
-        Preconditions.checkArgument(outputColumns.size() == outputColumnNames.size(),
-                "output columns size %s does not match output column names size %s",
-                outputColumns.size(), outputColumnNames.size());
-        if (!icebergTable.isPartitioned()) {
-            return new PhysicalPropertySet();
-        }
-
-        List<String> partitionColNames = icebergTable.getPartitionColumnNames();
-        List<Integer> partitionColumnIds = Lists.newArrayList();
-        for (String partCol : partitionColNames) {
-            for (int i = 0; i < outputColumnNames.size(); i++) {
-                if (outputColumnNames.get(i).equalsIgnoreCase(partCol)) {
-                    partitionColumnIds.add(outputColumns.get(i).getId());
-                    break;
-                }
-            }
-        }
-
-        if (partitionColumnIds.isEmpty()) {
-            return new PhysicalPropertySet();
-        }
-
-        return createHashShuffleProperty(partitionColumnIds);
-    }
-
-    /**
-     * Builds a required property that hash-distributes the plan output by the given
-     * optimizer column ids.
-     */
-    private static PhysicalPropertySet createHashShuffleProperty(List<Integer> columnIds) {
-        Preconditions.checkArgument(!columnIds.isEmpty(), "shuffle column ids must not be empty");
-        HashDistributionDesc distributionDesc = new HashDistributionDesc(
-                columnIds, HashDistributionDesc.SourceType.SHUFFLE_AGG);
-        DistributionProperty distributionProperty = DistributionProperty.createProperty(
-                DistributionSpec.createHashDistributionSpec(distributionDesc));
-        return new PhysicalPropertySet(distributionProperty);
-    }
-
     /**
      * Extracts the base snapshot id frozen at plan time from the IcebergScanNode that
      * scans {@code targetTable}. The plan may contain scans for other Iceberg tables
@@ -171,8 +104,7 @@ public class IcebergPlannerUtils {
 
     /**
      * Extracts the single slot id referenced by {@code expr}, unwrapping trivial casts;
-     * null when the expression does not reduce to exactly one slot. Shared with
-     * {@link MergeIntoPlanner}'s row-locator extraction.
+     * null when the expression does not reduce to exactly one slot.
      */
     static SlotId tryExtractSlotId(Expr expr) {
         if (expr instanceof SlotRef slotRef) {
@@ -205,32 +137,5 @@ public class IcebergPlannerUtils {
         ScalarOperatorToIcebergExpr.IcebergContext icebergContext =
                 new ScalarOperatorToIcebergExpr.IcebergContext(nativeSchema.asStruct());
         return new ScalarOperatorToIcebergExpr().convert(Collections.singletonList(predicate), icebergContext);
-    }
-
-    public static void configureIcebergSinkPipeline(ExecPlan execPlan, ConnectContext session,
-                                                     boolean canUsePipeline) {
-        if (!canUsePipeline) {
-            execPlan.getFragments().get(0).setPipelineDop(1);
-            return;
-        }
-
-        SessionVariable sv = session.getSessionVariable();
-        if (sv.isEnableConnectorSinkSpill()) {
-            sv.setEnableSpill(true);
-            if (sv.getConnectorSinkSpillMemLimitThreshold() < sv.getSpillMemLimitThreshold()) {
-                sv.setSpillMemLimitThreshold(sv.getConnectorSinkSpillMemLimitThreshold());
-            }
-        }
-
-        PlanFragment sinkFragment = execPlan.getFragments().get(0);
-        if (sv.getEnableAdaptiveSinkDop()) {
-            long warehouseId = session.getCurrentComputeResource().getWarehouseId();
-            sinkFragment.setPipelineDop(sv.getSinkDegreeOfParallelism(warehouseId));
-        } else {
-            sinkFragment.setPipelineDop(sv.getParallelExecInstanceNum());
-        }
-        sinkFragment.setHasIcebergTableSink();
-        sinkFragment.disableRuntimeAdaptiveDop();
-        sinkFragment.setForceSetTableSinkDop();
     }
 }

@@ -3,5 +3,4 @@ label: 'Cluster management'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: cluster-management
+  type: generated-index

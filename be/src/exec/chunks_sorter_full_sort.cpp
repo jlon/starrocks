@@ -14,16 +14,14 @@
 
 #include "chunks_sorter_full_sort.h"
 
-#include "base/failpoint/fail_point.h"
-#include "base/utility/defer_op.h"
-#include "column/sorting/sort_permute.h"
-#include "column/sorting/sorting.h"
-#include "common/runtime_profile.h"
-#include "compute_env/sorting/data_segment.h"
-#include "compute_env/sorting/merge.h"
+#include "exec/sorting/merge.h"
+#include "exec/sorting/sort_permute.h"
+#include "exec/sorting/sorting.h"
 #include "exprs/expr.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/runtime_state.h"
+#include "util/defer_op.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks {
 DEFINE_FAIL_POINT(chunks_sorter_full_sort_partial_sort_bad_alloc);
@@ -63,7 +61,7 @@ Status ChunksSorterFullSort::update(RuntimeState* state, const ChunkPtr& chunk) 
 // Accumulate unsorted input chunks into a larger chunk
 Status ChunksSorterFullSort::_merge_unsorted(RuntimeState* state, const ChunkPtr& chunk) {
     SCOPED_TIMER(_build_timer);
-    _staging_unsorted_chunks.push_back(chunk);
+    _staging_unsorted_chunks.push_back(std::move(chunk));
     _staging_unsorted_rows += chunk->num_rows();
     _staging_unsorted_bytes += chunk->bytes_usage();
     return Status::OK();

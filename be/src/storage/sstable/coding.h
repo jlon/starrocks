@@ -8,7 +8,7 @@
 #include <cstring>
 #include <string>
 
-#include "base/string/slice.h"
+#include "util/slice.h"
 
 namespace starrocks::sstable {
 

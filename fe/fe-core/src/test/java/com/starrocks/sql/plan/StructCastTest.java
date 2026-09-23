@@ -25,20 +25,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public class StructCastTest extends PlanTestBase {
     @Test
     public void testPositionCast() throws Exception {
-        final ConnectContext context = ConnectContext.get();
-        final SessionVariable sv = context.getSessionVariable();
-        final long prev = sv.getSqlMode();
-        try {
-            sv.setSqlMode(prev & ~SqlModeHelper.MODE_STRUCT_CAST_BY_NAME);
+        String sql;
+        String plan;
 
-            String sql = "select cast(named_struct('key',1,'value',1) as struct<key1 int,value1 int>)";
-            String plan = getFragmentPlan(sql);
+        sql = "select cast(named_struct('key',1,'value',1) as struct<key1 int,value1 int>)";
+        plan = getFragmentPlan(sql);
 
-            assertContains(plan,
-                    "CAST(named_struct('key', 1, 'value', 1) AS struct<`key1` int(11), `value1` int(11)>)");
-        } finally {
-            sv.setSqlMode(prev);
-        }
+        assertContains(plan, "CAST(named_struct('key', 1, 'value', 1) AS struct<`key1` int(11), `value1` int(11)>)");
     }
 
     @Test
@@ -47,18 +40,22 @@ public class StructCastTest extends PlanTestBase {
         final SessionVariable sv = context.getSessionVariable();
         final long prev = sv.getSqlMode();
         try {
-            sv.setSqlMode(prev | SqlModeHelper.MODE_STRUCT_CAST_BY_NAME);
+            sv.setSqlMode(SqlModeHelper.MODE_STRUCT_CAST_BY_NAME);
 
             assertThrows(SemanticException.class, () -> {
                 String sql = "select cast(named_struct('key',1,'value',1) as struct<key1 int,value1 int>)";
                 getFragmentPlan(sql);
             });
 
-            String sql = "select cast(named_struct('k',1,'v',1) as struct<v int,`k` int>)";
-            String plan = getFragmentPlan(sql);
+            String sql;
+            String plan;
+            sql = "select cast(named_struct('k',1,'v',1) as struct<v int,`k` int>)";
+            plan = getFragmentPlan(sql);
             assertContains(plan, "CAST(named_struct('k', 1, 'v', 1) AS struct<`v` int(11), `k` int(11)>)");
+
         } finally {
             sv.setSqlMode(prev);
+
         }
     }
 

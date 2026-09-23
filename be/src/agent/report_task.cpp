@@ -15,7 +15,7 @@
 #include "agent/report_task.h"
 
 #include "agent/utils.h"
-#include "exec/exec_env.h"
+#include "runtime/exec_env.h"
 
 namespace starrocks {
 

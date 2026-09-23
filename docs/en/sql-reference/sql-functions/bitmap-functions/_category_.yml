@@ -3,5 +3,4 @@ label: 'Bitmap'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: bitmap-functions
+  type: generated-index

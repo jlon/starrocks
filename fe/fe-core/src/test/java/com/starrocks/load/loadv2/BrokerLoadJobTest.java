@@ -37,9 +37,7 @@ package com.starrocks.load.loadv2;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import com.starrocks.alter.reshard.presplit.PreSplitProfile;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.FakeEditLog;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.DdlException;
@@ -397,7 +395,7 @@ public class BrokerLoadJobTest {
         brokerLoadJob1.unprotectedExecuteJob();
         txnOperated = true;
         txnStatusChangeReason = "broker load job timeout";
-        brokerLoadJob1.afterAborted(txnState, txnStatusChangeReason);
+        brokerLoadJob1.afterAborted(txnState, txnOperated, txnStatusChangeReason);
         Map<Long, LoadTask> idToTasks = Deencapsulation.getField(brokerLoadJob1, "idToTasks");
         Assertions.assertEquals(0, idToTasks.size());
 
@@ -414,7 +412,7 @@ public class BrokerLoadJobTest {
         brokerLoadJob2.createTimestamp = createTimestamp;
         brokerLoadJob2.timeoutSecond = 0;
         brokerLoadJob2.failInfos = Lists.newArrayList(new TabletFailInfo(1L, 2L));
-        brokerLoadJob2.afterAborted(txnState, txnStatusChangeReason);
+        brokerLoadJob2.afterAborted(txnState, txnOperated, txnStatusChangeReason);
         idToTasks = Deencapsulation.getField(brokerLoadJob2, "idToTasks");
         Assertions.assertEquals(1, idToTasks.size());
         Assertions.assertTrue(brokerLoadJob2.createTimestamp > createTimestamp);
@@ -427,7 +425,7 @@ public class BrokerLoadJobTest {
         brokerLoadJob3.unprotectedExecuteJob();
         txnOperated = false;
         txnStatusChangeReason = "broker load job timeout";
-        brokerLoadJob3.afterAborted(txnState, txnStatusChangeReason);
+        brokerLoadJob3.afterAborted(txnState, txnOperated, txnStatusChangeReason);
         idToTasks = Deencapsulation.getField(brokerLoadJob3, "idToTasks");
         Assertions.assertEquals(1, idToTasks.size());
 
@@ -438,7 +436,7 @@ public class BrokerLoadJobTest {
         txnOperated = true;
         txnStatusChangeReason = "broker load job timeout";
         Deencapsulation.setField(brokerLoadJob4, "state", JobState.FINISHED);
-        brokerLoadJob4.afterAborted(txnState, txnStatusChangeReason);
+        brokerLoadJob4.afterAborted(txnState, txnOperated, txnStatusChangeReason);
         idToTasks = Deencapsulation.getField(brokerLoadJob4, "idToTasks");
         Assertions.assertEquals(1, idToTasks.size());
 
@@ -454,7 +452,7 @@ public class BrokerLoadJobTest {
         brokerLoadJob5.unprotectedExecuteJob();
         txnOperated = true;
         txnStatusChangeReason = LoadErrorUtils.BACKEND_BRPC_TIMEOUT.keywords;
-        brokerLoadJob5.afterAborted(txnState, txnStatusChangeReason);
+        brokerLoadJob5.afterAborted(txnState, txnOperated, txnStatusChangeReason);
         idToTasks = Deencapsulation.getField(brokerLoadJob5, "idToTasks");
         Assertions.assertEquals(1, idToTasks.size());
 
@@ -464,7 +462,7 @@ public class BrokerLoadJobTest {
         brokerLoadJob6.unprotectedExecuteJob();
         txnOperated = true;
         txnStatusChangeReason = "parse error, task failed";
-        brokerLoadJob6.afterAborted(txnState, txnStatusChangeReason);
+        brokerLoadJob6.afterAborted(txnState, txnOperated, txnStatusChangeReason);
         Assertions.assertEquals(JobState.CANCELLED, brokerLoadJob6.getState());
         idToTasks = Deencapsulation.getField(brokerLoadJob6, "idToTasks");
         Assertions.assertEquals(0, idToTasks.size());
@@ -733,37 +731,6 @@ public class BrokerLoadJobTest {
     }
 
     @Test
-    public void testCreateLoadingTaskCarriesProfileThroughEmptyInput(
-            @Mocked GlobalTransactionMgr globalTransactionMgr,
-            @Mocked Locker locker,
-            @Injectable Database db,
-            @Injectable BrokerPendingTaskAttachment attachment) throws Exception {
-        new Expectations() {
-            {
-                db.getId();
-                result = 100L;
-                minTimes = 0;
-                globalTransactionMgr.beginTransaction(anyLong, (List<Long>) any, anyString, (TUniqueId) any,
-                        (TransactionState.TxnCoordinator) any,
-                        (TransactionState.LoadJobSourceType) any, anyLong, anyLong, (ComputeResource) any);
-                result = 200L;
-            }
-        };
-
-        BrokerLoadJob brokerLoadJob = new BrokerLoadJob();
-        brokerLoadJob.setConnectContext(Mockito.mock(ConnectContext.class));
-        Deencapsulation.setField(brokerLoadJob, "dbId", 100L);
-        Deencapsulation.setField(brokerLoadJob, "label", "profile-carry-through");
-
-        Deencapsulation.invoke(brokerLoadJob, "createLoadingTask", db, attachment);
-
-        Assertions.assertEquals(JobState.LOADING, brokerLoadJob.getState());
-        Assertions.assertNotNull(Deencapsulation.getField(brokerLoadJob, "preSplitProfile"));
-        List<LoadLoadingTask> loadingTasks = Deencapsulation.getField(brokerLoadJob, "newLoadingTasks");
-        Assertions.assertTrue(loadingTasks.isEmpty());
-    }
-
-    @Test
     public void testEnsureConnectContextRebuildsFromPersistedSessionVarsOnFailover(
             @Mocked ConnectContext mockContext) throws Exception {
         // FE-failover happy path: context is null and sessionVariables carries the
@@ -833,8 +800,7 @@ public class BrokerLoadJobTest {
         GlobalStateMgr.getCurrentState().setEditLog(new EditLog(new ArrayBlockingQueue<>(100)));
         new MockUp<EditLog>() {
             @Mock
-            public void logEndLoadJob(LoadJobFinalOperation loadJobFinalOperation, WALApplier walApplier) {
-                walApplier.apply(loadJobFinalOperation);
+            public void logEndLoadJob(LoadJobFinalOperation loadJobFinalOperation) {
             }
         };
 
@@ -853,8 +819,8 @@ public class BrokerLoadJobTest {
         GlobalStateMgr.getCurrentState().setEditLog(new EditLog(new ArrayBlockingQueue<>(100)));
         new MockUp<EditLog>() {
             @Mock
-            public void logEndLoadJob(LoadJobFinalOperation loadJobFinalOperation, WALApplier walApplier) {
-                walApplier.apply(loadJobFinalOperation);
+            public void logEndLoadJob(LoadJobFinalOperation loadJobFinalOperation) {
+
             }
         };
 
@@ -997,9 +963,7 @@ public class BrokerLoadJobTest {
                                                       @Injectable BrokerLoadingTaskAttachment attachment2,
                                                       @Injectable LoadTask loadTask1,
                                                       @Injectable LoadTask loadTask2,
-                                                      @Mocked EditLog editLog,
                                                       @Mocked GlobalStateMgr globalStateMgr) {
-        new FakeEditLog();
         BrokerLoadJob brokerLoadJob = new BrokerLoadJob();
         Deencapsulation.setField(brokerLoadJob, "state", JobState.LOADING);
         Map<Long, LoadTask> idToTasks = Maps.newHashMap();
@@ -1008,9 +972,6 @@ public class BrokerLoadJobTest {
         Deencapsulation.setField(brokerLoadJob, "idToTasks", idToTasks);
         new Expectations() {
             {
-                globalStateMgr.getEditLog();
-                minTimes = 0;
-                result = editLog;
                 attachment1.getCounter(BrokerLoadJob.DPP_NORMAL_ALL);
                 minTimes = 0;
                 result = 10;
@@ -1285,8 +1246,7 @@ public class BrokerLoadJobTest {
                 new BrokerLoadJob.PreSplitHookInput(snapshotTable, List.of(), List.of()));
 
         Throwable thrown = Assertions.assertThrows(Throwable.class, () ->
-                Deencapsulation.invoke(brokerLoadJob, "buildLoadingTasksUnderReadLock", db, perTableInputs, brokerDesc,
-                        new PreSplitProfile()));
+                Deencapsulation.invoke(brokerLoadJob, "buildLoadingTasksUnderReadLock", db, perTableInputs, brokerDesc));
         assertStaleTableMetaNotFound(thrown, 2001L);
     }
 
@@ -1315,8 +1275,7 @@ public class BrokerLoadJobTest {
                 new BrokerLoadJob.PreSplitHookInput(snapshotTable, List.of(), List.of()));
 
         Throwable thrown = Assertions.assertThrows(Throwable.class, () ->
-                Deencapsulation.invoke(brokerLoadJob, "buildLoadingTasksUnderReadLock", db, perTableInputs, brokerDesc,
-                        new PreSplitProfile()));
+                Deencapsulation.invoke(brokerLoadJob, "buildLoadingTasksUnderReadLock", db, perTableInputs, brokerDesc));
         assertStaleTableMetaNotFound(thrown, 2001L);
     }
 

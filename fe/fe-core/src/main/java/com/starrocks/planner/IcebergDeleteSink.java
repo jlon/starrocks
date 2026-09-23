@@ -14,7 +14,6 @@
 
 package com.starrocks.planner;
 
-import com.google.common.base.Preconditions;
 import com.starrocks.catalog.IcebergTable;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.iceberg.IcebergUtil;
@@ -71,7 +70,8 @@ public class IcebergDeleteSink extends DataSink {
         this.compressionType = nativeTable.properties().getOrDefault(DELETE_PARQUET_COMPRESSION,
                 nativeTable.properties().getOrDefault(PARQUET_COMPRESSION,
                         sessionVariable.getConnectorSinkCompressionCodec()));
-        this.targetMaxFileSize = IcebergUtil.resolveTargetMaxFileSize(nativeTable, sessionVariable);
+        this.targetMaxFileSize = sessionVariable.getConnectorSinkTargetMaxFileSize() > 0 ?
+                sessionVariable.getConnectorSinkTargetMaxFileSize() : 1024L * 1024 * 1024;
     }
 
     public void init() {
@@ -137,12 +137,8 @@ public class IcebergDeleteSink extends DataSink {
         tIcebergTableSink.setData_location(dataLocation);
         tIcebergTableSink.setFile_format("parquet"); // Delete files are always parquet
         tIcebergTableSink.setIs_static_partition_sink(false);
-        // DeleteSink only emits position-delete files; the codec belongs in the
-        // delete-file slot. `compression_type` is reserved for data files now.
         TCompressionType compression = PARQUET_COMPRESSION_TYPE_MAP.get(compressionType);
-        Preconditions.checkState(compression != null,
-                "delete file compression type not supported: " + compressionType);
-        tIcebergTableSink.setDelete_compression_type(compression);
+        tIcebergTableSink.setCompression_type(compression);
         tIcebergTableSink.setTarget_max_file_size(targetMaxFileSize);
         com.starrocks.thrift.TCloudConfiguration tCloudConfiguration = new com.starrocks.thrift.TCloudConfiguration();
         cloudConfiguration.toThrift(tCloudConfiguration);

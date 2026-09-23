@@ -31,6 +31,7 @@ import com.starrocks.sql.common.StarRocksPlannerException;
 import com.starrocks.sql.optimizer.function.MetaFunctions;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.scalar.CallOperator;
+import com.starrocks.sql.optimizer.operator.scalar.CastOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.type.PrimitiveType;
@@ -115,7 +116,7 @@ public enum ScalarOperatorEvaluator {
         String nameStr = name.getFunction().toUpperCase();
         // NOTE: only support VARCHAR as return type
         FunctionSignature signature = new FunctionSignature(nameStr, Lists.newArrayList(args), VarcharType.VARCHAR);
-        FunctionInvoker invoker = getFunctionInvoker(signature);
+        FunctionInvoker invoker = functions.get(signature);
         if (invoker == null || !invoker.isMetaFunction) {
             return null;
         }
@@ -182,7 +183,7 @@ public enum ScalarOperatorEvaluator {
         FunctionSignature signature =
                 new FunctionSignature(fn.functionName().toUpperCase(), argTypes, fn.getReturnType());
 
-        FunctionInvoker invoker = getFunctionInvoker(signature);
+        FunctionInvoker invoker = functions.get(signature);
 
         if (invoker == null) {
             return root;
@@ -224,10 +225,9 @@ public enum ScalarOperatorEvaluator {
     }
 
     public boolean isMonotonicFunction(CallOperator call) {
-        // A cast used to be declared monotonic here unconditionally, which is wrong: crossing between
-        // strings and numbers reorders values. Casts are decided by OperatorFunctionChecker's
-        // visitCastOperator, which knows which type pairs keep the order; one arriving here has no
-        // invoker to look up and comes out non-monotonic, which is the safe answer.
+        if (call instanceof CastOperator) {
+            return true;
+        }
         FunctionSignature signature;
         if (call.getFunction() != null) {
             Function fn = call.getFunction();
@@ -238,7 +238,7 @@ public enum ScalarOperatorEvaluator {
             signature = new FunctionSignature(call.getFnName().toUpperCase(), argTypes, call.getType());
         }
 
-        FunctionInvoker invoker = getFunctionInvoker(signature);
+        FunctionInvoker invoker = functions.get(signature);
 
         return invoker != null && isMonotonicFunc(invoker, call);
     }
@@ -254,21 +254,8 @@ public enum ScalarOperatorEvaluator {
             signature = new FunctionSignature(call.getFnName().toUpperCase(), argTypes, call.getType());
         }
 
-        FunctionInvoker invoker = getFunctionInvoker(signature);
-        return invoker != null;
-    }
-
-    private FunctionInvoker getFunctionInvoker(FunctionSignature signature) {
         FunctionInvoker invoker = functions.get(signature);
-        if (invoker != null) {
-            return invoker;
-        }
-        for (FunctionInvoker variableInvoker : functions.values()) {
-            if (variableInvoker.matchesVariableArgs(signature)) {
-                return variableInvoker;
-            }
-        }
-        return null;
+        return invoker != null;
     }
 
     private boolean isMonotonicFunc(FunctionInvoker invoker, CallOperator operator) {
@@ -285,10 +272,7 @@ public enum ScalarOperatorEvaluator {
                 FunctionSet.TO_DATETIME
         );
 
-        // The format is the second argument for every name in SUPPORTED. from_unixtime() also takes a
-        // third -- the time zone -- and the format still has to be checked there: a three-argument
-        // call used to skip this block entirely and come out monotonic whatever its format said.
-        if (SUPPORTED.contains(invoker.getSignature().getName().toLowerCase()) && operator.getChildren().size() >= 2) {
+        if (SUPPORTED.contains(invoker.getSignature().getName().toLowerCase()) && operator.getChildren().size() == 2) {
             String pattern = operator.getChild(1).toString();
             if (pattern.isEmpty()) {
                 return true;
@@ -373,36 +357,6 @@ public enum ScalarOperatorEvaluator {
 
         public FunctionSignature getSignature() {
             return signature;
-        }
-
-        private boolean matchesVariableArgs(FunctionSignature actual) {
-            Class<?>[] parameterTypes = method.getParameterTypes();
-            if (parameterTypes.length == 0 || !parameterTypes[parameterTypes.length - 1].isArray()) {
-                return false;
-            }
-
-            List<Type> registeredArgTypes = signature.getArgTypes();
-            int fixedArgCount = parameterTypes.length - 1;
-            if (registeredArgTypes.size() != fixedArgCount + 1 ||
-                    actual.getArgTypes().size() < registeredArgTypes.size() ||
-                    !signature.getName().equals(actual.getName()) ||
-                    !signature.getReturnType().matchesType(actual.getReturnType())) {
-                return false;
-            }
-
-            for (int i = 0; i < fixedArgCount; i++) {
-                if (!registeredArgTypes.get(i).matchesType(actual.getArgTypes().get(i))) {
-                    return false;
-                }
-            }
-
-            Type variableArgType = registeredArgTypes.get(fixedArgCount);
-            for (int i = fixedArgCount; i < actual.getArgTypes().size(); i++) {
-                if (!variableArgType.matchesType(actual.getArgTypes().get(i))) {
-                    return false;
-                }
-            }
-            return true;
         }
 
         // Function doesn't support array type
@@ -502,3 +456,4 @@ public enum ScalarOperatorEvaluator {
         }
     }
 }
+

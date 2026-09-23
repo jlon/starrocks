@@ -44,7 +44,6 @@
 namespace starrocks {
 
 class ExecEnv;
-class PublishVersionManager;
 class Status;
 class TAgentTaskRequest;
 class TAgentResult;
@@ -59,7 +58,7 @@ public:
 
     ~AgentServer();
 
-    Status start();
+    Status init();
 
     void stop();
 
@@ -78,8 +77,6 @@ public:
     //
     // Returns nullptr if `type` is not a valid value of `TTaskType::type`.
     ThreadPool* get_thread_pool(int type) const;
-
-    PublishVersionManager* publish_version_manager() const;
 
     // Dedicated pool for per-file copy in lake-to-lake replication. Returned pool is distinct
     // from `get_thread_pool(TTaskType::REPLICATE_SNAPSHOT)` so that the outer agent task can

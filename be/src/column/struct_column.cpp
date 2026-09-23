@@ -15,7 +15,8 @@
 #include "column/struct_column.h"
 
 #include "column/column_helper.h"
-#include "column/mysql_row_buffer.h"
+#include "column/column_view/column_view.h"
+#include "util/mysql_row_buffer.h"
 
 namespace starrocks {
 
@@ -56,6 +57,17 @@ bool StructColumn::is_struct() const {
     return true;
 }
 
+const uint8_t* StructColumn::raw_data() const {
+    // TODO(SmithCruise)
+    DCHECK(false) << "Don't support struct column raw_data";
+    return nullptr;
+}
+
+uint8_t* StructColumn::mutable_raw_data() {
+    // TODO(SmithCruise)
+    DCHECK(false) << "Don't support struct column raw_data";
+    return nullptr;
+}
 size_t StructColumn::size() const {
     return _fields[0]->size();
 }
@@ -144,8 +156,8 @@ bool StructColumn::has_large_column() const {
 void StructColumn::assign(size_t n, size_t idx) {
     DCHECK_LE(idx, size()) << "Range error when assign StructColumn";
     auto desc = this->clone_empty();
-    // Avoid Datum-based round-trip for nested object fields (e.g. shredded VARIANT).
-    desc->append_value_multiple_times(*this, idx, n);
+    auto datum = get(idx);
+    desc->append_value_multiple_times(&datum, n);
     swap_column(*desc);
     desc->reset_column();
 }
@@ -190,7 +202,7 @@ void StructColumn::update_rows(const Column& src, const uint32_t* indexes) {
 
 void StructColumn::append_selective(const Column& src, const uint32_t* indexes, uint32_t from, uint32_t size) {
     if (src.is_struct_view()) {
-        src.append_selective_to(*this, indexes, from, size);
+        down_cast<const ColumnView*>(&src)->append_to(*this, indexes, from, size);
         return;
     }
     DCHECK(src.is_struct());
@@ -478,13 +490,6 @@ void StructColumn::check_or_die() const {
 
     // fields and field_names must have the same size.
     DCHECK(_fields.size() == _field_names.size());
-
-    // every field must hold the same number of rows: size() reports _fields[0]->size(), so a field
-    // that was never materialized is invisible to every size-based check and only surfaces as an
-    // out-of-bounds read once something appends this column.
-    for (const auto& column : _fields) {
-        DCHECK_EQ(_fields[0]->size(), column->size());
-    }
 
     for (const auto& column : _fields) {
         column->check_or_die();

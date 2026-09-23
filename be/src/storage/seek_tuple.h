@@ -16,10 +16,9 @@
 
 #include <vector>
 
+#include "column/datum.h"
 #include "column/schema.h"
-#include "storage/base/short_key_index.h"
-#include "storage_primitive/key_coder.h"
-#include "types/datum.h"
+#include "storage/short_key_index.h"
 
 namespace starrocks {
 
@@ -75,11 +74,7 @@ inline std::string SeekTuple::short_key_encode(size_t num_short_keys, uint8_t pa
             output.push_back(KEY_NULL_FIRST_MARKER);
         } else {
             output.push_back(KEY_NORMAL_MARKER);
-            const auto& field = *_schema.field(cid);
-            if (field.short_key_length() > 0) {
-                const KeyCoder* coder = get_key_coder(field.type()->type());
-                coder->encode_ascending(_values[cid], field.short_key_length(), &output);
-            }
+            _schema.field(cid)->encode_ascending(_values[cid], &output);
         }
     }
     if (_values.size() < num_short_keys) {
@@ -100,11 +95,7 @@ inline std::string SeekTuple::short_key_encode(size_t num_short_keys, std::vecto
             output.push_back(KEY_NULL_FIRST_MARKER);
         } else {
             output.push_back(KEY_NORMAL_MARKER);
-            const auto& field = *_schema.field(sort_key_idxes[i]);
-            if (field.short_key_length() > 0) {
-                const KeyCoder* coder = get_key_coder(field.type()->type());
-                coder->encode_ascending(_values[sort_key_idxes[i]], field.short_key_length(), &output);
-            }
+            _schema.field(sort_key_idxes[i])->encode_ascending(_values[sort_key_idxes[i]], &output);
         }
     }
     if (_values.size() < num_short_keys) {

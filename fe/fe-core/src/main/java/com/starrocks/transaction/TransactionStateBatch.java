@@ -25,7 +25,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -53,22 +52,14 @@ public class TransactionStateBatch implements Writable {
         this.transactionStates = transactionStates;
     }
 
-    public TransactionStateBatch(TransactionStateBatch stateBatch) {
-        this.transactionStates = stateBatch.transactionStates.stream()
-                .map(TransactionState::new)
-                .collect(Collectors.toList());
-        this.partitionToTablets = stateBatch.partitionToTablets;
-    }
-
     // No concurrency issues.
     // Because in the case of concurrent calls,
     // the partitionId will not be the same,
     // and transactionStates is read-only which will not be changed
     public void setCompactionScore(long tableId, long partitionId, Quantiles quantiles) {
-        // commitInfo can be null in a multi-table batch when a txn does not write this table
         this.transactionStates.stream()
                 .map(transactionState -> transactionState.getTableCommitInfo(tableId))
-                .filter(commitInfo -> commitInfo != null && commitInfo.getPartitionCommitInfo(partitionId) != null)
+                .filter(commitInfo -> commitInfo.getPartitionCommitInfo(partitionId) != null)
                 .forEach(commitInfo -> commitInfo.getPartitionCommitInfo(partitionId).setCompactionScore(quantiles));
     }
 
@@ -82,7 +73,7 @@ public class TransactionStateBatch implements Writable {
                 .map(transactionState -> transactionState.getTableCommitInfo(tableId))
                 .filter(commitInfo -> commitInfo != null && commitInfo.getPartitionCommitInfo(partitionId) != null)
                 .forEach(commitInfo ->
-                        commitInfo.getPartitionCommitInfo(partitionId).putAllTabletStats(tabletStats));
+                        commitInfo.getPartitionCommitInfo(partitionId).getTabletStats().putAll(tabletStats));
     }
 
     public void putBeTablets(long partitionId, Map<ComputeNode, List<Long>> nodeToTablets)  {
@@ -104,6 +95,7 @@ public class TransactionStateBatch implements Writable {
             transactionState.clearErrorMsg();
             transactionState.setNewFinish();
             transactionState.setTransactionStatus(TransactionStatus.VISIBLE);
+            transactionState.notifyVisible();
         }
     }
 
@@ -121,9 +113,9 @@ public class TransactionStateBatch implements Writable {
                 TxnStateChangeCallback callback = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr()
                         .getCallbackFactory().getCallback(callbackId);
                 if (callback != null) {
-                    if (txnOperated && Objects.requireNonNull(transactionStatus) == TransactionStatus.VISIBLE) {
+                    if (Objects.requireNonNull(transactionStatus) == TransactionStatus.VISIBLE) {
                         try {
-                            callback.afterVisible(transactionState);
+                            callback.afterVisible(transactionState, txnOperated);
                         } catch (Throwable t) {
                             LOG.warn("afterVisible callback failed for txn {}, callbackId {}",
                                     transactionState.getTransactionId(), callbackId, t);
@@ -146,15 +138,14 @@ public class TransactionStateBatch implements Writable {
         return transactionStates.stream().map(TransactionState::getTransactionId).collect(Collectors.toList());
     }
 
-    // Union of table ids across all transactions in the batch, in first-appearance order.
-    // For a single-table batch this is a singleton list; for a multi-table batch
-    // (lake_enable_batch_publish_multi_table) table sets may differ across transactions.
-    public List<Long> getTableIdList() {
-        Set<Long> tableIds = new LinkedHashSet<>();
-        for (TransactionState state : transactionStates) {
-            tableIds.addAll(state.getTableIdList());
+    // all transactionState in batch have the same table and return the tableId
+    public long getTableId() {
+        if (!transactionStates.isEmpty()) {
+            List<Long> tableIdList = transactionStates.get(0).getTableIdList();
+            assert tableIdList.size() == 1;
+            return tableIdList.get(0);
         }
-        return new ArrayList<>(tableIds);
+        return -1;
     }
 
     public long size() {

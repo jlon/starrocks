@@ -16,10 +16,8 @@ This operation requires the SYSTEM-level PLUGIN privilege. You can follow the in
 ## Syntax
 
 ```sql
-INSTALL PLUGIN [IF NOT EXISTS] FROM [source] [PROPERTIES ("key"="value", ...)]
+INSTALL PLUGIN FROM [source] [PROPERTIES ("key"="value", ...)]
 ```
-
-**IF NOT EXISTS**: If specified, the statement succeeds silently when the plugin is already installed instead of returning an error.
 
 3 types of sources are supported:
 
@@ -55,10 +53,4 @@ PROPERTIES supports setting some configurations of plugins, such as setting the 
 
     ```sql
     INSTALL PLUGIN FROM "http://mywebsite.com/plugin.zip" PROPERTIES("md5sum" = "73877f6029216f4314d712086a146570");
-    ```
-
-5. Install a plugin if it is not already installed:
-
-    ```sql
-    INSTALL PLUGIN IF NOT EXISTS FROM "/home/users/starrocks/auditdemo.zip";
     ```

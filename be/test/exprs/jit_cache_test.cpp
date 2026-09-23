@@ -20,7 +20,6 @@
 #include "column/fixed_length_column.h"
 #include "exprs/arithmetic_expr.h"
 #include "exprs/exprs_test_helper.h"
-#include "exprs/jit/expr_jit_codegen.h"
 #include "exprs/mock_vectorized_expr.h"
 #include "runtime/runtime_state.h"
 
@@ -38,12 +37,6 @@ public:
         expr_node.type = gen_type_desc(TPrimitiveType::INT);
         engine = JITEngine::get_instance();
         engine->init();
-        // Other suites in this binary may have compiled the same expressions already;
-        // the test asserts on cache misses, so start from an empty callable cache.
-        auto* cache = engine->get_callable_cache();
-        auto capacity = cache->get_capacity();
-        cache->set_capacity(0);
-        cache->set_capacity(capacity);
     }
 
 public:
@@ -69,7 +62,7 @@ TEST_F(JITCacheTest, cache) {
             expr->_children.push_back(&col1);
             expr->_children.push_back(&col2);
 
-            auto expr_name = ExprJITCodegen::func_name(expr.get(), &runtime_state);
+            auto expr_name = expr->jit_func_name(&runtime_state);
             auto callable = engine->lookup(expr_name);
             ASSERT_TRUE(callable == nullptr);
 
@@ -115,7 +108,7 @@ TEST_F(JITCacheTest, cache) {
             expr->_children.push_back(&col1);
             expr->_children.push_back(&col2);
 
-            auto expr_name = ExprJITCodegen::func_name(expr.get(), &runtime_state);
+            auto expr_name = expr->jit_func_name(&runtime_state);
             auto callable = engine->lookup(expr_name);
             ASSERT_TRUE(callable == nullptr);
 
@@ -160,7 +153,7 @@ TEST_F(JITCacheTest, cache) {
             expr->_children.push_back(&col1);
             expr->_children.push_back(&col2);
 
-            auto expr_name = ExprJITCodegen::func_name(expr.get(), &runtime_state);
+            auto expr_name = expr->jit_func_name(&runtime_state);
             auto callable = engine->lookup(expr_name);
             ASSERT_TRUE(callable == nullptr);
 

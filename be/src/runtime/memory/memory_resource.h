@@ -15,10 +15,9 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <memory_resource>
 
-#include "base/string/posion.h"
+#include "util/posion.h"
 
 namespace starrocks {
 // memory resource provide for PMR

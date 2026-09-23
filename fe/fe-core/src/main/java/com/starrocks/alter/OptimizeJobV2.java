@@ -87,8 +87,7 @@ public class OptimizeJobV2 extends AlterJobV2 implements GsonPostProcessable {
     private Map<String, String> properties = Maps.newHashMap();
 
     @SerializedName(value = "rewriteTasks")
-    // Package-private so same-package tests can verify the leader-handoff reset without reflection.
-    List<OptimizeTask> rewriteTasks = Lists.newArrayList();
+    private List<OptimizeTask> rewriteTasks = Lists.newArrayList();
     private int progress = 0;
 
     @SerializedName(value = "sourcePartitionNames")
@@ -122,47 +121,6 @@ public class OptimizeJobV2 extends AlterJobV2 implements GsonPostProcessable {
         super(jobId, JobType.OPTIMIZE, dbId, tableId, tableName, timeoutMs);
 
         this.postfix = "_" + jobId;
-    }
-
-    protected OptimizeJobV2(OptimizeJobV2 job) {
-        super(job);
-        this.watershedTxnId = job.watershedTxnId;
-        this.tmpPartitionIds = job.tmpPartitionIds == null ? null : Lists.newArrayList(job.tmpPartitionIds);
-        this.rewriteTasks = job.rewriteTasks == null ? null : Lists.newArrayList(job.rewriteTasks);
-        this.sourcePartitionNames = job.sourcePartitionNames == null ? null : Lists.newArrayList(job.sourcePartitionNames);
-        this.tmpPartitionNames = job.tmpPartitionNames == null ? null : Lists.newArrayList(job.tmpPartitionNames);
-        this.allPartitionOptimized = job.allPartitionOptimized;
-        this.distributionInfo = job.distributionInfo;
-        this.optimizeOperation = job.optimizeOperation;
-    }
-
-    @Override
-    protected void resetTransientState() {
-        // WAITING_TXN -> RUNNING is deliberately not journaled; map it back so the re-elected
-        // leader re-enters runWaitingTxnJob (rebuild + re-register the rewrite tasks).
-        if (jobState == JobState.RUNNING) {
-            jobState = JobState.WAITING_TXN;
-        }
-        // Restore serialized-but-diverged fields to their durable WAITING_TXN snapshot: the
-        // journal copy was written before any rewrite task or finish bookkeeping existed, and
-        // runWaitingTxnJob APPENDS to rewriteTasks (a stale list would double the tasks).
-        rewriteTasks.clear();
-        sourcePartitionNames.clear();
-        tmpPartitionNames.clear();
-        allPartitionOptimized = false;
-        distributionInfo = null;
-        progress = 0;
-        if (jobState == JobState.PENDING) {
-            // Undo a partially executed runPendingJob: a fenced attempt may have appended tmp
-            // partition ids that the durable PENDING image does not have; re-running with the
-            // stale list would pair 2N tmp partitions against N sources.
-            tmpPartitionIds.clear();
-            watershedTxnId = -1;
-        }
-        // optimizeClause is deliberately KEPT: a real reload nulls it and self-cancels the
-        // job; keeping it is safe (every derived value is recomputed on re-run) and strictly
-        // better. A mid-RUNNING handoff still ends in a clean cancel via the TaskManager task
-        // name collision - identical to genuine-restart behavior.
     }
 
     public List<Long> getTmpPartitionIds() {
@@ -238,14 +196,14 @@ public class OptimizeJobV2 extends AlterJobV2 implements GsonPostProcessable {
         // wait previous transactions finished
         this.watershedTxnId =
                 GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getTransactionIDGenerator().getNextTransactionId();
+        this.jobState = JobState.WAITING_TXN;
         this.optimizeOperation = optimizeClause.toString();
         span.setAttribute("createPartitionElapse", createPartitionElapse);
         span.setAttribute("watershedTxnId", this.watershedTxnId);
         span.addEvent("setWaitingTxn");
 
         // write edit log
-        // createAndAddTempPartitionsForTable will write edit log for creating temp partitions, so do not need to apply here.
-        persistStateChange(this, JobState.WAITING_TXN);
+        GlobalStateMgr.getCurrentState().getEditLog().logAlterJob(this);
         LOG.info("transfer optimize job {} state to {}, watershed txn_id: {}", jobId, this.jobState, watershedTxnId);
     }
 
@@ -316,8 +274,7 @@ public class OptimizeJobV2 extends AlterJobV2 implements GsonPostProcessable {
             String tmpPartitionName = tmpPartitionNames.get(i);
             String partitionName = partitionNames.get(i);
             String rewriteSql = "insert into " + ParseUtil.backquote(tableName) + " TEMPORARY PARTITION ("
-                    + ParseUtil.backquote(tmpPartitionName) + ") (" + Joiner.on(", ").join(tableColumnNames)
-                    + ") select " + Joiner.on(", ").join(tableColumnNames)
+                    + ParseUtil.backquote(tmpPartitionName) + ") select " + Joiner.on(", ").join(tableColumnNames)
                     + " from " + ParseUtil.backquote(tableName) + " partition (" + ParseUtil.backquote(partitionName) + ")";
             String taskName = getName() + "_" + tmpPartitionName;
             OptimizeTask rewriteTask = TaskBuilder.buildOptimizeTask(taskName, properties, rewriteSql, dbName, warehouseId);
@@ -478,10 +435,10 @@ public class OptimizeJobV2 extends AlterJobV2 implements GsonPostProcessable {
         }
 
         this.progress = 100;
+        this.jobState = JobState.FINISHED;
         this.finishedTimeMs = System.currentTimeMillis();
 
-        // Replace tmp partitions log with be written in onFinished(), so do not need to apply here.
-        persistStateChange(this, JobState.FINISHED);
+        GlobalStateMgr.getCurrentState().getEditLog().logAlterJob(this);
         LOG.info("optimize job finished: {}", jobId);
         this.span.end();
     }
@@ -599,23 +556,17 @@ public class OptimizeJobV2 extends AlterJobV2 implements GsonPostProcessable {
 
             PartitionInfo partitionInfo = targetTable.getPartitionInfo();
             if (partitionInfo.isRangePartition() || partitionInfo.getType() == PartitionType.LIST) {
-                targetTable.checkReplaceTempPartitions(sourcePartitionNames, tmpPartitionNames, true);
+                targetTable.replaceTempPartitions(db.getId(), sourcePartitionNames, tmpPartitionNames, true, false);
             } else if (partitionInfo instanceof SinglePartitionInfo) {
                 Preconditions.checkState(sourcePartitionNames.size() == 1 && tmpPartitionNames.size() == 1);
+                targetTable.replacePartition(db.getId(), sourcePartitionNames.get(0), tmpPartitionNames.get(0));
             } else {
                 throw new AlterCancelException("partition type " + partitionInfo.getType() + " is not supported");
             }
             // write log
             ReplacePartitionOperationLog info = new ReplacePartitionOperationLog(db.getId(), targetTable.getId(),
                     sourcePartitionNames, tmpPartitionNames, true, false, partitionInfo instanceof SinglePartitionInfo);
-            GlobalStateMgr.getCurrentState().getEditLog().logReplaceTempPartition(info, wal -> {
-                if (partitionInfo.isRangePartition() || partitionInfo.getType() == PartitionType.LIST) {
-                    targetTable.replaceTempPartitionsWithoutCheck(
-                            db.getId(), sourcePartitionNames, tmpPartitionNames, false);
-                } else {
-                    targetTable.replacePartition(db.getId(), sourcePartitionNames.get(0), tmpPartitionNames.get(0));
-                }
-            });
+            GlobalStateMgr.getCurrentState().getEditLog().logReplaceTempPartition(info);
             // mark all source tablet ids force delete to drop it directly on BE,
             // not to move it to trash
             sourceTablets.forEach(GlobalStateMgr.getCurrentState().getTabletInvertedIndex()::markTabletForceDelete);
@@ -654,20 +605,16 @@ public class OptimizeJobV2 extends AlterJobV2 implements GsonPostProcessable {
         if (jobState.isFinalState()) {
             return false;
         }
+        cancelInternal();
 
+        jobState = JobState.CANCELLED;
         this.errMsg = errMsg;
         this.finishedTimeMs = System.currentTimeMillis();
-        persistStateChange(this, JobState.CANCELLED, this::cancelInternal);
-
         LOG.info("cancel {} job {}, err: {}", this.type, jobId, errMsg);
+        GlobalStateMgr.getCurrentState().getEditLog().logAlterJob(this);
         span.setStatus(StatusCode.ERROR, errMsg);
         span.end();
         return true;
-    }
-
-    @Override
-    public AlterJobV2 copyForPersist() {
-        return new OptimizeJobV2(this);
     }
 
     private void cancelInternal() {

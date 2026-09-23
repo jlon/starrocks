@@ -19,15 +19,15 @@
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
 
-#include "common/config_http_fwd.h"
-#include "common/config_rpc_client_fwd.h"
+#include "agent/master_info.h"
+#include "common/config.h"
 #include "common/logging.h"
-#include "common/system/master_info.h"
 #include "gen_cpp/FrontendService.h"
 #include "gen_cpp/FrontendService_types.h"
-#include "platform/http/http_auth.h"
-#include "platform/http/http_request.h"
-#include "platform/thrift_rpc_helper.h"
+#include "http/http_request.h"
+#include "http/utils.h"
+#include "runtime/client_cache.h"
+#include "util/thrift_rpc_helper.h"
 
 namespace starrocks {
 

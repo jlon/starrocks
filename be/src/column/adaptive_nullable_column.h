@@ -16,9 +16,10 @@
 
 #include <fmt/format.h>
 
-#include "base/simd/simd.h"
 #include "column/column.h"
 #include "column/nullable_column.h"
+#include "simd/simd.h"
+
 namespace starrocks {
 
 // NullableColumn has two columns: data column and null column. Based on the data, we classify null column into four types:
@@ -83,9 +84,15 @@ public:
 
     State state() { return _state; }
 
-    DISALLOW_COPY(AdaptiveNullableColumn);
+    AdaptiveNullableColumn(const AdaptiveNullableColumn& rhs) { CHECK(false) << "unimplemented"; }
 
     AdaptiveNullableColumn(AdaptiveNullableColumn&& rhs) noexcept { CHECK(false) << "unimplemented"; }
+
+    AdaptiveNullableColumn& operator=(const AdaptiveNullableColumn& rhs) {
+        AdaptiveNullableColumn tmp(rhs);
+        this->swap_column(tmp);
+        return *this;
+    }
 
     AdaptiveNullableColumn& operator=(AdaptiveNullableColumn&& rhs) noexcept {
         AdaptiveNullableColumn tmp(std::move(rhs));
@@ -159,6 +166,17 @@ public:
             __builtin_unreachable();
         }
         }
+        return true;
+    }
+
+    const uint8_t* raw_data() const override {
+        materialized_nullable();
+        return _data_column->raw_data();
+    }
+
+    uint8_t* mutable_raw_data() override {
+        materialized_nullable();
+        return reinterpret_cast<uint8_t*>(_data_column->mutable_raw_data());
     }
 
     size_t size() const override {
@@ -345,11 +363,6 @@ public:
         return NullableColumn::create(_data_column->clone_empty(), _null_column->clone_empty());
     }
 
-    MutableColumnPtr clone() const override {
-        materialized_nullable();
-        return create(_data_column->clone(), _null_column->clone());
-    }
-
     size_t serialize_batch_at_interval(uint8_t* dst, size_t byte_offset, size_t byte_interval, uint32_t max_row_size,
                                        size_t start, size_t count) const override;
 
@@ -401,11 +414,6 @@ public:
     }
 
     ColumnPtr& materialized_raw_data_column() {
-        materialized_nullable();
-        return _data_column;
-    }
-
-    const ColumnPtr& materialized_raw_data_column() const {
         materialized_nullable();
         return _data_column;
     }

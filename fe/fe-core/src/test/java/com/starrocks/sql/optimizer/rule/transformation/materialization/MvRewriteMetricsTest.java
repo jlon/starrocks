@@ -179,6 +179,7 @@ public class MvRewriteMetricsTest extends MVTestBase {
             IMaterializedViewMetricsEntity iEntity =
                     MaterializedViewMetricsRegistry.getInstance().getMetricsEntity(mv.getMvId());
             Assertions.assertTrue(iEntity instanceof MaterializedViewMetricsBlackHoleEntity);
+            MaterializedViewMetricsBlackHoleEntity mvMetric = (MaterializedViewMetricsBlackHoleEntity) iEntity;
         });
         Config.enable_materialized_view_metrics_collect = true;
     }

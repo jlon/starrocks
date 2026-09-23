@@ -95,13 +95,13 @@ import com.starrocks.sql.ast.CreateDictionaryStmt;
 import com.starrocks.sql.ast.CreateFileStmt;
 import com.starrocks.sql.ast.CreateFunctionStmt;
 import com.starrocks.sql.ast.CreateMaterializedViewStatement;
+import com.starrocks.sql.ast.CreateMaterializedViewStmt;
 import com.starrocks.sql.ast.CreateRepositoryStmt;
 import com.starrocks.sql.ast.CreateResourceGroupStmt;
 import com.starrocks.sql.ast.CreateResourceStmt;
 import com.starrocks.sql.ast.CreateRoleStmt;
 import com.starrocks.sql.ast.CreateRoutineLoadStmt;
 import com.starrocks.sql.ast.CreateStorageVolumeStmt;
-import com.starrocks.sql.ast.CreateSyncMVStmt;
 import com.starrocks.sql.ast.CreateTableLikeStmt;
 import com.starrocks.sql.ast.CreateTableStmt;
 import com.starrocks.sql.ast.CreateTemporaryTableLikeStmt;
@@ -121,7 +121,6 @@ import com.starrocks.sql.ast.DropRepositoryStmt;
 import com.starrocks.sql.ast.DropResourceGroupStmt;
 import com.starrocks.sql.ast.DropResourceStmt;
 import com.starrocks.sql.ast.DropRoleStmt;
-import com.starrocks.sql.ast.DropSnapshotStmt;
 import com.starrocks.sql.ast.DropStorageVolumeStmt;
 import com.starrocks.sql.ast.DropTableStmt;
 import com.starrocks.sql.ast.DropTaskStmt;
@@ -388,7 +387,7 @@ public class DDLStmtExecutor {
         }
 
         @Override
-        public ShowResultSet visitCreateSyncMVStmt(CreateSyncMVStmt stmt, ConnectContext context) {
+        public ShowResultSet visitCreateMaterializedViewStmt(CreateMaterializedViewStmt stmt, ConnectContext context) {
             ErrorReport.wrapWithRuntimeException(() -> {
                 context.getGlobalStateMgr().getLocalMetastore().createMaterializedView(stmt);
             });
@@ -812,14 +811,6 @@ public class DDLStmtExecutor {
         public ShowResultSet visitDropRepositoryStatement(DropRepositoryStmt stmt, ConnectContext context) {
             ErrorReport.wrapWithRuntimeException(() -> {
                 context.getGlobalStateMgr().getBackupHandler().dropRepository(stmt);
-            });
-            return null;
-        }
-
-        @Override
-        public ShowResultSet visitDropSnapshotStatement(DropSnapshotStmt stmt, ConnectContext context) {
-            ErrorReport.wrapWithRuntimeException(() -> {
-                context.getGlobalStateMgr().getBackupHandler().dropSnapshot(stmt);
             });
             return null;
         }
@@ -1252,70 +1243,6 @@ public class DDLStmtExecutor {
                                                                    ConnectContext context) {
             ErrorReport.wrapWithRuntimeException(() ->
                     context.getGlobalStateMgr().getStorageVolumeMgr().setDefaultStorageVolume(stmt)
-            );
-            return null;
-        }
-
-        //=========================================== AI Provider ====================================================
-        @Override
-        public ShowResultSet visitCreateAIProviderStatement(
-                com.starrocks.sql.ast.aiprovider.CreateAIProviderStmt stmt, ConnectContext context) {
-            ErrorReport.wrapWithRuntimeException(() -> {
-                try {
-                    context.getGlobalStateMgr().getAIProviderMgr().createProvider(
-                            stmt.getName(),
-                            com.starrocks.context.ai.AIProviderType.fromString(stmt.getType()),
-                            stmt.getProperties(), stmt.getComment());
-                } catch (AlreadyExistsException e) {
-                    if (stmt.isIfNotExists()) {
-                        LOG.info("create ai provider[{}] which already exists", stmt.getName());
-                    } else {
-                        throw e;
-                    }
-                }
-            });
-            return null;
-        }
-
-        @Override
-        public ShowResultSet visitAlterAIProviderStatement(
-                com.starrocks.sql.ast.aiprovider.AlterAIProviderStmt stmt, ConnectContext context) {
-            ErrorReport.wrapWithRuntimeException(() -> {
-                try {
-                    context.getGlobalStateMgr().getAIProviderMgr().alterProvider(
-                            stmt.getName(), stmt.getProperties(), stmt.isIfExists());
-                } catch (MetaNotFoundException e) {
-                    if (!stmt.isIfExists()) {
-                        throw e;
-                    }
-                }
-            });
-            return null;
-        }
-
-        @Override
-        public ShowResultSet visitDropAIProviderStatement(
-                com.starrocks.sql.ast.aiprovider.DropAIProviderStmt stmt, ConnectContext context) {
-            ErrorReport.wrapWithRuntimeException(() -> {
-                try {
-                    context.getGlobalStateMgr().getAIProviderMgr().dropProvider(
-                            stmt.getName(), stmt.isIfExists());
-                } catch (MetaNotFoundException e) {
-                    if (stmt.isIfExists()) {
-                        LOG.info("drop ai provider[{}] which does not exist", stmt.getName());
-                    } else {
-                        throw e;
-                    }
-                }
-            });
-            return null;
-        }
-
-        @Override
-        public ShowResultSet visitSetDefaultAIProviderStatement(
-                com.starrocks.sql.ast.aiprovider.SetDefaultAIProviderStmt stmt, ConnectContext context) {
-            ErrorReport.wrapWithRuntimeException(() ->
-                    context.getGlobalStateMgr().getAIProviderMgr().setDefaultProvider(stmt.getName())
             );
             return null;
         }

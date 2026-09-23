@@ -19,6 +19,7 @@ import com.starrocks.authorization.AuthorizationMgr;
 import com.starrocks.authorization.DefaultAuthorizationProvider;
 import com.starrocks.authorization.PrivilegeType;
 import com.starrocks.catalog.UserIdentity;
+import com.starrocks.persist.EditLog;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.ExecuteAsExecutor;
 import com.starrocks.server.GlobalStateMgr;
@@ -37,10 +38,8 @@ import com.starrocks.sql.ast.integration.ShowSecurityIntegrationStatement;
 import com.starrocks.sql.parser.NodePosition;
 import com.starrocks.sql.parser.SqlParser;
 import com.starrocks.utframe.UtFrameUtils;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -49,6 +48,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyShort;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.spy;
 
 /**
  * Unit tests for Security Integration permission control
@@ -69,19 +72,6 @@ import java.util.Set;
  * - Quoted identifiers and complex properties
  */
 public class SecurityIntegrationPermissionTest {
-
-    @BeforeAll
-    public static void setUpPersistJournal() throws Exception {
-        // Real EditLog on an auto-committing pseudo journal (shields BDB): journal writes complete so the
-        // WALApplier.apply() inside logJsonObject() still runs and the DDL takes effect in memory.
-        UtFrameUtils.setUpForPersistTest();
-    }
-
-    @AfterAll
-    public static void tearDownPersistJournal() {
-        UtFrameUtils.tearDownForPersisTest();
-    }
-
     private ConnectContext rootCtx;
     private ConnectContext userCtx;
     private ConnectContext securityUserCtx;
@@ -90,6 +80,10 @@ public class SecurityIntegrationPermissionTest {
 
     @BeforeEach
     public void setUp() throws Exception {
+        // Mock EditLog
+        EditLog editLog = spy(new EditLog(null));
+        doNothing().when(editLog).logEdit(anyShort(), any());
+        GlobalStateMgr.getCurrentState().setEditLog(editLog);
 
         authenticationMgr = new AuthenticationMgr();
         GlobalStateMgr.getCurrentState().setAuthenticationMgr(authenticationMgr);

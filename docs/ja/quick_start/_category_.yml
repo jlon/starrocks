@@ -1,7 +1,0 @@
-position: 30
-label: 'Quick Start'
-collapsible: true
-collapsed: true
-link:
-  id: quick_start
-  type: doc

@@ -23,6 +23,9 @@ import com.starrocks.common.tvr.TvrVersionRange;
 import com.starrocks.scheduler.mv.BaseTableSnapshotInfo;
 import com.starrocks.scheduler.mv.pct.PCTPartitionTopology;
 import com.starrocks.scheduler.mv.pct.PCTRefreshScope;
+import com.starrocks.sql.common.PCellSetMapping;
+import com.starrocks.sql.common.PCellSortedSet;
+import com.starrocks.sql.common.PartitionNameSetMap;
 import com.starrocks.sql.plan.ExecPlan;
 
 import java.util.Map;
@@ -55,8 +58,23 @@ public class MvTaskRunContext extends TaskRunContext {
         }
     }
 
+    // all the RefBaseTable's partition name to its intersected materialized view names.
+    //baseTable -> basePartition -> mvPartitions
+    private Map<Table, PCellSetMapping> refBaseTableMVIntersectedPartitions;
+    // all the materialized view's partition name to its intersected RefBaseTable's partition names.
+    //mvPartition -> baseTable -> basePartitions
+    private Map<String, Map<Table, PCellSortedSet>> mvRefBaseTableIntersectedPartitions;
+    // all the RefBaseTable's partition name to its partition range/list cell.
+    private Map<Table, PCellSortedSet> refBaseTableToCellMap;
+    // mv to its partition range/list cell.
+    private PCellSortedSet mvToCellMap;
     private PCTPartitionTopology partitionTopology;
     private PCTRefreshScope refreshScope;
+
+    // the external ref base table's mv partition name to original partition names map because external
+    // table supports multi partition columns, one converted partition name(mv partition name) may have
+    // multi original partition names.
+    private Map<Table, PartitionNameSetMap> externalRefBaseTableMVPartitionMap;
 
     private String nextPartitionStart = null;
     private String nextPartitionEnd = null;
@@ -67,16 +85,32 @@ public class MvTaskRunContext extends TaskRunContext {
     private int partitionTTLNumber = TableProperty.INVALID;
     private final MVRefreshRuntimeState refreshRuntimeState = new MVRefreshRuntimeState();
 
-    // Set when auto_refresh_partitions_limit excluded older changed partitions from a complete refresh
-    // this batch: the batch then does not cover the whole MV and must not confirm whole-MV freshness.
-    private boolean partitionLimitExcludedPartitions = false;
-
     public MvTaskRunContext(TaskRunContext context) {
         super(context);
     }
 
     public MVRefreshRuntimeState getRefreshRuntimeState() {
         return refreshRuntimeState;
+    }
+
+    public Map<Table, PCellSetMapping> getRefBaseTableMVIntersectedPartitions() {
+        return refBaseTableMVIntersectedPartitions;
+    }
+
+    public void setRefBaseTableMVIntersectedPartitions(
+            Map<Table, PCellSetMapping> refBaseTableMVIntersectedPartitions) {
+        this.refBaseTableMVIntersectedPartitions = refBaseTableMVIntersectedPartitions;
+        rebuildPartitionTopology();
+    }
+
+    public Map<String, Map<Table, PCellSortedSet>> getMvRefBaseTableIntersectedPartitions() {
+        return mvRefBaseTableIntersectedPartitions;
+    }
+
+    public void setMvRefBaseTableIntersectedPartitions(
+            Map<String, Map<Table, PCellSortedSet>> mvRefBaseTableIntersectedPartitions) {
+        this.mvRefBaseTableIntersectedPartitions = mvRefBaseTableIntersectedPartitions;
+        rebuildPartitionTopology();
     }
 
     public PCTPartitionTopology getPartitionTopology() {
@@ -123,6 +157,41 @@ public class MvTaskRunContext extends TaskRunContext {
         this.nextPartitionValues = nextPartitionValues;
     }
 
+    public Map<Table, PCellSortedSet> getRefBaseTableToCellMap() {
+        return refBaseTableToCellMap;
+    }
+
+    public void setRefBaseTableToCellMap(Map<Table, PCellSortedSet> refBaseTableToCellMap) {
+        this.refBaseTableToCellMap = refBaseTableToCellMap;
+        rebuildPartitionTopology();
+    }
+
+    public Map<Table, PartitionNameSetMap> getExternalRefBaseTableMVPartitionMap() {
+        return externalRefBaseTableMVPartitionMap;
+    }
+
+    public void setExternalRefBaseTableMVPartitionMap(
+            Map<Table, PartitionNameSetMap> externalRefBaseTableMVPartitionMap) {
+        this.externalRefBaseTableMVPartitionMap = externalRefBaseTableMVPartitionMap;
+    }
+
+    public PCellSortedSet getMVToCellMap() {
+        return mvToCellMap;
+    }
+
+    public void setMVToCellMap(PCellSortedSet mvToCellMap) {
+        this.mvToCellMap = mvToCellMap;
+        rebuildPartitionTopology();
+    }
+
+    private void rebuildPartitionTopology() {
+        this.partitionTopology = new PCTPartitionTopology(
+                mvToCellMap == null ? PCellSortedSet.of() : mvToCellMap,
+                refBaseTableToCellMap == null ? Map.of() : refBaseTableToCellMap,
+                refBaseTableMVIntersectedPartitions == null ? Map.of() : refBaseTableMVIntersectedPartitions,
+                mvRefBaseTableIntersectedPartitions == null ? Map.of() : mvRefBaseTableIntersectedPartitions);
+    }
+
     public ExecPlan getExecPlan() {
         return this.execPlan;
     }
@@ -143,14 +212,6 @@ public class MvTaskRunContext extends TaskRunContext {
         this.partitionTTLNumber = partitionTTLNumber;
     }
 
-    public boolean isPartitionLimitExcludedPartitions() {
-        return partitionLimitExcludedPartitions;
-    }
-
-    public void setPartitionLimitExcludedPartitions(boolean partitionLimitExcludedPartitions) {
-        this.partitionLimitExcludedPartitions = partitionLimitExcludedPartitions;
-    }
-
     /**
      * For external table, the partition name is normalized which should convert it into original partition name.
      * <p>
@@ -163,9 +224,8 @@ public class MvTaskRunContext extends TaskRunContext {
      */
     public Set<String> getExternalTableRealPartitionName(Table table, String mvPartitionName) {
         if (!table.isNativeTableOrMaterializedView()) {
-            Preconditions.checkState(partitionTopology != null
-                    && partitionTopology.getRefBaseTableToCellMap().containsKey(table));
-            return partitionTopology.getRefBaseTableToCellMap().get(table).getSourceNames(mvPartitionName);
+            Preconditions.checkState(externalRefBaseTableMVPartitionMap.containsKey(table));
+            return externalRefBaseTableMVPartitionMap.get(table).get(mvPartitionName);
         } else {
             return Sets.newHashSet(mvPartitionName);
         }

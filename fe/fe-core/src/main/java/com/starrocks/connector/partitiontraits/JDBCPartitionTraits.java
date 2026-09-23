@@ -14,12 +14,17 @@
 package com.starrocks.connector.partitiontraits;
 
 import com.starrocks.catalog.BaseTableInfo;
+import com.starrocks.catalog.Column;
 import com.starrocks.catalog.JDBCPartitionKey;
 import com.starrocks.catalog.JDBCTable;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.PartitionKey;
+import com.starrocks.common.AnalysisException;
 import com.starrocks.connector.PartitionInfo;
+import com.starrocks.connector.PartitionUtil;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.common.PCellSortedSet;
 
 import java.util.List;
 import java.util.Map;
@@ -45,6 +50,13 @@ public class JDBCPartitionTraits extends DefaultTraits {
     }
 
     @Override
+    public PCellSortedSet getPartitionKeyRange(Column partitionColumn, Expr partitionExpr)
+            throws AnalysisException {
+        return PartitionUtil.getRangePartitionMapOfJDBCTable(
+                table, partitionColumn, getPartitionNames(), partitionExpr);
+    }
+
+    @Override
     public PartitionKey createEmptyKey() {
         return new JDBCPartitionKey();
     }
@@ -54,7 +66,7 @@ public class JDBCPartitionTraits extends DefaultTraits {
         Map<String, com.starrocks.connector.PartitionInfo> partitionNameWithPartition =
                 getPartitionNameWithPartitionInfo();
         return partitionNameWithPartition.values().stream()
-                .map(info -> info.getModifiedTimeUnit().toMillis(info.getModifiedTime()))
+                .map(com.starrocks.connector.PartitionInfo::getModifiedTime)
                 .max(Long::compareTo);
     }
 

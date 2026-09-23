@@ -258,6 +258,7 @@ public class StreamLoadMgrPersistTest {
         Assertions.assertEquals(label, createdTask.getLabel());
         Assertions.assertEquals(dbId, createdTask.getDBId());
         Assertions.assertTrue(createdTask instanceof StreamLoadMultiStmtTask);
+        StreamLoadMultiStmtTask multiStmtTask = (StreamLoadMultiStmtTask) createdTask;
         
         // 5. Test follower replay functionality
         StreamLoadMgr followerStreamLoadMgr = new StreamLoadMgr();

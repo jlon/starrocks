@@ -54,8 +54,6 @@ public:
 
     BitmapIndexWriter() = default;
     virtual ~BitmapIndexWriter() = default;
-    BitmapIndexWriter(const BitmapIndexWriter&) = delete;
-    const BitmapIndexWriter& operator=(const BitmapIndexWriter&) = delete;
 
     virtual void add_value_with_current_rowid(const void* vptr) = 0;
 
@@ -74,6 +72,10 @@ public:
 
 protected:
     CompressionTypePB _dictionary_compression = LZ4;
+
+private:
+    BitmapIndexWriter(const BitmapIndexWriter&) = delete;
+    const BitmapIndexWriter& operator=(const BitmapIndexWriter&) = delete;
 };
 
 } // namespace starrocks

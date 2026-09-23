@@ -21,7 +21,6 @@
 
 #include <gtest/gtest.h>
 
-#include "exec/exec_env.h"
 #include "http/action/checksum_action.h"
 #include "http/action/compact_rocksdb_meta_action.h"
 #include "http/action/compaction_action.h"
@@ -46,25 +45,15 @@
 #include "http/action/transaction_stream_load.h"
 #include "http/action/update_config_action.h"
 #include "http/download_action.h"
+#include "http/ev_http_server.h"
+#include "http/http_handler.h"
 #include "http/web_page_handler.h"
-#include "orchestration/stream_load_orchestrator.h"
-#include "platform/http/ev_http_server.h"
-#include "platform/http/http_handler.h"
-#include "runtime/runtime_env.h"
 
 #ifdef STARROCKS_JIT_ENABLE
 #include "http/action/jit_cache_action.h"
 #endif
 
 namespace starrocks {
-
-// Tests only call required_privilege() / need_auth() — const lookups that don't
-// touch the stored RuntimeEnv&. The process-wide singleton is the cheapest valid
-// reference that won't crash if a future override accidentally dereferences it.
-static const RuntimeEnv& fake_runtime_env() {
-    return *RuntimeEnv::GetInstance();
-}
-
 using Priv = HttpHandler::RequiredPrivilege;
 
 // --------- NODE (cluster_admin domain) ---------
@@ -78,7 +67,7 @@ TEST(BeHandlerPrivilegeTest, stop_be_requires_NODE) {
 // --------- OPERATE (DB / data / execution operate) ---------
 // Matches SQL `ADMIN SET BACKEND CONFIG` / `ADMIN COMPACT` policy.
 TEST(BeHandlerPrivilegeTest, update_config_requires_OPERATE) {
-    UpdateConfigAction h;
+    UpdateConfigAction h(nullptr);
     EXPECT_EQ(Priv::OPERATE, h.required_privilege());
 }
 
@@ -91,7 +80,7 @@ TEST(BeHandlerPrivilegeTest, compaction_requires_OPERATE_all_subtypes) {
 }
 
 TEST(BeHandlerPrivilegeTest, checksum_requires_OPERATE) {
-    ChecksumAction h(fake_runtime_env());
+    ChecksumAction h;
     EXPECT_EQ(Priv::OPERATE, h.required_privilege());
 }
 
@@ -187,12 +176,12 @@ TEST(BeHandlerPrivilegeTest, greplog_requires_OPERATE) {
 // framework Basic is skipped (`need_auth() == false`).
 // ERROR_LOG (user-facing load-failure log): framework Basic required.
 TEST(BeHandlerNeedAuthTest, download_action_normal_skips_framework_auth) {
-    DownloadAction normal(std::vector<std::string>{});
+    DownloadAction normal(nullptr, std::vector<std::string>{});
     EXPECT_FALSE(normal.need_auth());
 }
 
 TEST(BeHandlerNeedAuthTest, download_action_error_log_requires_framework_auth) {
-    DownloadAction error_log(std::string{});
+    DownloadAction error_log(nullptr, std::string{});
     EXPECT_TRUE(error_log.need_auth());
 }
 
@@ -204,14 +193,12 @@ TEST(BeHandlerNeedAuthTest, probe_and_prometheus_endpoints_are_authn_only) {
     EXPECT_EQ(Priv::NONE, HealthAction(nullptr).required_privilege());
     EXPECT_TRUE(MetricsAction(nullptr).need_auth());
     EXPECT_EQ(Priv::NONE, MetricsAction(nullptr).required_privilege());
-    EXPECT_TRUE(MemoryMetricsAction(fake_runtime_env()).need_auth());
-    EXPECT_EQ(Priv::NONE, MemoryMetricsAction(fake_runtime_env()).required_privilege());
+    EXPECT_TRUE(MemoryMetricsAction().need_auth());
+    EXPECT_EQ(Priv::NONE, MemoryMetricsAction().required_privilege());
 }
 
 TEST(BeHandlerNeedAuthTest, stream_load_uses_builtin_fe_auth_flow) {
-    ExecEnv env;
-    orchestration::StreamLoadOrchestrator stream_load_orchestrator(&env, nullptr);
-    StreamLoadAction action(&env, &stream_load_orchestrator, nullptr, nullptr);
+    StreamLoadAction action(nullptr, nullptr);
     EXPECT_FALSE(action.need_auth());
 }
 
@@ -219,11 +206,9 @@ TEST(BeHandlerNeedAuthTest, transaction_endpoints_skip_framework_auth) {
     // Both transaction-management endpoints opt out of the framework Basic-Auth
     // gate — they use a label-bound session model (begin parses Basic, later ops
     // look up the StreamLoadContext by label).
-    TransactionManagerAction txn_mgr(nullptr, nullptr);
+    TransactionManagerAction txn_mgr(nullptr);
     EXPECT_FALSE(txn_mgr.need_auth());
-    ExecEnv env;
-    orchestration::StreamLoadOrchestrator stream_load_orchestrator(&env, nullptr);
-    TransactionStreamLoadAction txn_load(&env, &stream_load_orchestrator, nullptr);
+    TransactionStreamLoadAction txn_load(nullptr);
     EXPECT_FALSE(txn_load.need_auth());
 }
 

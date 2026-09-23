@@ -71,7 +71,6 @@ import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.ast.CreateRoutineLoadStmt;
-import com.starrocks.sql.ast.KeysType;
 import com.starrocks.sql.ast.RoutineLoadDataSourceProperties;
 import com.starrocks.system.ComputeNode;
 import com.starrocks.system.SystemInfoService;
@@ -710,12 +709,6 @@ public class KafkaRoutineLoadJob extends RoutineLoadJob {
             locker.unLockTablesWithIntensiveDbLock(db.getId(), Lists.newArrayList(tableId), LockType.READ);
         }
 
-        if (CreateRoutineLoadStmt.ENVELOPE_DEBEZIUM.equalsIgnoreCase(stmt.getEnvelope())
-                && table instanceof OlapTable
-                && ((OlapTable) table).getKeysType() != KeysType.PRIMARY_KEYS) {
-            throw new StarRocksException("envelope=debezium is only supported on PRIMARY KEY tables");
-        }
-
         // init kafka routine load job
         long id = GlobalStateMgr.getCurrentState().getNextId();
         KafkaRoutineLoadJob kafkaRoutineLoadJob = new KafkaRoutineLoadJob(id, stmt.getName(),
@@ -1117,8 +1110,8 @@ public class KafkaRoutineLoadJob extends RoutineLoadJob {
     }
 
     @Override
-    public void afterVisible(TransactionState txnState) {
-        super.afterVisible(txnState);
+    public void afterVisible(TransactionState txnState, boolean txnOperated) {
+        super.afterVisible(txnState, txnOperated);
         // Update lag time metrics when Kafka transaction becomes visible
         if (Config.enable_routine_load_lag_time_metrics) {
             updateLagTimeMetricsFromProgress();

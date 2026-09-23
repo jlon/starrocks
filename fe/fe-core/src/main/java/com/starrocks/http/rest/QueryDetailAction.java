@@ -40,10 +40,8 @@ import com.starrocks.http.ActionController;
 import com.starrocks.http.BaseRequest;
 import com.starrocks.http.BaseResponse;
 import com.starrocks.http.IllegalArgException;
-import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.QueryDetail;
 import com.starrocks.qe.QueryDetailQueue;
-import com.starrocks.sql.analyzer.Authorizer;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 
@@ -70,9 +68,7 @@ public class QueryDetailAction extends RestBaseAction {
             return;
         }
         long eventTime = Long.parseLong(eventTimeStr.trim());
-        // The records carry profile text, which follows the query-profile access rule.
-        List<QueryDetail> queryDetails = Authorizer.redactUnreadableProfiles(ConnectContext.get(),
-                QueryDetailQueue.getQueryDetailsAfterTime(eventTime));
+        List<QueryDetail> queryDetails = QueryDetailQueue.getQueryDetailsAfterTime(eventTime);
         Gson gson = new Gson();
         String jsonString = gson.toJson(queryDetails);
         response.getContent().append(jsonString);

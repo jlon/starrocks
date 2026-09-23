@@ -172,7 +172,7 @@ public class QueryQueueManager {
 
         return new LogicalSlot(coord.getQueryId(), frontend.getNodeName(), warehouseId,
                 groupId, numSlots, expiredPendingTimeMs, expiredAllocatedTimeMs,
-                frontend.getStartTime(), numFragments, pipelineDop, context.getSessionVariable().getExecMode());
+                frontend.getStartTime(), numFragments, pipelineDop);
     }
 
     private int estimateNumSlots(ConnectContext context, DefaultCoordinator coord) {

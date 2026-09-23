@@ -99,6 +99,18 @@ Status ConjugateOperator::set_cancelled(RuntimeState* state) {
     }
 }
 
+const pipeline::LocalRFWaitingSet& ConjugateOperator::rf_waiting_set() const {
+    return _source_op->rf_waiting_set();
+}
+
+RuntimeFilterProbeCollector* ConjugateOperator::runtime_bloom_filters() {
+    return _source_op->runtime_bloom_filters();
+}
+
+const RuntimeFilterProbeCollector* ConjugateOperator::runtime_bloom_filters() const {
+    return _source_op->runtime_bloom_filters();
+}
+
 void ConjugateOperator::set_precondition_ready(RuntimeState* state) {
     _sink_op->set_precondition_ready(state);
     _source_op->set_precondition_ready(state);
@@ -138,18 +150,6 @@ void ConjugateOperatorFactory::close(RuntimeState* state) {
     _sink_op_factory->close(state);
     _source_op_factory->close(state);
     pipeline::OperatorFactory::close(state);
-}
-
-const pipeline::LocalRFWaitingSet& ConjugateOperatorFactory::rf_waiting_set() const {
-    return _source_op_factory->rf_waiting_set();
-}
-
-RuntimeFilterProbeCollector* ConjugateOperatorFactory::get_runtime_bloom_filters() {
-    return _source_op_factory->get_runtime_bloom_filters();
-}
-
-const RuntimeFilterProbeCollector* ConjugateOperatorFactory::get_runtime_bloom_filters() const {
-    return _source_op_factory->get_runtime_bloom_filters();
 }
 
 pipeline::OperatorPtr ConjugateOperatorFactory::create(int32_t degree_of_parallelism, int32_t driver_sequence) {

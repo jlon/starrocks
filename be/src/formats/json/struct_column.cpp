@@ -15,14 +15,14 @@
 #include "formats/json/struct_column.h"
 
 #include "column/struct_column.h"
-#include "common/simdjson_util.h"
 #include "common/statusor.h"
 #include "formats/json/nullable_column.h"
 #include "gutil/strings/substitute.h"
+#include "util/simdjson_util.h"
 
 namespace starrocks {
 
-Status add_struct_column(Column* column, const TypeDescriptor& type_desc, std::string_view name,
+Status add_struct_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
                          simdjson::ondemand::value* value) {
     auto struct_column = down_cast<StructColumn*>(column);
 

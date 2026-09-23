@@ -14,9 +14,8 @@
 
 #include "column/decimalv3_column.h"
 
-#include "base/types/int256.h"
 #include "column/fixed_length_column.h"
-#include "column/mysql_row_buffer.h"
+#include "types/int256.h"
 
 namespace starrocks {
 

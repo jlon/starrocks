@@ -78,7 +78,9 @@ public:
               _file(_file_owned.get()),
               _buffer_size(buffer_size),
               _buffer(new uint8_t[buffer_size]),
+              _byte_count(0),
               _next(_buffer),
+              _available(0),
               _counter(counter) {}
 
     // Non-owning: caller guarantees the file outlives this stream.
@@ -86,7 +88,9 @@ public:
             : _file(file),
               _buffer_size(buffer_size),
               _buffer(new uint8_t[buffer_size]),
+              _byte_count(0),
               _next(_buffer),
+              _available(0),
               _counter(counter) {}
 
     ~AvroBufferInputStream() override { delete[] _buffer; }
@@ -104,9 +108,9 @@ private:
     RandomAccessFile* _file = nullptr;             // always valid; either _file_owned.get() or caller-managed
     const size_t _buffer_size;
     uint8_t* const _buffer;
-    size_t _byte_count{0};
+    size_t _byte_count;
     uint8_t* _next;
-    size_t _available{0};
+    size_t _available;
     ScannerCounter* _counter = nullptr;
 };
 

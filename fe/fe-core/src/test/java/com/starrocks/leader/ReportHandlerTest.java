@@ -112,6 +112,8 @@ public class ReportHandlerTest {
 
     @Test
     public void testHandleSetTabletEnablePersistentIndex() {
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test");
+        long dbId = db.getId();
         long backendId = 10001L;
         List<Long> tabletIds = GlobalStateMgr.getCurrentState().getTabletInvertedIndex().getTabletIdsByBackendId(10001);
         Assertions.assertFalse(tabletIds.isEmpty());
@@ -135,7 +137,8 @@ public class ReportHandlerTest {
     @Test
     public void testHandleSetPrimaryIndexCacheExpireSec() {
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test");
-        GlobalStateMgr.getCurrentState().getLocalMetastore()
+        long dbId = db.getId();
+        OlapTable olapTable = (OlapTable) GlobalStateMgr.getCurrentState().getLocalMetastore()
                     .getTable(db.getFullName(), "primary_index_cache_expire_sec_test");
         long backendId = 10001L;
         List<Long> tabletIds = GlobalStateMgr.getCurrentState().getTabletInvertedIndex().getTabletIdsByBackendId(10001);
@@ -160,6 +163,7 @@ public class ReportHandlerTest {
     @Test
     public void testHandleUpdateTableSchema() throws Exception {
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test");
+        long dbId = db.getId();
         OlapTable olapTable =
                     (OlapTable) GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), "update_schema");
 
@@ -530,36 +534,6 @@ public class ReportHandlerTest {
         Assertions.assertEquals(1, reportHandler.getPendingTabletReportTaskCnt());
         reportHandler.putTabletReportTask(2L, 1L, new HashMap<>());
         Assertions.assertEquals(2, reportHandler.getPendingTabletReportTaskCnt());
-    }
-
-    @Test
-    public void testOnStoppedDrainsQueuesAndClearsPendingTasks() throws Exception {
-        ReportHandler reportHandler = new ReportHandler();
-        reportHandler.putTabletReportTask(1L, 1L, new HashMap<>());
-        reportHandler.putTabletReportTask(2L, 1L, new HashMap<>());
-        Assertions.assertEquals(2, reportHandler.getPendingTabletReportTaskCnt());
-        Assertions.assertTrue(reportHandler.getReportQueueSize() > 0);
-
-        reportHandler.onStopped();
-
-        Assertions.assertEquals(0, reportHandler.getPendingTabletReportTaskCnt(),
-                "pending tablet report tasks must be cleared after onStopped");
-        Assertions.assertEquals(0, reportHandler.getReportQueueSize(),
-                "both report queues must be drained after onStopped");
-    }
-
-    @Test
-    public void testPutTabletReportTaskThrowsAfterStop() {
-        ReportHandler reportHandler = new ReportHandler();
-        reportHandler.setStop();
-        // Must surface as IllegalStateException so LeaderImpl.report() can translate to
-        // NOT_MASTER; silent-drop would leave the BE thinking the report succeeded.
-        IllegalStateException ex = Assertions.assertThrows(IllegalStateException.class,
-                () -> reportHandler.putTabletReportTask(1L, 1L, new HashMap<>()));
-        Assertions.assertTrue(ex.getMessage().contains("stopped"),
-                "exception message should mention stop reason, got: " + ex.getMessage());
-        Assertions.assertEquals(0, reportHandler.getPendingTabletReportTaskCnt());
-        Assertions.assertEquals(0, reportHandler.getReportQueueSize());
     }
 
     private static OlapTable getFlatJsonTable() {

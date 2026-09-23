@@ -93,9 +93,4 @@ class SQLPlanSessionStorage implements SQLPlanStorage {
             }
         }
     }
-
-    @Override
-    public long getBaselineCount() {
-        return baselinePlans.size();
-    }
 }

@@ -20,6 +20,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "common/config.h"
 #include "common/status.h"
 
 namespace starrocks::lake {
@@ -105,7 +106,17 @@ public:
         return Status::OK();
     }
 
-    Status finish() override;
+    Status finish() override {
+        for (auto& [path, count] : _pending_files) {
+            if (_delay_delete_files.count(path) == 0) {
+                if (config::lake_print_delete_log) {
+                    LOG(INFO) << "Deleting shared file: " << path << " ref count: " << count;
+                }
+                RETURN_IF_ERROR(AsyncFileDeleter::delete_file(path));
+            }
+        }
+        return AsyncFileDeleter::finish();
+    }
 
     bool is_empty() const { return _pending_files.empty(); }
 

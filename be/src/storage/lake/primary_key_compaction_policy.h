@@ -17,6 +17,7 @@
 #include <queue>
 #include <vector>
 
+#include "common/config.h"
 #include "common/statusor.h"
 #include "gen_cpp/lake_types.pb.h"
 #include "storage/lake/compaction_policy.h"
@@ -48,7 +49,54 @@ public:
     // (>= lake_compaction_max_rowset_size), they are already well-compacted
     // and should have zero compaction priority. This prevents them from being
     // selected for compaction when they don't need it.
-    double io_count() const;
+    double io_count() const {
+        int64_t large_rowset_threshold = config::lake_compaction_max_rowset_size;
+
+        // For non-overlapped rowsets that are already large enough, return 0
+        // to indicate they don't need compaction. The only exception is if they have deletes,
+        // in which case we still want to consider compacting them to reclaim space.
+        if (!rowset_meta_ptr->overlapped() && stat.num_dels == 0) {
+            int64_t rowset_size = static_cast<int64_t>(rowset_meta_ptr->data_size());
+            if (rowset_size >= large_rowset_threshold) {
+                // Already a large, well-compacted rowset with no deletes - zero priority
+                return 0;
+            }
+        }
+
+        double cnt = 1;
+        if (rowset_meta_ptr->overlapped()) {
+            int segments_size = rowset_meta_ptr->segment_metas_size();
+            int segment_size_cnt = 0;
+            for (int i = 0; i < segments_size; i++) {
+                if (rowset_meta_ptr->segment_metas(i).has_size()) {
+                    segment_size_cnt++;
+                }
+            }
+            if (segments_size == 0) {
+                cnt = 1;
+            } else if (segment_size_cnt == 0) {
+                // No segment_size info, fall back to counting all segments
+                cnt = segments_size;
+            } else {
+                // Count only segments smaller than the large segment threshold
+                int effective_count = 0;
+                for (int i = 0; i < segments_size; i++) {
+                    const auto& segment_meta = rowset_meta_ptr->segment_metas(i);
+                    if (segment_meta.has_size() && static_cast<int64_t>(segment_meta.size()) < large_rowset_threshold) {
+                        effective_count++;
+                    }
+                }
+                cnt = std::max(1, effective_count);
+            }
+        }
+        if (stat.num_dels > 0) {
+            // if delvec file exist, that means we need to read segment files and delvec files both
+            // And update_compaction_delvec_file_io_ratio control the io amp ratio of delvec files, default is 2.
+            // Bigger update_compaction_delvec_file_io_amp_ratio means high priority about merge rowset with delvec files.
+            cnt *= config::update_compaction_delvec_file_io_amp_ratio;
+        }
+        return cnt;
+    }
     double delete_bytes() const {
         if (stat.num_rows == 0) return 0.0;
         if (stat.num_dels >= stat.num_rows) return (double)stat.bytes;
@@ -150,20 +198,6 @@ public:
 
 private:
     int64_t _get_data_size(const std::shared_ptr<const TabletMetadataPB>& tablet_metadata);
-};
-
-// One-shot policy used after a range-tablet split. A rowset is the metadata and
-// conflict-resolution unit, so a rowset containing any shared segment must be
-// rewritten in full. This deliberately bypasses every normal score, size and
-// input-count gate. Rowset readers apply the child tablet range only to shared
-// segments; private segments in a mixed rowset are already child-local.
-class UnshareCompactionPolicy final : public CompactionPolicy {
-public:
-    explicit UnshareCompactionPolicy(TabletManager* tablet_mgr, std::shared_ptr<const TabletMetadataPB> tablet_metadata)
-            : CompactionPolicy(tablet_mgr, std::move(tablet_metadata), false) {}
-
-    StatusOr<std::vector<RowsetPtr>> pick_rowsets() override;
-    StatusOr<CompactionAlgorithm> choose_compaction_algorithm(const std::vector<RowsetPtr>& rowsets) override;
 };
 
 } // namespace starrocks::lake

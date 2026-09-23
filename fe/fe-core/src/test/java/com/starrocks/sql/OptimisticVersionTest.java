@@ -14,6 +14,7 @@
 
 package com.starrocks.sql;
 
+import com.starrocks.catalog.Database;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.sql.analyzer.Analyzer;
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -71,7 +73,7 @@ class OptimisticVersionTest extends PlanTestBase {
 
         // analyze
         Analyzer.analyze(insertStmt, starRocksAssert.getCtx());
-        AnalyzerUtils.collectAllDatabase(starRocksAssert.getCtx(), insertStmt);
+        Map<String, Database> dbs = AnalyzerUtils.collectAllDatabase(starRocksAssert.getCtx(), insertStmt);
 
         // normal planner
         PlannerMetaLocker locker = new PlannerMetaLocker(starRocksAssert.getCtx(), insertStmt);

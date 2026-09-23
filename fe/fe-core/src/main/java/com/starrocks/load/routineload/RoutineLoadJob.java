@@ -60,7 +60,6 @@ import com.starrocks.common.io.Writable;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.common.util.LogBuilder;
 import com.starrocks.common.util.LogKey;
-import com.starrocks.common.util.ParseUtil;
 import com.starrocks.common.util.PropertyAnalyzer;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.common.util.concurrent.QueryableReentrantReadWriteLock;
@@ -88,7 +87,6 @@ import com.starrocks.qe.scheduler.Coordinator;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
-import com.starrocks.sql.LoadPlanner;
 import com.starrocks.sql.ast.ColumnSeparator;
 import com.starrocks.sql.ast.CreateRoutineLoadStmt;
 import com.starrocks.sql.ast.ImportColumnDesc;
@@ -128,7 +126,6 @@ import java.util.Optional;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 import static com.starrocks.common.ErrorCode.ERR_LOAD_DATA_PARSE_ERROR;
 import static com.starrocks.common.ErrorCode.ERR_TOO_MANY_ERROR_ROWS;
@@ -442,9 +439,6 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
             } else {
                 jobProperties.put(CreateRoutineLoadStmt.STRIP_OUTER_ARRAY, "false");
             }
-            if (!Strings.isNullOrEmpty(stmt.getEnvelope())) {
-                jobProperties.put(CreateRoutineLoadStmt.ENVELOPE, stmt.getEnvelope());
-            }
         } else if (stmt.getFormat().equals("avro")) {
             jobProperties.put(CreateRoutineLoadStmt.FORMAT, "avro");
             if (!Strings.isNullOrEmpty(stmt.getJsonPaths())) {
@@ -456,7 +450,6 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
         } else {
             throw new StarRocksException("Invalid format type.");
         }
-
         taskConsumeSecond = stmt.getTaskConsumeSecond();
         taskTimeoutSecond = stmt.getTaskTimeoutSecond();
 
@@ -758,14 +751,6 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
         return value;
     }
 
-    public String getEnvelope() {
-        String value = jobProperties.get(CreateRoutineLoadStmt.ENVELOPE);
-        if (value == null) {
-            return "";
-        }
-        return value;
-    }
-
     public int getSizeOfRoutineLoadTaskInfoList() {
         readLock();
         try {
@@ -966,8 +951,7 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
         return new DefaultCoordinator.Factory();
     }
 
-    public TExecPlanFragmentParams plan(TUniqueId loadId, long txnId, String label, long beId)
-            throws StarRocksException {
+    public TExecPlanFragmentParams plan(TUniqueId loadId, long txnId, String label) throws StarRocksException {
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
         if (db == null) {
             throw new MetaNotFoundException("db " + dbId + " does not exist");
@@ -983,84 +967,22 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
         try {
             StreamLoadInfo info = StreamLoadInfo.fromRoutineLoadJob(this);
             info.setTxnId(txnId);
-            StreamLoadMgr streamLoadManager = GlobalStateMgr.getCurrentState().getStreamLoadMgr();
-
-            TExecPlanFragmentParams planParams = null;
-            Coordinator coord = null;
-            if (Config.enable_pipeline_routine_load && beId != RoutineLoadTaskInfo.INVALID_BE_ID) {
-                // Run this routine load task on the pipeline engine. Reuse LoadPlanner (ROUTINE_LOAD)
-                // pinned to the task's assigned BE (which consumes Kafka/Pulsar into a StreamLoadPipe),
-                // then materialize a single BE-local params blob (params.is_pipeline routes it to the
-                // pipeline engine in StreamLoadOrchestrator). Same mechanism as classic stream load.
-                // On any planning failure (e.g. the pinned BE transiently unavailable) fall back to
-                // the legacy engine below rather than failing the task.
-                try {
-                    ConnectContext loadContext = Load.createLoadConnectContext(db.getFullName());
-                    loadContext.getSessionVariable().setTimeZone(info.getTimezone());
-                    // LoadPlanner/coordinator read the thread-local ConnectContext (unlike StreamLoadPlanner
-                    // which binds internally); the routine load scheduler thread has none, so bind it here.
-                    try (var scope = loadContext.bindScope()) {
-                        // loadJobId = txnId: the StreamLoadTask is not created until planning succeeds
-                        // (see below), so do not depend on its id here.
-                        LoadPlanner loadPlanner = new LoadPlanner(txnId, loadId, txnId, db.getId(),
-                                db.getFullName(), (OlapTable) table, info.isStrictMode(), info.getTimezone(),
-                                info.isPartialUpdate(), loadContext, null,
-                                info.getLoadMemLimit(), info.getExecMemLimit(), info.getNegative(), 1,
-                                info.getColumnExprDescs(), info, label, info.getTimeout());
-                        loadPlanner.setSyncStreamLoad(true);
-                        loadPlanner.setPartialUpdateMode(info.getPartialUpdateMode());
-                        loadPlanner.setSyncStreamLoadBackendId(beId);
-                        loadPlanner.plan();
-                        DefaultCoordinator routineLoadCoord =
-                                (DefaultCoordinator) getCoordinatorFactory().createStreamLoadScheduler(loadPlanner);
-                        planParams = routineLoadCoord.buildLocalStreamLoadParams();
-                        // Carry over load-specific query options the LoadPlanner/JobSpec path omits
-                        // (matching legacy StreamLoadPlanner).
-                        planParams.query_options.setLoad_transmission_compression_type(
-                                info.getTransmisionCompressionType());
-                        planParams.query_options.setLog_rejected_record_num(info.getLogRejectedRecordNum());
-                        // Honor table-level load-profile collection with the same collect-interval throttle
-                        // the legacy StreamLoadPlanner applies, so a high-frequency routine load does not
-                        // collect a full profile for every task.
-                        boolean enableLoadProfile = ((OlapTable) table).enableLoadProfile();
-                        if (Config.load_profile_collect_interval_second > 0
-                                && System.currentTimeMillis() - ((OlapTable) table).getLastCollectProfileTime()
-                                        < Config.load_profile_collect_interval_second * 1000) {
-                            enableLoadProfile = false;
-                        }
-                        if (enableLoadProfile) {
-                            planParams.query_options.setEnable_profile(true);
-                            planParams.query_options.setLoad_profile_collect_second(
-                                    Config.stream_load_profile_collect_threshold_second);
-                            ((OlapTable) table).updateLastCollectProfileTime();
-                        }
-                        coord = routineLoadCoord;
-                    }
-                } catch (Exception e) {
-                    LOG.warn("pipeline routine load planning failed for label {}, fall back to legacy engine: {}",
-                            label, e.getMessage());
-                    planParams = null;
-                    coord = null;
-                }
-            }
-            if (planParams == null) {
-                StreamLoadPlanner planner = new StreamLoadPlanner(
-                        Load.createLoadConnectContext(db.getFullName()), db, (OlapTable) table, info);
-                planParams = planner.plan(loadId);
-                coord = getCoordinatorFactory().createSyncStreamLoadScheduler(planner, planParams.getCoord());
-            }
+            StreamLoadPlanner planner =
+                    new StreamLoadPlanner(Load.createLoadConnectContext(db.getFullName()), db, (OlapTable) table, info);
+            TExecPlanFragmentParams planParams = planner.plan(loadId);
 
             planParams.query_options.setLoad_job_type(TLoadJobType.ROUTINE_LOAD);
+            StreamLoadMgr streamLoadManager = GlobalStateMgr.getCurrentState().getStreamLoadMgr();
 
-            // Register the task only after planning succeeded, so a plan failure (schema change in
-            // flight, no available replica, pinned BE unavailable, ...) does not leave an orphan
-            // StreamLoadTask registered in StreamLoadMgr.
             StreamLoadTask streamLoadTask = streamLoadManager.createLoadTaskWithoutLock(db, table, label, "", "",
                     taskTimeoutSecond * 1000, true, computeResource);
             streamLoadTask.setTxnId(txnId);
             streamLoadTask.setLabel(label);
             streamLoadTask.setTUniqueId(loadId);
             streamLoadManager.addLoadTask(streamLoadTask);
+
+            Coordinator coord =
+                    getCoordinatorFactory().createSyncStreamLoadScheduler(planner, planParams.getCoord());
             streamLoadTask.setCoordinator(coord);
 
             QeProcessorImpl.INSTANCE.registerQuery(loadId, coord);
@@ -1155,27 +1077,29 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
     // paused job or renew task
     // *** Please do not call after individually. It must be combined use with before ***
     @Override
-    public void afterCommitted(TransactionState txnState) throws StarRocksException {
+    public void afterCommitted(TransactionState txnState, boolean txnOperated) throws StarRocksException {
         long taskBeId = -1L;
         try {
-            // find task in job
-            Optional<RoutineLoadTaskInfo> routineLoadTaskInfoOptional = routineLoadTaskInfoList.stream().filter(
-                    entity -> entity.getTxnId() == txnState.getTransactionId()).findFirst();
-            if (routineLoadTaskInfoOptional.isPresent()) {
-                RoutineLoadTaskInfo routineLoadTaskInfo = routineLoadTaskInfoOptional.get();
-                taskBeId = routineLoadTaskInfo.getBeId();
-                executeTaskOnTxnStatusChanged(routineLoadTaskInfo, txnState, TransactionStatus.COMMITTED, null);
-                routineLoadTaskInfo.afterCommitted(txnState);
-            }
-            ++committedTaskNum;
-            TableMetricsEntity entity = TableMetricsRegistry.getInstance().getMetricsEntity(tableId);
-            entity.counterRoutineLoadCommittedTasksTotal.increase(1L);
-            LOG.debug("routine load task committed. task id: {}, job id: {}", txnState.getLabel(), id);
+            if (txnOperated) {
+                // find task in job
+                Optional<RoutineLoadTaskInfo> routineLoadTaskInfoOptional = routineLoadTaskInfoList.stream().filter(
+                        entity -> entity.getTxnId() == txnState.getTransactionId()).findFirst();
+                if (routineLoadTaskInfoOptional.isPresent()) {
+                    RoutineLoadTaskInfo routineLoadTaskInfo = routineLoadTaskInfoOptional.get();
+                    taskBeId = routineLoadTaskInfo.getBeId();
+                    executeTaskOnTxnStatusChanged(routineLoadTaskInfo, txnState, TransactionStatus.COMMITTED, null);
+                    routineLoadTaskInfo.afterCommitted(txnState, txnOperated);
+                }
+                ++committedTaskNum;
+                TableMetricsEntity entity = TableMetricsRegistry.getInstance().getMetricsEntity(tableId);
+                entity.counterRoutineLoadCommittedTasksTotal.increase(1L);
+                LOG.debug("routine load task committed. task id: {}, job id: {}", txnState.getLabel(), id);
 
-            StreamLoadTask streamLoadTask = GlobalStateMgr.getCurrentState().getStreamLoadMgr().
-                    getSyncSteamLoadTaskByTxnId(txnState.getTransactionId());
-            if (streamLoadTask != null) {
-                streamLoadTask.afterCommitted(txnState);
+                StreamLoadTask streamLoadTask = GlobalStateMgr.getCurrentState().getStreamLoadMgr().
+                        getSyncSteamLoadTaskByTxnId(txnState.getTransactionId());
+                if (streamLoadTask != null) {
+                    streamLoadTask.afterCommitted(txnState, txnOperated);
+                }
             }
         } catch (Throwable e) {
             LOG.warn("after committed failed", e);
@@ -1207,7 +1131,19 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
      * the corresponding txn is visible, create a new task
      */
     @Override
-    public void afterVisible(TransactionState txnState) {
+    public void afterVisible(TransactionState txnState, boolean txnOperated) {
+        if (!txnOperated) {
+            String msg = String.format(
+                    "should not happen, we find that txnOperated if false when handling afterVisble. job id: %d, txn_id: %d",
+                    id, txnState.getTransactionId());
+            LOG.warn(msg);
+            // print a log and return.
+            // if this really happen, the job will be blocked, and this task can be seen by
+            // "show routine load task" stmt, which is in COMMITTED state for a long time.
+            // so we can find this error and step in.
+            return;
+        }
+
         writeLock();
         try {
             if (state != JobState.RUNNING) {
@@ -1218,7 +1154,7 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
             StreamLoadTask streamLoadTask = GlobalStateMgr.getCurrentState().getStreamLoadMgr().
                     getSyncSteamLoadTaskByTxnId(txnState.getTransactionId());
             if (streamLoadTask != null) {
-                streamLoadTask.afterVisible(txnState);
+                streamLoadTask.afterVisible(txnState, txnOperated);
             }
 
             Optional<RoutineLoadTaskInfo> routineLoadTaskInfoOptional = routineLoadTaskInfoList.stream().filter(
@@ -1253,7 +1189,7 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
             }
 
             try {
-                routineLoadTaskInfo.afterVisible(txnState);
+                routineLoadTaskInfo.afterVisible(txnState, txnOperated);
             } catch (StarRocksException e) {
                 LOG.warn("failed to execute 'routineLoadTaskInfo.afterVisible', txnId {}, label {}. " +
                         "this should not happen", txnState.getTransactionId(), routineLoadTaskInfo.getLabel());
@@ -1286,74 +1222,76 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
     // progress will be update otherwise the progress will be hung
     // *** Please do not call after individually. It must be combined use with before ***
     @Override
-    public void afterAborted(TransactionState txnState, String txnStatusChangeReasonString)
+    public void afterAborted(TransactionState txnState, boolean txnOperated, String txnStatusChangeReasonString)
             throws StarRocksException {
         long taskBeId = -1L;
         try {
-            StreamLoadTask streamLoadTask = GlobalStateMgr.getCurrentState().getStreamLoadMgr().
-                    getSyncSteamLoadTaskByTxnId(txnState.getTransactionId());
-            if (streamLoadTask != null) {
-                streamLoadTask.afterAborted(txnState, txnStatusChangeReasonString);
-            }
+            if (txnOperated) {
+                StreamLoadTask streamLoadTask = GlobalStateMgr.getCurrentState().getStreamLoadMgr().
+                        getSyncSteamLoadTaskByTxnId(txnState.getTransactionId());
+                if (streamLoadTask != null) {
+                    streamLoadTask.afterAborted(txnState, txnOperated, txnStatusChangeReasonString);
+                }
 
-            // step0: find task in job
-            Optional<RoutineLoadTaskInfo> routineLoadTaskInfoOptional = routineLoadTaskInfoList.stream().filter(
-                    entity -> entity.getTxnId() == txnState.getTransactionId()).findFirst();
-            TableMetricsEntity entity = TableMetricsRegistry.getInstance().getMetricsEntity(tableId);
-            if (!routineLoadTaskInfoOptional.isPresent()) {
-                //  The task of the timed-out transaction will be detected by the transaction checker thread
-                //  and subsequently aborted. Here, we need to update the abortedTaskNum.
+                // step0: find task in job
+                Optional<RoutineLoadTaskInfo> routineLoadTaskInfoOptional = routineLoadTaskInfoList.stream().filter(
+                        entity -> entity.getTxnId() == txnState.getTransactionId()).findFirst();
+                TableMetricsEntity entity = TableMetricsRegistry.getInstance().getMetricsEntity(tableId);
+                if (!routineLoadTaskInfoOptional.isPresent()) {
+                    //  The task of the timed-out transaction will be detected by the transaction checker thread
+                    //  and subsequently aborted. Here, we need to update the abortedTaskNum.
+                    ++abortedTaskNum;
+                    entity.counterRoutineLoadAbortedTasksTotal.increase(1L);
+                    // task will not be update when task has been aborted by fe
+                    return;
+                }
+                RoutineLoadTaskInfo routineLoadTaskInfo = routineLoadTaskInfoOptional.get();
+                taskBeId = routineLoadTaskInfo.getBeId();
+                // step1: job state will be changed depending on txnStatusChangeReasonString
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(new LogBuilder(LogKey.ROUTINE_LOAD_TASK, txnState.getLabel())
+                            .add("txn_id", txnState.getTransactionId())
+                            .add("msg", "txn abort with reason " + txnStatusChangeReasonString)
+                            .build());
+                }
+                routineLoadTaskInfo.afterAborted(txnState, txnOperated, txnStatusChangeReasonString);
                 ++abortedTaskNum;
                 entity.counterRoutineLoadAbortedTasksTotal.increase(1L);
-                // task will not be update when task has been aborted by fe
-                return;
-            }
-            RoutineLoadTaskInfo routineLoadTaskInfo = routineLoadTaskInfoOptional.get();
-            taskBeId = routineLoadTaskInfo.getBeId();
-            // step1: job state will be changed depending on txnStatusChangeReasonString
-            if (LOG.isDebugEnabled()) {
-                LOG.debug(new LogBuilder(LogKey.ROUTINE_LOAD_TASK, txnState.getLabel())
-                        .add("txn_id", txnState.getTransactionId())
-                        .add("msg", "txn abort with reason " + txnStatusChangeReasonString)
-                        .build());
-            }
-            routineLoadTaskInfo.afterAborted(txnState, txnStatusChangeReasonString);
-            ++abortedTaskNum;
-            entity.counterRoutineLoadAbortedTasksTotal.increase(1L);
-            setOtherMsg(txnStatusChangeReasonString);
-            TxnStatusChangeReason txnStatusChangeReason = null;
-            if (txnStatusChangeReasonString != null) {
-                txnStatusChangeReason =
-                        TxnStatusChangeReason.fromString(txnStatusChangeReasonString);
-                if (txnStatusChangeReason != null) {
-                    switch (txnStatusChangeReason) {
-                        case OFFSET_OUT_OF_RANGE:
-                        case PAUSE:
-                            String msg = "be " + taskBeId + " abort task "
-                                    + "with reason: " + txnStatusChangeReasonString;
-                            updateState(JobState.PAUSED,
-                                    new ErrorReason(InternalErrorCode.TASKS_ABORT_ERR, msg));
-                            return;
-                        default:
-                            break;
+                setOtherMsg(txnStatusChangeReasonString);
+                TxnStatusChangeReason txnStatusChangeReason = null;
+                if (txnStatusChangeReasonString != null) {
+                    txnStatusChangeReason =
+                            TxnStatusChangeReason.fromString(txnStatusChangeReasonString);
+                    if (txnStatusChangeReason != null) {
+                        switch (txnStatusChangeReason) {
+                            case OFFSET_OUT_OF_RANGE:
+                            case PAUSE:
+                                String msg = "be " + taskBeId + " abort task "
+                                        + "with reason: " + txnStatusChangeReasonString;
+                                updateState(JobState.PAUSED,
+                                        new ErrorReason(InternalErrorCode.TASKS_ABORT_ERR, msg));
+                                return;
+                            default:
+                                break;
+                        }
                     }
+                    // TODO(ml): use previous be id depend on change reason
                 }
-                // TODO(ml): use previous be id depend on change reason
-            }
 
-            // check if BE explicitly marked this error as non-retryable
-            RLTaskTxnCommitAttachment rlAttachment =
-                    (RLTaskTxnCommitAttachment) txnState.getTxnCommitAttachment();
-            if (rlAttachment != null && rlAttachment.isNonRetryable()) {
-                String msg = "be " + taskBeId + " abort task "
-                        + "with non-retryable reason: " + txnStatusChangeReasonString;
-                updateState(JobState.PAUSED, new ErrorReason(InternalErrorCode.TASKS_ABORT_ERR, msg));
-                return;
-            }
+                // check if BE explicitly marked this error as non-retryable
+                RLTaskTxnCommitAttachment rlAttachment =
+                        (RLTaskTxnCommitAttachment) txnState.getTxnCommitAttachment();
+                if (rlAttachment != null && rlAttachment.isNonRetryable()) {
+                    String msg = "be " + taskBeId + " abort task "
+                            + "with non-retryable reason: " + txnStatusChangeReasonString;
+                    updateState(JobState.PAUSED, new ErrorReason(InternalErrorCode.TASKS_ABORT_ERR, msg));
+                    return;
+                }
 
-            // step2: commit task , update progress, maybe create a new task
-            executeTaskOnTxnStatusChanged(routineLoadTaskInfo, txnState, TransactionStatus.ABORTED,
-                    txnStatusChangeReasonString);
+                // step2: commit task , update progress, maybe create a new task
+                executeTaskOnTxnStatusChanged(routineLoadTaskInfo, txnState, TransactionStatus.ABORTED,
+                        txnStatusChangeReasonString);
+            }
         } catch (Exception e) {
             String msg =
                     "be " + taskBeId + " abort task " + txnState.getLabel() + " failed with error " + e.getMessage();
@@ -1641,27 +1579,6 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
         routineLoadTaskInfoList.clear();
     }
 
-    /**
-     * Restore this job to its last durable state on leader demotion. RUNNING is the only in-memory-only
-     * job state (the NEED_SCHEDULE -> RUNNING branch of unprotectUpdateState deliberately skips the
-     * journal), so the durable copy of a healthy job is always NEED_SCHEDULE: map it back and drop the
-     * leader-session task bookkeeping, and a re-elected leader in this same process re-divides the job
-     * exactly like a restarted FE would. Without this, the job stays RUNNING with its queued tasks
-     * already thrown away by demotion, and since only NEED_SCHEDULE jobs are divided, an idle job would
-     * never produce tasks again. MUST NOT write the journal - it is already sealed when this runs.
-     * Called from RoutineLoadScheduler.onStopped().
-     */
-    protected void resetToLastDurableStateOnDemotion() {
-        writeLock();
-        try {
-            if (state == JobState.RUNNING) {
-                executeNeedSchedule();
-            }
-        } finally {
-            writeUnlock();
-        }
-    }
-
     public void update() throws StarRocksException {
         // check if db and table exist
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
@@ -1874,8 +1791,8 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
 
     private String jobPropertiesToJsonString() {
         Map<String, String> jobProperties = Maps.newHashMap();
-        jobProperties.put("partitions", partitions == null ? STAR_STRING
-                : partitions.getPartitionNames().stream().map(ParseUtil::backquote).collect(Collectors.joining(",")));
+        jobProperties.put("partitions",
+                partitions == null ? STAR_STRING : Joiner.on(",").join(partitions.getPartitionNames()));
         jobProperties.put("columnToColumnExpr", columnDescs == null ? STAR_STRING : columnDescsToSql(columnDescs));
         jobProperties.put("whereExpr", whereExpr == null ? STAR_STRING : ExprToSql.toSql(whereExpr));
         if (getFormat().equalsIgnoreCase("json")) {
@@ -1904,7 +1821,7 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
                 sb.append(",");
             }
             ImportColumnDesc desc = columnDescs.get(i);
-            sb.append(ParseUtil.backquote(desc.getColumnName()));
+            sb.append("`").append(desc.getColumnName()).append("`");
             if (desc.getExpr() != null) {
                 sb.append("=").append(ExprToSql.toSql(desc.getExpr()));
             }
@@ -1955,11 +1872,6 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
 
         sb.append("\"").append(CreateRoutineLoadStmt.JSONROOT).append("\"=\"");
         sb.append(escapeForDoubleQuotedSql(getJsonRoot())).append("\",\n");
-
-        if (!Strings.isNullOrEmpty(getEnvelope())) {
-            sb.append("\"").append(CreateRoutineLoadStmt.ENVELOPE).append("\"=\"");
-            sb.append(getEnvelope()).append("\",\n");
-        }
 
         sb.append("\"").append(LoadStmt.STRICT_MODE).append("\"=\"");
         sb.append(isStrictMode()).append("\",\n");
@@ -2140,15 +2052,13 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
         }
 
         // we use sql to persist the load properties, so we just put the load properties to sql.
-        // Backquote the job name and table name so that reserved-keyword or special-character
-        // identifiers (e.g. `order`) can be re-parsed when the statement is deserialized on FE
-        // restart; otherwise getLoadDesc() fails to parse and routineLoadDesc is lost. ParseUtil
-        // .backquote also escapes embedded backticks (a -> `a`, a`b -> `a``b`), which naive
-        // string concatenation does not.
-        String sql = String.format("CREATE ROUTINE LOAD %s ON %s %s" +
+        // Backquote the table name so that reserved-keyword table names (e.g. `order`) can be
+        // re-parsed when the statement is deserialized on FE restart; otherwise getLoadDesc()
+        // fails to parse and routineLoadDesc is lost.
+        String sql = String.format("CREATE ROUTINE LOAD %s ON `%s` %s" +
                         " PROPERTIES (\"desired_concurrent_number\"=\"1\")" +
                         " FROM KAFKA (\"kafka_topic\" = \"my_topic\")",
-                ParseUtil.backquote(name), ParseUtil.backquote(tableName), originLoadDesc.toSql());
+                name, tableName, originLoadDesc.toSql());
         LOG.debug("merge result: {}", sql);
         origStmt = new OriginStatementInfo(sql, 0);
     }

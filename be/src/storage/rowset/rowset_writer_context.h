@@ -34,11 +34,12 @@
 
 #pragma once
 
-#include "column/global_dict/types_fwd_decl.h"
+#include <storage/flat_json_config.h>
+
 #include "fs/fs.h"
 #include "gen_cpp/olap_file.pb.h"
-#include "storage_primitive/flat_json_config.h"
-#include "storage_primitive/type_utils.h"
+#include "runtime/global_dict/types_fwd_decl.h"
+#include "storage/type_utils.h"
 
 namespace starrocks {
 

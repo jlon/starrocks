@@ -14,8 +14,6 @@
 
 #include <gtest/gtest.h>
 
-#include "base/testutil/assert.h"
-#include "common/config_primary_key_fwd.h"
 #include "fs/fs_util.h"
 #include "storage/lake/join_path.h"
 #include "storage/lake/lake_persistent_index.h"
@@ -27,6 +25,7 @@
 #include "storage/sstable/options.h"
 #include "storage/sstable/table_builder.h"
 #include "test_util.h"
+#include "testutil/assert.h"
 
 namespace starrocks::lake {
 
@@ -630,7 +629,6 @@ TEST_F(LakePersistentIndexFilesetTest, test_index_basic_read_write) {
         ASSERT_EQ(values[i], get_values[i]);
     }
 
-    ASSERT_OK(index->sync_flush_all_memtables(60 * 1000 * 1000)); // Wait up to 60s
     config::l0_max_mem_usage = l0_max_mem_usage;
 }
 
@@ -658,7 +656,7 @@ TEST_F(LakePersistentIndexFilesetTest, test_index_reload_after_minor_compaction)
     {
         auto index = std::make_unique<LakePersistentIndex>(_tablet_mgr.get(), tablet_id);
         ASSERT_OK(index->init(_tablet_metadata));
-        index->set_publish_version(1);
+        index->prepare(EditVersion(1, 0), 0);
         ASSERT_OK(index->insert(N, key_slices.data(), values.data(), 0));
         ASSERT_OK(index->flush_memtable(true));
         ASSERT_OK(index->sync_flush_all_memtables(60 * 1000 * 1000)); // Wait up to 60s
@@ -720,7 +718,7 @@ TEST_F(LakePersistentIndexFilesetTest, test_index_reload_after_major_compaction)
                 all_key_slices[m].emplace_back((uint8_t*)(&all_keys[m][i]), sizeof(Key));
             }
 
-            index->set_publish_version(m);
+            index->prepare(EditVersion(m, 0), 0);
             std::vector<IndexValue> old_values(N);
             ASSERT_OK(index->upsert(N, all_key_slices[m].data(), all_values[m].data(), old_values.data()));
             ASSERT_OK(index->flush_memtable(true));
@@ -806,7 +804,7 @@ TEST_F(LakePersistentIndexFilesetTest, test_index_multiple_reload_cycles) {
         {
             auto index = std::make_unique<LakePersistentIndex>(_tablet_mgr.get(), tablet_id);
             ASSERT_OK(index->init(_tablet_metadata));
-            index->set_publish_version(cycle);
+            index->prepare(EditVersion(cycle, 0), 0);
 
             std::vector<IndexValue> old_values(N);
             ASSERT_OK(index->upsert(N, key_slices.data(), values.data(), old_values.data()));
@@ -866,7 +864,7 @@ TEST_F(LakePersistentIndexFilesetTest, test_index_upsert_and_reload) {
 
         auto index = std::make_unique<LakePersistentIndex>(_tablet_mgr.get(), tablet_id);
         ASSERT_OK(index->init(_tablet_metadata));
-        index->set_publish_version(1);
+        index->prepare(EditVersion(1, 0), 0);
         ASSERT_OK(index->insert(N, key_slices.data(), values.data(), 0));
         ASSERT_OK(index->flush_memtable(true));
         ASSERT_OK(index->sync_flush_all_memtables(60 * 1000 * 1000)); // Wait up to 60s
@@ -890,7 +888,7 @@ TEST_F(LakePersistentIndexFilesetTest, test_index_upsert_and_reload) {
 
         auto index = std::make_unique<LakePersistentIndex>(_tablet_mgr.get(), tablet_id);
         ASSERT_OK(index->init(_tablet_metadata));
-        index->set_publish_version(2);
+        index->prepare(EditVersion(2, 0), 0);
 
         std::vector<IndexValue> old_values(N);
         ASSERT_OK(index->upsert(N, key_slices.data(), new_values.data(), old_values.data()));
@@ -945,7 +943,7 @@ TEST_F(LakePersistentIndexFilesetTest, test_index_concurrent_read_after_reload) 
     {
         auto index = std::make_unique<LakePersistentIndex>(_tablet_mgr.get(), tablet_id);
         ASSERT_OK(index->init(_tablet_metadata));
-        index->set_publish_version(1);
+        index->prepare(EditVersion(1, 0), 0);
         ASSERT_OK(index->insert(N, key_slices.data(), values.data(), 0));
         ASSERT_OK(index->flush_memtable(true));
         ASSERT_OK(index->sync_flush_all_memtables(60 * 1000 * 1000)); // Wait up to 60s

@@ -15,13 +15,6 @@
 
 #include "exec/pipeline/aggregate/spillable_partitionwise_aggregate_operator.h"
 
-#include "compute_env/query/fragment_runtime_state.h"
-#include "compute_env/spill/mem_tracker_guard.h"
-#include "exec/pipeline/aggregate/spillable_aggregate_skew_compactor.h"
-#include "exec/pipeline/query_context.h"
-#include "exec/runtime_compat/runtime_state_helper.h"
-#include "runtime/current_thread.h"
-
 namespace starrocks::pipeline {
 
 bool SpillablePartitionWiseAggregateSinkOperator::need_input() const {
@@ -96,12 +89,17 @@ Status SpillablePartitionWiseAggregateSinkOperator::prepare(RuntimeState* state)
 
     DCHECK(!_agg_op->aggregator()->is_none_group_by_exprs());
     _agg_op->aggregator()->spiller()->set_metrics(
-            spill::SpillProcessMetrics(_unique_metrics.get(), RuntimeStateHelper::mutable_total_spill_bytes(state)));
+            spill::SpillProcessMetrics(_unique_metrics.get(), state->mutable_total_spill_bytes()));
 
     if (state->spill_mode() == TSpillMode::FORCE) {
         _spill_strategy = spill::SpillStrategy::SPILL_ALL;
     }
 
+    if (state->enable_spill_partitionwise_agg_skew_elimination()) {
+        auto* agg_op_factory = dynamic_cast<AggregateBlockingSinkOperatorFactory*>(_agg_op->get_factory());
+        _agg_op->aggregator()->spiller()->options().opt_aggregator_params =
+                convert_to_aggregator_params(agg_op_factory->aggregator_factory()->t_node());
+    }
     _peak_revocable_mem_bytes = _unique_metrics->AddHighWaterMarkCounter(
             "PeakRevocableMemoryBytes", TUnit::BYTES, RuntimeProfile::Counter::create_strategy(TUnit::BYTES));
     _hash_table_spill_times = ADD_COUNTER(_unique_metrics.get(), "HashTableSpillTimes", TUnit::UNIT);
@@ -340,19 +338,15 @@ Status SpillablePartitionWiseAggregateSinkOperatorFactory::prepare(RuntimeState*
         _spill_options->mem_table_pool_size = state->spill_mem_table_num();
     }
     _spill_options->spill_type = spill::SpillFormaterType::SPILL_BY_COLUMN;
-    _spill_options->block_manager = state->query_runtime_state()->query_spill_manager()->block_manager();
+    _spill_options->block_manager = state->query_ctx()->spill_manager()->block_manager();
     _spill_options->name = "agg-blocking-spill";
     _spill_options->splittable = false;
     _spill_options->enable_block_compaction = state->spill_enable_compaction();
     _spill_options->plan_node_id = _plan_node_id;
     _spill_options->encode_level = state->spill_encode_level();
-    _spill_options->wg = state->fragment_runtime_state()->workgroup();
+    _spill_options->wg = state->fragment_ctx()->workgroup();
     _spill_options->enable_buffer_read = state->enable_spill_buffer_read();
     _spill_options->max_read_buffer_bytes = state->max_spill_read_buffer_bytes_per_driver();
-    if (state->enable_spill_partitionwise_agg_skew_elimination()) {
-        _spill_options->skew_chunk_compactor = make_spill_aggregate_skew_compactor(
-                convert_to_aggregator_params(_agg_op_factory->aggregator_factory()->t_node()));
-    }
 
     return Status::OK();
 }
@@ -511,7 +505,7 @@ StatusOr<ChunkPtr> SpillablePartitionWiseAggregateSourceOperator::_pull_spilled_
                     state, RESOURCE_TLS_MEMTRACER_GUARD(state, std::weak_ptr(_curr_partition_reader)));
             if (maybe_chunk.ok() && maybe_chunk.value() && !maybe_chunk.value()->is_empty()) {
                 DCHECK(_pw_agg->need_input() && !_pw_agg->is_finished());
-                RETURN_IF_ERROR(_pw_agg->push_chunk(state, maybe_chunk.value()));
+                RETURN_IF_ERROR(_pw_agg->push_chunk(state, std::move(maybe_chunk.value())));
             } else if (maybe_chunk.status().is_end_of_file()) {
                 _curr_partition_eos = true;
                 RETURN_IF_ERROR(_pw_agg->set_finishing(state));

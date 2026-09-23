@@ -22,21 +22,19 @@
 #include <array>
 #endif
 
-#include "base/failpoint/fail_point.h"
-#include "base/testutil/sync_point.h"
-#include "base/uid_util.h"
-#include "base/utility/defer_op.h"
-#include "common/config_lake_fwd.h"
-#include "common/config_rpc_client_fwd.h"
+#include "agent/master_info.h"
+#include "common/config.h"
 #include "common/status.h"
-#include "common/system/master_info.h"
-#include "common/util/thrift_client_cache.h"
-#include "gen_cpp/FrontendService.h"
 #include "gen_cpp/lake_types.pb.h"
-#include "platform/thrift_rpc_helper.h"
+#include "runtime/client_cache.h"
 #include "storage/lake/tablet.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/metadata_util.h"
+#include "testutil/sync_point.h"
+#include "util/defer_op.h"
+#include "util/failpoint/fail_point.h"
+#include "util/thrift_rpc_helper.h"
+#include "util/uid_util.h"
 
 namespace starrocks::lake {
 

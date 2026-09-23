@@ -15,12 +15,10 @@
 #pragma once
 
 #include <atomic>
-#include <functional>
-#include <string>
-#include <vector>
 
 #include "common/status.h"
 #include "common/statusor.h"
+#include "util/system_metrics.h"
 
 namespace starrocks {
 
@@ -84,7 +82,7 @@ public:
     public:
         Scope() = delete;
         Scope(const Scope&) = delete;
-        Scope(Scope&& other) noexcept {
+        Scope(Scope&& other) {
             _old = other._old;
             _tls_io_snapshot = other._tls_io_snapshot;
             other._old = nullptr;

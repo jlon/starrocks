@@ -61,8 +61,6 @@ vectorized_functions = [
     #   cosine function
     [10102, "cosine_similarity", True, False, "FLOAT", ["ARRAY_FLOAT", "ARRAY_FLOAT"], "MathFunctions::cosine_similarity<TYPE_FLOAT, false>"],
     [10103, "cosine_similarity_norm", True, False, "FLOAT", ["ARRAY_FLOAT", "ARRAY_FLOAT"], "MathFunctions::cosine_similarity<TYPE_FLOAT, true>"],
-    [10104, "inner_product", True, False, "FLOAT", ["ARRAY_FLOAT", "ARRAY_FLOAT"], "MathFunctions::inner_product<TYPE_FLOAT>"],
-    [10105, "approx_inner_product", True, False, "FLOAT", ["ARRAY_FLOAT", "ARRAY_FLOAT"], "MathFunctions::inner_product<TYPE_FLOAT>"],
     [10106, "approx_cosine_similarity", True, False, "FLOAT", ["ARRAY_FLOAT", "ARRAY_FLOAT"], "MathFunctions::cosine_similarity<TYPE_FLOAT, false>"],
 
     [10110, "ceil", True, False, "BIGINT", ["DOUBLE"], "MathFunctions::ceil"],
@@ -191,7 +189,6 @@ vectorized_functions = [
     [10323, "hex", True, False, "VARCHAR", ['VARBINARY'], "StringFunctions::hex_string"],
     [10314, "unhex", True, False, "VARCHAR", ['VARCHAR'], "StringFunctions::unhex"],
     [10315, "sm3", True, False, "VARCHAR", ['VARCHAR'], "StringFunctions::sm3"],
-    [10318, "blake3", True, False, "VARCHAR", ['VARCHAR'], "StringFunctions::blake3"],
     [10316, "hex_decode_binary", True, False, "VARBINARY", ['VARCHAR'], "StringFunctions::unhex"],
     [10317, "hex_decode_string", True, False, "VARCHAR", ['VARCHAR'], "StringFunctions::unhex"],
 
@@ -343,14 +340,6 @@ vectorized_functions = [
     [30191, 'rtrim', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR'], 'StringFunctions::rtrim',
      'StringFunctions::trim_prepare', 'StringFunctions::trim_close'],
 
-    # MySQL TRIM(... FROM ...) substring semantics: remstr removed as a whole unit, repeatedly.
-    [30172, 'trim_string', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR'], 'StringFunctions::trim_string',
-     'StringFunctions::trim_string_prepare', 'StringFunctions::trim_close'],
-    [30182, 'ltrim_string', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR'], 'StringFunctions::ltrim_string',
-     'StringFunctions::trim_string_prepare', 'StringFunctions::trim_close'],
-    [30192, 'rtrim_string', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR'], 'StringFunctions::rtrim_string',
-     'StringFunctions::trim_string_prepare', 'StringFunctions::trim_close'],
-
     [30200, 'ascii', True, False, 'INT', ['VARCHAR'], 'StringFunctions::ascii'],
     [30500, 'char', True, False, 'VARCHAR', ['INT'], "StringFunctions::get_char"],
     [30210, 'instr', True, False, 'INT', ['VARCHAR', 'VARCHAR'], 'StringFunctions::instr'],
@@ -395,8 +384,6 @@ vectorized_functions = [
      'StringFunctions::regexp_extract_prepare', 'StringFunctions::regexp_close'],
     [30335, 'regexp_count', True, False, 'BIGINT', ['VARCHAR', 'VARCHAR'], 'StringFunctions::regexp_count',
      'StringFunctions::regexp_count_prepare', 'StringFunctions::regexp_close'],
-    [30336, 'regexp_position', True, False, 'INT', ['VARCHAR', 'VARCHAR', 'INT', 'INT'], 'StringFunctions::regexp_position',
-     'StringFunctions::regexp_position_prepare', 'StringFunctions::regexp_position_close'],
     [30400, "money_format", True, False, "VARCHAR", ["BIGINT"], "StringFunctions::money_format_bigint"],
     [30401, "money_format", True, False, "VARCHAR", ["LARGEINT"], "StringFunctions::money_format_largeint"],
     [30402, "money_format", True, False, "VARCHAR", ["DECIMALV2"], "StringFunctions::money_format_decimalv2val"],
@@ -460,25 +447,6 @@ vectorized_functions = [
     # returns NULL for NULL input and never produces a non-null BOOLEAN value.
     [30461, 'raise_error', True, False, 'BOOLEAN', ['VARCHAR'], 'StringFunctions::raise_error'],
 
-    # HTTP Request function - HTTP/HTTPS request scalar function with Named Parameters
-    # http_request(url, method, body, headers, timeout_ms, ssl_verify, username, password)
-    [30470, 'http_request', True, False, 'VARCHAR',
-     ['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'INT', 'BOOLEAN', 'VARCHAR', 'VARCHAR'],
-     'HttpRequestFunctions::http_request',
-     'HttpRequestFunctions::http_request_prepare', 'HttpRequestFunctions::http_request_close',
-     {
-         'named_args': [
-             {'name': 'url'},
-             {'name': 'method', 'default': 'GET'},
-             {'name': 'body', 'default': ''},
-             {'name': 'headers', 'default': '{}'},
-             {'name': 'timeout_ms', 'default': 30000},
-             {'name': 'ssl_verify', 'default': True},
-             {'name': 'username', 'default': ''},
-             {'name': 'password', 'default': ''}
-         ]
-     }],
-
     # Binary Functions
     # to_binary
     [30600, 'to_binary', True, True, 'VARBINARY', ['VARCHAR', 'VARCHAR'], 'BinaryFunctions::to_binary',
@@ -490,11 +458,6 @@ vectorized_functions = [
      'BinaryFunctions::from_binary_prepare', 'BinaryFunctions::from_binary_close'],
     [30603, 'from_binary', True, True, 'VARCHAR', ['VARBINARY'], 'BinaryFunctions::from_binary',
      'BinaryFunctions::from_binary_prepare', 'BinaryFunctions::from_binary_close'],
-
-    # dict_encode(value, dict_slot_id): translate a constant to its global dictionary code (resolved
-    # once from BE runtime state), so a dict-aware comparison can run on codes. BE-only.
-    [30700, 'dict_encode', True, False, 'INT', ['VARCHAR', 'INT'], 'DictFunctions::dict_encode',
-     'DictFunctions::dict_encode_prepare', 'DictFunctions::dict_encode_close'],
 
     # 50xxx: timestamp functions
     [50008, 'year', True, False, 'SMALLINT', ['DATE'], 'TimeFunctions::yearV3'],
@@ -867,16 +830,8 @@ vectorized_functions = [
     [91003, 'bitmap_to_binary', False, True, 'VARBINARY', ['BITMAP'], 'BitmapFunctions::bitmap_to_binary'],
     [91004, 'bitmap_from_binary', False, False, 'BITMAP', ['VARBINARY'], 'BitmapFunctions::bitmap_from_binary'],
 
-    # data sketches theta scalar functions
-    [91100, 'ds_theta_union', False, False, 'VARBINARY', ['VARBINARY', 'VARBINARY'], 'DsThetaFunctions::ds_theta_union'],
-    [91101, 'ds_theta_intersect', False, False, 'VARBINARY', ['VARBINARY', 'VARBINARY'], 'DsThetaFunctions::ds_theta_intersect'],
-    [91102, 'ds_theta_a_not_b', False, False, 'VARBINARY', ['VARBINARY', 'VARBINARY'], 'DsThetaFunctions::ds_theta_a_not_b'],
-    [91103, 'ds_theta_estimate', False, False, 'DOUBLE', ['VARBINARY'], 'DsThetaFunctions::ds_theta_estimate'],
-
     # hash function
     [100010, 'murmur_hash3_32', True, False, 'INT', ['VARCHAR', '...'], 'HashFunctions::murmur_hash3_32'],
-    [100028, 'xx_hash32', True, False, 'INT', ['VARCHAR', '...'], 'HashFunctions::xx_hash32'],
-    [100029, 'xx_hash64', True, False, 'BIGINT', ['VARCHAR', '...'], 'HashFunctions::xx_hash64'],
     [100021, 'xx_hash3_64', True, False, 'BIGINT', ['VARCHAR', '...'], 'HashFunctions::xx_hash3_64'],
     [100022, 'xx_hash3_128', True, False, 'LARGEINT', ['VARCHAR', '...'], 'HashFunctions::xx_hash3_128'],
     [100023, 'crc32_hash', True, False, 'BIGINT', ['ANY_ARRAY'], 'HashFunctions::crc32_hash'],
@@ -897,28 +852,6 @@ vectorized_functions = [
     [100025, 'uuid_v7', True, False, 'VARCHAR', [], "UtilityFunctions::uuid_v7"],
     [100026, 'uuid_v7_numeric', True, False, 'LARGEINT', [], "UtilityFunctions::uuid_v7_numeric"],
     [100027, 'query_id', True, False, 'VARCHAR', [], "UtilityFunctions::query_id"],
-
-    # materialize: identity function that acts as an optimization barrier.
-    # Returns the input unchanged but is opaque to the FE optimizer,
-    # preventing constant folding, partition pruning, and other rewrites.
-    [100030, 'materialize', True, False, 'BOOLEAN', ['BOOLEAN'], "UtilityFunctions::materialize"],
-    [100031, 'materialize', True, False, 'TINYINT', ['TINYINT'], "UtilityFunctions::materialize"],
-    [100032, 'materialize', True, False, 'SMALLINT', ['SMALLINT'], "UtilityFunctions::materialize"],
-    [100033, 'materialize', True, False, 'INT', ['INT'], "UtilityFunctions::materialize"],
-    [100034, 'materialize', True, False, 'BIGINT', ['BIGINT'], "UtilityFunctions::materialize"],
-    [100035, 'materialize', True, False, 'LARGEINT', ['LARGEINT'], "UtilityFunctions::materialize"],
-    [100036, 'materialize', True, False, 'FLOAT', ['FLOAT'], "UtilityFunctions::materialize"],
-    [100037, 'materialize', True, False, 'DOUBLE', ['DOUBLE'], "UtilityFunctions::materialize"],
-    [100038, 'materialize', True, False, 'VARCHAR', ['VARCHAR'], "UtilityFunctions::materialize"],
-    [100039, 'materialize', True, False, 'DATE', ['DATE'], "UtilityFunctions::materialize"],
-    [100040, 'materialize', True, False, 'DATETIME', ['DATETIME'], "UtilityFunctions::materialize"],
-    [100041, 'materialize', True, False, 'DECIMALV2', ['DECIMALV2'], "UtilityFunctions::materialize"],
-    [100042, 'materialize', True, False, 'DECIMAL32', ['DECIMAL32'], "UtilityFunctions::materialize"],
-    [100043, 'materialize', True, False, 'DECIMAL64', ['DECIMAL64'], "UtilityFunctions::materialize"],
-    [100044, 'materialize', True, False, 'DECIMAL128', ['DECIMAL128'], "UtilityFunctions::materialize"],
-    [100045, 'materialize', True, False, 'DECIMAL256', ['DECIMAL256'], "UtilityFunctions::materialize"],
-    [100046, 'materialize', True, False, 'JSON', ['JSON'], "UtilityFunctions::materialize"],
-    [100047, 'materialize', True, False, 'VARBINARY', ['VARBINARY'], "UtilityFunctions::materialize"],
 
     # json string function
     [110022, "get_json_int", False, False, "BIGINT", ["VARCHAR", "VARCHAR"], "JsonFunctions::get_json_bigint",
@@ -970,15 +903,9 @@ vectorized_functions = [
      "JsonFunctions::native_json_path_prepare", "JsonFunctions::native_json_path_close"],
     [110025, "json_set", False, False, "JSON", ["JSON", "JSON", "..."], "JsonFunctions::json_set"],
     [110026, "json_pretty", False, True, "VARCHAR", ["JSON"], "JsonFunctions::json_pretty"],
-    [110027, "get_json_scalar", False, True,  "VARCHAR", ["JSON", "VARCHAR"], "JsonFunctions::get_native_json_scalar_string",
-     "JsonFunctions::native_json_path_prepare", "JsonFunctions::native_json_path_close"],
-    [110028, "get_json_scalar", False, True,  "VARCHAR", ["VARCHAR", "VARCHAR"], "JsonFunctions::get_json_scalar_string",
-     "JsonFunctions::native_json_path_prepare", "JsonFunctions::native_json_path_close"],
     [110100, "to_json", False, False, "JSON", ["ANY_MAP"], "JsonFunctions::to_json"],
     [110101, "to_json", False, False, "JSON", ["ANY_STRUCT"], "JsonFunctions::to_json"],
     [110112, "json_contains", False, False, "BOOLEAN", ["JSON", "JSON"], "JsonFunctions::json_contains"],
-    [110113, "is_json_scalar", False, False, "BOOLEAN", ["JSON"], "JsonFunctions::is_json_scalar"],
-
 
     # variant type function
     [110200, "variant_query", False, False, "VARIANT", ["VARIANT", "VARCHAR"], "VariantFunctions::variant_query",
@@ -1060,22 +987,6 @@ vectorized_functions = [
      "GeoFunctions::st_circle_prepare", "GeoFunctions::st_from_wkt_close"],
     [120014, "ST_Contains", False, False, "BOOLEAN", ["VARCHAR", "VARCHAR"], "GeoFunctions::st_contains",
      "GeoFunctions::st_contains_prepare", "GeoFunctions::st_contains_close"],
-    [120020, "ST_GeogFromText", False, False, "GEOGRAPHY", ["VARCHAR"],
-     "GeoFunctions::st_geog_from_text"],
-    [120021, "ST_GeogFromText", False, False, "GEOGRAPHY", ["VARCHAR", "INT"],
-     "GeoFunctions::st_geog_from_text"],
-    [120030, "ST_GeogFromWKB", False, False, "GEOGRAPHY", ["VARBINARY"],
-     "GeoFunctions::st_geog_from_wkb"],
-    [120031, "ST_GeogFromWKB", False, False, "GEOGRAPHY", ["VARBINARY", "INT"],
-     "GeoFunctions::st_geog_from_wkb"],
-    [120040, "ST_AsText", False, False, "VARCHAR", ["GEOGRAPHY"],
-     "GeoFunctions::st_geography_as_text"],
-    [120050, "ST_AsWKT", False, False, "VARCHAR", ["GEOGRAPHY"],
-     "GeoFunctions::st_geography_as_text"],
-    [120060, "ST_AsBinary", False, False, "VARBINARY", ["GEOGRAPHY"],
-     "GeoFunctions::st_geography_as_wkb"],
-    [120070, "ST_AsWKB", False, False, "VARBINARY", ["GEOGRAPHY"],
-     "GeoFunctions::st_geography_as_wkb"],
 
     # percentile function
     [130000, 'percentile_hash', True, False, 'PERCENTILE', ['DOUBLE'], 'PercentileFunctions::percentile_hash'],
@@ -1607,88 +1518,4 @@ vectorized_functions = [
 
     # ai functions
     [200000, 'ai_query', True, False, 'VARCHAR', ['VARCHAR', 'JSON'], "AiFunctions::ai_query"]
-]
-
-# AI functions are registered as FE metadata independently from ordinary builtins. They are
-# dispatched asynchronously by AIProject and intentionally bypass the ordinary synchronous
-# BE builtin descriptor table.
-def ai_metadata(capability, prompt_kind, result_kind, input_arguments, model_argument=-1,
-                provider_argument=-1, null_as_empty_arguments=(), blank_as_null_arguments=()):
-    # Argument roles are explicit: FIDs identify overloads and do not encode their semantics.
-    return {
-        'model_source': 'PROVIDER' if provider_argument >= 0 else 'SYSTEM',
-        'capability': capability,
-        'prompt_kind': prompt_kind,
-        'result_kind': result_kind,
-        'input_arguments': list(input_arguments),
-        'model_argument': model_argument,
-        'provider_argument': provider_argument,
-        'null_as_empty_arguments': list(null_as_empty_arguments),
-        'blank_as_null_arguments': list(blank_as_null_arguments),
-    }
-
-
-ai_vectorized_functions = [
-    [200100, 'ai_complete', True, False, 'VARCHAR', ['VARCHAR'], 'AiFunctions::ai_complete',
-     ai_metadata('CHAT', 'PASSTHROUGH', 'STRING', [0])],
-    [200101, 'ai_complete', True, False, 'VARCHAR', ['VARCHAR', 'ANY_MAP'], 'AiFunctions::ai_complete',
-     ai_metadata('CHAT', 'PASSTHROUGH', 'STRING', [0])],
-    [200102, 'ai_complete', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR'], 'AiFunctions::ai_complete',
-     ai_metadata('CHAT', 'PASSTHROUGH', 'STRING', [1], model_argument=0)],
-    [200103, 'ai_complete', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR', 'ANY_MAP'],
-     'AiFunctions::ai_complete', ai_metadata('CHAT', 'PASSTHROUGH', 'STRING', [1], model_argument=0)],
-    [200110, 'ai_sentiment', True, False, 'VARCHAR', ['VARCHAR'],
-     'AiFunctions::ai_sentiment', ai_metadata('CHAT', 'SENTIMENT', 'SENTIMENT', [0])],
-    [200111, 'ai_sentiment', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_sentiment', ai_metadata('CHAT', 'SENTIMENT', 'SENTIMENT', [1], model_argument=0)],
-    [200112, 'ai_classify', True, False, 'JSON', ['VARCHAR', 'ARRAY_VARCHAR'],
-     'AiFunctions::ai_classify', ai_metadata('CHAT', 'CLASSIFY', 'JSON', [0, 1])],
-    [200113, 'ai_classify', True, False, 'JSON', ['VARCHAR', 'VARCHAR', 'ARRAY_VARCHAR'],
-     'AiFunctions::ai_classify', ai_metadata('CHAT', 'CLASSIFY', 'JSON', [1, 2], model_argument=0)],
-    [200114, 'ai_extract', True, False, 'JSON', ['VARCHAR', 'ARRAY_VARCHAR'],
-     'AiFunctions::ai_extract', ai_metadata('CHAT', 'EXTRACT', 'JSON', [0, 1])],
-    [200115, 'ai_extract', True, False, 'JSON', ['VARCHAR', 'VARCHAR', 'ARRAY_VARCHAR'],
-     'AiFunctions::ai_extract', ai_metadata('CHAT', 'EXTRACT', 'JSON', [1, 2], model_argument=0)],
-    [200116, 'ai_fix_grammar', True, False, 'VARCHAR', ['VARCHAR'],
-     'AiFunctions::ai_fix_grammar', ai_metadata('CHAT', 'FIX_GRAMMAR', 'STRING', [0])],
-    [200117, 'ai_fix_grammar', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_fix_grammar', ai_metadata('CHAT', 'FIX_GRAMMAR', 'STRING', [1], model_argument=0)],
-    [200118, 'ai_redact', True, False, 'VARCHAR', ['VARCHAR', 'ARRAY_VARCHAR'],
-     'AiFunctions::ai_redact', ai_metadata('CHAT', 'REDACT', 'STRING', [0, 1])],
-    [200119, 'ai_redact', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR', 'ARRAY_VARCHAR'],
-     'AiFunctions::ai_redact', ai_metadata('CHAT', 'REDACT', 'STRING', [1, 2], model_argument=0)],
-    [200120, 'ai_translate', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_translate', ai_metadata('CHAT', 'TRANSLATE', 'STRING', [0, 1, 2],
-                                           null_as_empty_arguments=[1], blank_as_null_arguments=[2])],
-    [200121, 'ai_translate', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_translate', ai_metadata('CHAT', 'TRANSLATE', 'STRING', [1, 2, 3], model_argument=0,
-                                           null_as_empty_arguments=[2], blank_as_null_arguments=[3])],
-    [200122, 'ai_similarity', True, False, 'FLOAT', ['VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_similarity', ai_metadata('CHAT', 'SIMILARITY', 'SIMILARITY', [0, 1])],
-    [200123, 'ai_similarity', True, False, 'FLOAT', ['VARCHAR', 'VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_similarity', ai_metadata('CHAT', 'SIMILARITY', 'SIMILARITY', [1, 2], model_argument=0)],
-    [200124, 'ai_summarize', True, False, 'VARCHAR', ['VARCHAR'],
-     'AiFunctions::ai_summarize', ai_metadata('CHAT', 'SUMMARIZE', 'STRING', [0])],
-    [200125, 'ai_summarize', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_summarize', ai_metadata('CHAT', 'SUMMARIZE', 'STRING', [1], model_argument=0)],
-    [200126, 'ai_filter', True, False, 'BOOLEAN', ['VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_filter', ai_metadata('CHAT', 'FILTER', 'BOOLEAN', [0, 1])],
-    [200127, 'ai_filter', True, False, 'BOOLEAN', ['VARCHAR', 'VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_filter', ai_metadata('CHAT', 'FILTER', 'BOOLEAN', [1, 2], model_argument=0)],
-    [200130, 'ai_embed', True, False, 'ARRAY_FLOAT', ['VARCHAR'], 'AiFunctions::ai_embed',
-     ai_metadata('TEXT_EMBEDDING', 'PASSTHROUGH', 'EMBEDDING', [0])],
-    [200131, 'ai_embed', True, False, 'ARRAY_FLOAT', ['VARCHAR', 'ANY_MAP'], 'AiFunctions::ai_embed',
-     ai_metadata('TEXT_EMBEDDING', 'PASSTHROUGH', 'EMBEDDING', [0])],
-    [200132, 'ai_embed', True, False, 'ARRAY_FLOAT', ['VARCHAR', 'VARCHAR'], 'AiFunctions::ai_embed',
-     ai_metadata('TEXT_EMBEDDING', 'PASSTHROUGH', 'EMBEDDING', [1], model_argument=0)],
-    [200133, 'ai_embed', True, False, 'ARRAY_FLOAT', ['VARCHAR', 'VARCHAR', 'ANY_MAP'],
-     'AiFunctions::ai_embed', ai_metadata('TEXT_EMBEDDING', 'PASSTHROUGH', 'EMBEDDING', [1], model_argument=0)],
-    [200140, 'ai_custom_query', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_custom_query', ai_metadata('CHAT', 'PASSTHROUGH', 'STRING', [1], provider_argument=0)],
-    [200141, 'ai_custom_query', True, False, 'VARCHAR', ['VARCHAR', 'VARCHAR', 'ANY_MAP'],
-     'AiFunctions::ai_custom_query', ai_metadata('CHAT', 'PASSTHROUGH', 'STRING', [1], provider_argument=0)],
-    [200142, 'ai_custom_embedding', True, False, 'ARRAY_FLOAT', ['VARCHAR', 'VARCHAR'],
-     'AiFunctions::ai_custom_embedding', ai_metadata('TEXT_EMBEDDING', 'PASSTHROUGH', 'EMBEDDING', [1], provider_argument=0)],
-    [200143, 'ai_custom_embedding', True, False, 'ARRAY_FLOAT', ['VARCHAR', 'VARCHAR', 'ANY_MAP'],
-     'AiFunctions::ai_custom_embedding', ai_metadata('TEXT_EMBEDDING', 'PASSTHROUGH', 'EMBEDDING', [1], provider_argument=0)],
 ]

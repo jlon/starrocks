@@ -1,6 +1,6 @@
 ---
 displayed_sidebar: docs
-sidebar_position: 10
+sidebar_position: 5
 description: "共有データクラスター上でClaudeとStarRocks MCPサーバーを使用して複雑なデータを分析します。"
 ---
 

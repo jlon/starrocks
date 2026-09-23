@@ -53,7 +53,6 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.text.DecimalFormat;
 import java.time.LocalDateTime;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -246,7 +245,7 @@ public class FeExecuteCoordinator extends Coordinator {
 
     @Override
     public List<QueryStatisticsItem.FragmentInstanceInfo> getFragmentInstanceInfos() {
-        return Collections.emptyList();
+        return null;
     }
 
     @Override
@@ -365,7 +364,7 @@ public class FeExecuteCoordinator extends Coordinator {
                                 .orElseThrow(() -> new IllegalStateException("No match for slotId: " + slotId));
                     })
                     .collect(Collectors.toList());
-            for (int i = 0; i < valuesOperator.getRows().size(); i++) {
+            for (final List<ScalarOperator> row : valuesOperator.getRows()) {
                 serializer.reset();
                 serializeAlignedRow(alignedRow, serializer);
                 res.add(serializer.toByteBuffer());

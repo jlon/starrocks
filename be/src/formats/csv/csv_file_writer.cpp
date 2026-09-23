@@ -17,22 +17,21 @@
 #include <boost/algorithm/string.hpp>
 #include <utility>
 
-#include "base/compression/compression_utils.h"
-#include "base/utility/defer_op.h"
-#include "column/chunk.h"
 #include "column/column_helper.h"
 #include "common/http/content_type.h"
+#include "exec/hdfs_scanner/hdfs_scanner_text.h"
 #include "formats/column_evaluator.h"
-#include "formats/csv/csv_defaults.h"
 #include "formats/csv/csv_escape.h"
-#include "formats/io/formatted_output_stream_file.h"
-#include "formats/io/formatted_output_stream_string.h"
 #include "formats/utils.h"
+#include "io/formatted_output_stream_file.h"
+#include "io/formatted_output_stream_string.h"
 #include "runtime/current_thread.h"
+#include "util/compression/compression_utils.h"
+#include "util/defer_op.h"
 
 namespace starrocks::formats {
 
-CSVFileWriter::CSVFileWriter(std::string location, std::shared_ptr<FormattedOutputStream> output_stream,
+CSVFileWriter::CSVFileWriter(std::string location, std::shared_ptr<io::FormattedOutputStream> output_stream,
                              std::vector<std::string> column_names, std::vector<TypeDescriptor> types,
                              std::vector<std::unique_ptr<ColumnEvaluator>>&& column_evaluators,
                              std::shared_ptr<CSVWriterOptions> writer_options, std::function<void()> rollback_action)
@@ -65,10 +64,10 @@ Status CSVFileWriter::init() {
         _converter_options->is_hive = true;
         _converter_options->array_format_type = csv::ArrayFormatType::kHive;
         _converter_options->array_hive_collection_delimiter = _writer_options->collection_delim.empty()
-                                                                      ? csv::DEFAULT_COLLECTION_DELIM.front()
+                                                                      ? DEFAULT_COLLECTION_DELIM.front()
                                                                       : _writer_options->collection_delim.front();
         _converter_options->array_hive_mapkey_delimiter = _writer_options->mapkey_delim.empty()
-                                                                  ? csv::DEFAULT_MAPKEY_DELIM.front()
+                                                                  ? DEFAULT_MAPKEY_DELIM.front()
                                                                   : _writer_options->mapkey_delim.front();
     }
 
@@ -83,8 +82,8 @@ Status CSVFileWriter::_write_header() {
     // Write header row if include_header is enabled
     if (_writer_options->include_header) {
         if (_column_names.empty()) {
-            LOG(WARNING)
-                    << "include_header is enabled but column_names is empty, this may indicate an upstream logic issue";
+            LOG(WARNING) << "include_header is enabled but column_names is empty, this may indicate an upstream "
+                            "logic issue";
         } else {
             const bool use_enclose = (_writer_options->enclose != 0);
             for (size_t i = 0; i < _column_names.size(); i++) {
@@ -218,14 +217,14 @@ Status CSVFileWriter::_write_enclosed_field(csv::Converter* converter, const Col
                                             const csv::Converter::Options& options) {
     // Write the field content into a temporary in-memory string buffer, then scan
     // and escape via _write_enclosed_string.
-    formats::FormattedOutputStreamString field_buf(256);
+    io::FormattedOutputStreamString field_buf(256);
     RETURN_IF_ERROR(converter->write_string(&field_buf, column, row_num, options));
     RETURN_IF_ERROR(field_buf.finalize()); // flush internal buffer to string
     return _write_enclosed_string(field_buf.as_string());
 }
 
-FileCommitResult CSVFileWriter::close() {
-    FileCommitResult result{
+FileWriter::CommitResult CSVFileWriter::close() {
+    CommitResult result{
             .io_status = Status::OK(), .format = CSV, .location = _location, .rollback_action = _rollback_action};
 
     // Ensure header is written even if no data was written
@@ -303,21 +302,20 @@ StatusOr<WriterAndStream> CSVFileWriterFactory::create(const std::string& path) 
     auto column_evaluators = ColumnEvaluator::clone(_column_evaluators);
     auto types = ColumnEvaluator::types(_column_evaluators);
     auto async_output_stream =
-            std::make_unique<formats::AsyncFlushOutputStream>(std::move(file), _executors, _runtime_state);
+            std::make_unique<io::AsyncFlushOutputStream>(std::move(file), _executors, _runtime_state);
 
     // Create base async output stream
-    auto base_stream =
-            std::make_shared<formats::AsyncFormattedOutputStreamFile>(async_output_stream.get(), 1024 * 1024);
+    auto base_stream = std::make_shared<io::AsyncFormattedOutputStreamFile>(async_output_stream.get(), 1024 * 1024);
 
     // Wrap with compression if enabled (decorator pattern)
-    std::shared_ptr<FormattedOutputStream> csv_output_stream;
+    std::shared_ptr<io::FormattedOutputStream> csv_output_stream;
     CompressionTypePB compression_pb = CompressionUtils::to_compression_pb(_compression_type);
     // Only use compression if it's a valid, recognized compression type
     // (not UNKNOWN_COMPRESSION which is returned for AUTO, DEFAULT_COMPRESSION, etc.)
     if (compression_pb != CompressionTypePB::NO_COMPRESSION &&
         compression_pb != CompressionTypePB::UNKNOWN_COMPRESSION) {
         ASSIGN_OR_RETURN(csv_output_stream,
-                         formats::CompressedFormattedOutputStream::create(base_stream, compression_pb, 1024 * 1024));
+                         io::CompressedFormattedOutputStream::create(base_stream, compression_pb, 1024 * 1024));
     } else {
         csv_output_stream = base_stream;
     }

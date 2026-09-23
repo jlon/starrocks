@@ -31,13 +31,6 @@ public interface CoordinatorBackendAssigner {
     void start();
 
     /**
-     * Stops the backend assigner, interrupting its internal scheduler so the worker thread
-     * exits promptly during leader demotion. Implementations should make this idempotent
-     * and tolerate being followed by another {@link #start()} after re-election.
-     */
-    void stop();
-
-    /**
      * Registers a batch write with the specified parameters.
      *
      * @param id The ID of the batch write operation.

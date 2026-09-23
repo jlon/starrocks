@@ -17,7 +17,7 @@
 #include <utility>
 
 #include "exec/analytor.h"
-#include "exec_primitive/pipeline/operator_factory.h"
+#include "exec/pipeline/operator.h"
 
 namespace starrocks::pipeline {
 class AnalyticSinkOperator : public Operator {

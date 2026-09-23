@@ -17,10 +17,10 @@
 #include <algorithm>
 #include <unordered_map>
 
-#include "common/config_compaction_fwd.h"
-#include "common/config_primary_key_fwd.h"
+#include "common/config.h"
 #include "common/logging.h"
 #include "gutil/strings/join.h"
+#include "runtime/exec_env.h"
 #include "storage/lake/meta_file.h"
 #include "storage/lake/primary_key_compaction_policy.h"
 #include "storage/lake/tablet.h"
@@ -591,8 +591,7 @@ StatusOr<CompactionAlgorithm> CompactionPolicy::choose_compaction_algorithm(cons
     // TODO: support row source mask buffer based on starlet fs
     // The current row source mask buffer is based on posix tmp file,
     // if there is no storage root path, use horizontal compaction.
-    const auto* store_path_registry = _tablet_mgr->store_path_registry();
-    if (store_path_registry == nullptr || !store_path_registry->has_store_paths()) {
+    if (ExecEnv::GetInstance()->store_paths().empty()) {
         return HORIZONTAL_COMPACTION;
     }
 
@@ -613,20 +612,7 @@ StatusOr<CompactionAlgorithm> CompactionPolicy::choose_compaction_algorithm(cons
 
 StatusOr<CompactionPolicyPtr> CompactionPolicy::create(TabletManager* tablet_mgr,
                                                        std::shared_ptr<const TabletMetadataPB> tablet_metadata,
-                                                       bool force_base_compaction, bool is_unshare) {
-    if (is_unshare) {
-        if (tablet_metadata->schema().keys_type() != PRIMARY_KEYS) {
-            return Status::NotSupported("unshare compaction only supports primary-key tablets");
-        }
-        if (!tablet_metadata->has_range()) {
-            return Status::InvalidArgument("unshare compaction requires a tablet range");
-        }
-        if ((tablet_metadata->has_dcg_meta() && !tablet_metadata->dcg_meta().dcgs().empty()) ||
-            (tablet_metadata->has_idg_meta() && !tablet_metadata->idg_meta().idgs().empty())) {
-            return Status::NotSupported("unshare compaction does not support DCG or IDG metadata yet");
-        }
-        return std::make_shared<UnshareCompactionPolicy>(tablet_mgr, std::move(tablet_metadata));
-    }
+                                                       bool force_base_compaction) {
     if (tablet_metadata->schema().keys_type() == PRIMARY_KEYS) {
         return std::make_shared<PrimaryCompactionPolicy>(tablet_mgr, std::move(tablet_metadata), force_base_compaction);
     } else if (config::enable_size_tiered_compaction_strategy) {

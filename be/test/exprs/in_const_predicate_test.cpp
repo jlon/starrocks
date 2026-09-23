@@ -17,7 +17,6 @@
 #include <gtest/gtest.h>
 
 #include "exprs/column_ref.h"
-#include "exprs/expr_context.h"
 #include "runtime/runtime_state.h"
 #include "testutil/column_test_helper.h"
 #include "types/logical_type.h"

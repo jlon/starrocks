@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "exec_primitive/pipeline/operator_factory.h"
+#include "exec/pipeline/operator.h"
 
 namespace starrocks::pipeline {
 class LimitOperator final : public Operator {
@@ -44,7 +44,7 @@ public:
 
     Status push_chunk(RuntimeState* state, const ChunkPtr& chunk) override;
 
-    OperatorExecStatsSnapshot exec_stats_snapshot() const override;
+    void update_exec_stats(RuntimeState* state) override;
 
 private:
     bool _is_finished = false;

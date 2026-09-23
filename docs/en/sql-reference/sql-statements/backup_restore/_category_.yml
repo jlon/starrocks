@@ -3,5 +3,4 @@ label: 'Backup and restore'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: backup_restore
+  type: generated-index

@@ -96,20 +96,16 @@ public class CTASAnalyzer {
         TableName tableNameObject = TableName.fromTableRef(normalizedTableRef);
         CreateTableAnalyzer.analyzeEngineName(createTableStmt, tableNameObject.getCatalog());
 
-        // Recursive CTE execution rewrites and analyzes the same CTAS AST again. Preserve the columns
-        // inferred from the original query instead of appending columns derived from the rewritten query.
-        if (createTableStmt.getColumnDefs().isEmpty()) {
-            for (int i = 0; i < allFields.size(); i++) {
-                Type type = AnalyzerUtils.transformTableColumnType(allFields.get(i).getType(),
-                        createTableStmt.isOlapEngine(), /* preferStringForVarchar */ false);
-                Expr originExpression = allFields.get(i).getOriginExpression();
-                ColumnDef columnDef = new ColumnDef(finalColumnNames.get(i), new TypeDef(type), false,
-                        null, null, originExpression.isNullable(), ColumnDef.DefaultValueDef.NOT_SET, "");
-                if (isPKTable && keysDesc.containsCol(finalColumnNames.get(i))) {
-                    columnDef.setAllowNull(false);
-                }
-                createTableStmt.addColumnDef(columnDef);
+        for (int i = 0; i < allFields.size(); i++) {
+            Type type = AnalyzerUtils.transformTableColumnType(allFields.get(i).getType(),
+                    createTableStmt.isOlapEngine(), /* preferStringForVarchar */ false);
+            Expr originExpression = allFields.get(i).getOriginExpression();
+            ColumnDef columnDef = new ColumnDef(finalColumnNames.get(i), new TypeDef(type), false,
+                    null, null, originExpression.isNullable(), ColumnDef.DefaultValueDef.NOT_SET, "");
+            if (isPKTable && keysDesc.containsCol(finalColumnNames.get(i))) {
+                columnDef.setAllowNull(false);
             }
+            createTableStmt.addColumnDef(columnDef);
         }
 
         // For replication_num, The behavior is the same as creating a table
@@ -149,9 +145,7 @@ public class CTASAnalyzer {
             }
             AnalyzerUtils.checkAutoPartitionTableLimit(functionCallExpr, currentGranularity);
             rangePartitionDesc.setAutoPartitionTable(true);
-        } else if (partitionDesc instanceof ListPartitionDesc && createTableStmt.isOlapEngine()) {
-            // Only OLAP needs a non-nullable list partition column. External engines keep the
-            // nullability the query derived: an Iceberg identity partition accepts NULL.
+        } else if (partitionDesc instanceof ListPartitionDesc) {
             for (ColumnDef columnDef : columnDefs) {
                 for (String partitionColName : ((ListPartitionDesc) partitionDesc).getPartitionColNames()) {
                     if (columnDef.getName().equalsIgnoreCase(partitionColName)) {

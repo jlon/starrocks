@@ -59,13 +59,6 @@ public class DropAutoIncrementMapTask extends AgentTask {
         }
     }
 
-    @Override
-    public void cancelPendingWaiter(Status status) {
-        if (this.latch != null) {
-            latch.countDownToZero(status);
-        }
-    }
-
     public void setLatch(MarkedCountDownLatch<Long, Long> latch) {
         this.latch = latch;
     }

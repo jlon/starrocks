@@ -39,20 +39,18 @@
 #include <fstream>
 #include <iostream>
 
-#include "column/chunk_factory.h"
 #include "column/column.h"
-#include "column/column_helper.h"
 #include "common/logging.h"
-#include "common/util/debug_util.h"
 #include "gen_cpp/segment.pb.h"
 #include "runtime/mem_pool.h"
 #include "storage/chunk_helper.h"
+#include "storage/column_predicate.h"
 #include "storage/olap_common.h"
 #include "storage/rowset/binary_plain_page.h"
 #include "storage/rowset/page_decoder.h"
 #include "storage/rowset/storage_page_decoder.h"
 #include "storage/types.h"
-#include "storage_primitive/column_predicate_factory.h"
+#include "util/debug_util.h"
 
 namespace starrocks {
 
@@ -110,10 +108,10 @@ public:
 
         //check values
 
-        auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+        auto column = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
         size_t size = slices.size();
         status = page_decoder.next_batch(&size, column.get());
-        auto values = GetStorageContainer<TYPE_VARCHAR>::get_data(column);
+        auto* values = reinterpret_cast<const Slice*>(column->raw_data());
         ASSERT_TRUE(status.ok());
         ASSERT_EQ(slices.size(), size);
         ASSERT_EQ("Individual", values[0].to_string());
@@ -132,14 +130,14 @@ public:
         ASSERT_TRUE(status.ok()) << status.to_string();
         // read 3 items
         ASSERT_EQ(3, size);
-        values = GetStorageContainer<TYPE_VARCHAR>::get_data(column);
+        values = reinterpret_cast<const Slice*>(column->raw_data());
         ASSERT_EQ("Nature", values[0].to_string());
         ASSERT_EQ("Captain", values[1].to_string());
         ASSERT_EQ("Xmas", values[2].to_string());
 
         ASSERT_TRUE(page_decoder.seek_to_position_in_page(0).ok());
         ASSERT_EQ(0, page_decoder.current_index());
-        column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+        column = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
         SparseRange<> read_range;
         read_range.add(Range<>(0, 2));
         read_range.add(Range<>(4, 7));
@@ -219,7 +217,7 @@ public:
             ASSERT_TRUE(status.ok());
 
             //check values
-            auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+            auto column = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
 
             size_t num = 1;
             size_t pos = random() % (page_start_ids[slice_index + 1] - page_start_ids[slice_index]);
@@ -228,7 +226,7 @@ public:
             ASSERT_TRUE(status.ok());
             status = page_decoder.next_batch(&num, column.get());
             ASSERT_TRUE(status.ok());
-            const auto values = GetStorageContainer<TYPE_VARCHAR>::get_data(column);
+            auto* values = reinterpret_cast<const Slice*>(column->raw_data());
             std::string expect = contents[page_start_ids[slice_index] + pos].to_string();
             std::string actual = values[0].to_string();
             ASSERT_EQ(expect, actual) << "slice index:" << slice_index << ", pos:" << pos
@@ -239,7 +237,7 @@ public:
             status = page_decoder.seek_to_position_in_page(0);
             ASSERT_TRUE(status.ok());
             size_t slice_num = page_start_ids[slice_index + 1] - page_start_ids[slice_index];
-            auto dst = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+            auto dst = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
             SparseRange<> read_range;
             read_range.add(Range<>(0, slice_num / 3));
             read_range.add(Range<>(slice_num / 2, (slice_num * 2 / 3)));
@@ -343,7 +341,7 @@ TEST_F(BinaryDictPageTest, TestNextBatchWithFilter) {
 
     // Case 1: Without NULLs (nullptr passed for null_data)
     {
-        auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+        auto column = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
 
         // Prepare filter: >= "c_300"
         std::unique_ptr<ColumnPredicate> predicate(new_column_ge_predicate(get_type_info(TYPE_VARCHAR), 0, "c_300"));
@@ -380,7 +378,7 @@ TEST_F(BinaryDictPageTest, TestNextBatchWithFilter) {
     // Case 2: With NULLs (null_data passed)
     {
         // Use NullableColumn
-        auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, true);
+        auto column = ChunkHelper::column_from_field_type(TYPE_VARCHAR, true);
 
         // Prepare filter: >= "c_300"
         std::unique_ptr<ColumnPredicate> predicate(new_column_ge_predicate(get_type_info(TYPE_VARCHAR), 0, "c_300"));
@@ -425,62 +423,6 @@ TEST_F(BinaryDictPageTest, TestNextBatchWithFilter) {
     }
 }
 
-// Same scenario as BinaryPlainPageTest.TestNextBatchWithFilterSparseRangeWithNulls for the dictionary decoder: the null
-// flags are page-level and indexed by ordinal, a sparse range must not consume them linearly.
-TEST_F(BinaryDictPageTest, TestNextBatchWithFilterSparseRangeWithNulls) {
-    std::vector<Slice> slices{"a_100", "b_200", "c_300", "d_400", "e_500"};
-
-    PageBuilderOptions options;
-    options.data_page_size = 256 * 1024;
-    options.dict_page_size = 256 * 1024;
-    BinaryDictPageBuilder page_builder(options);
-    size_t count = page_builder.add(reinterpret_cast<const uint8_t*>(slices.data()), slices.size());
-    ASSERT_EQ(slices.size(), count);
-    auto s = page_builder.finish()->build();
-
-    OwnedSlice dict_slice = page_builder.get_dictionary_page()->build();
-    auto dict_page_decoder = std::make_unique<BinaryPlainPageDecoder<TYPE_VARCHAR>>(dict_slice.slice());
-    ASSERT_TRUE(dict_page_decoder->init().ok());
-
-    Slice encoded_data = s.slice();
-    PageFooterPB footer;
-    footer.set_type(DATA_PAGE);
-    footer.mutable_data_page_footer()->set_nullmap_size(0);
-    std::unique_ptr<std::vector<uint8_t>> page = nullptr;
-    Status st = StoragePageDecoder::decode_page(&footer, 0, starrocks::DICT_ENCODING, &page, &encoded_data);
-    ASSERT_TRUE(st.ok());
-
-    BinaryDictPageDecoder<TYPE_VARCHAR> page_decoder(encoded_data);
-    page_decoder.set_dict_decoder(dict_page_decoder.get());
-    ASSERT_TRUE(page_decoder.init().ok());
-
-    auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, true);
-    std::unique_ptr<ColumnPredicate> predicate(new_column_ge_predicate(get_type_info(TYPE_VARCHAR), 0, "c_300"));
-    std::vector<const ColumnPredicate*> predicates{predicate.get()};
-
-    // read ordinal 0 and ordinals 3..4, skip 1..2
-    SparseRange<> range;
-    range.add(Range<>(0, 1));
-    range.add(Range<>(3, 5));
-    std::vector<uint8_t> selection(3, 1);
-    std::vector<uint16_t> selected_idx(3);
-
-    // ordinals 1, 2 and 4 are null; a linear walk would hand {0, 1, 1} to the 3 rows read and drop "d_400"
-    uint8_t null_data[] = {0, 1, 1, 0, 1};
-
-    st = page_decoder.next_batch_with_filter(column.get(), range, predicates, null_data, selection.data(),
-                                             selected_idx.data());
-    ASSERT_TRUE(st.ok()) << st.to_string();
-
-    ASSERT_EQ(0, selection[0]);
-    ASSERT_EQ(1, selection[1]);
-    ASSERT_EQ(0, selection[2]);
-
-    ASSERT_EQ(1, column->size());
-    ASSERT_FALSE(down_cast<NullableColumn*>(column.get())->has_null());
-    ASSERT_EQ("d_400", column->get(0).get_slice().to_string());
-}
-
 TEST_F(BinaryDictPageTest, TestReadByRowids) {
     std::vector<std::string> strings;
     std::vector<Slice> slices;
@@ -521,7 +463,7 @@ TEST_F(BinaryDictPageTest, TestReadByRowids) {
     page_decoder.set_dict_decoder(dict_page_decoder.get());
     ASSERT_TRUE(page_decoder.init().ok());
 
-    auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+    auto column = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
 
     rowid_t rowids[] = {1, 3, 5, 8};
     size_t num_read = 4;
@@ -535,74 +477,6 @@ TEST_F(BinaryDictPageTest, TestReadByRowids) {
     ASSERT_EQ("val_3", column->get(1).get_slice().to_string());
     ASSERT_EQ("val_5", column->get(2).get_slice().to_string());
     ASSERT_EQ("val_8", column->get(3).get_slice().to_string());
-}
-
-// A predicate that rejects every dictionary entry used to make next_batch_with_filter return before consuming the
-// codes of `range`, leaving the data page decoder behind the page cursor. The next range read from the same page then
-// trips `DCHECK_EQ(_offset_in_page, _data_decoder->current_index())` in ParsedPageV2::read_with_filter
-// (parsed_page.cpp), which is how the fuzzer killed an ASan BE: a 100000-row VARCHAR column whose dictionary
-// overflowed mid-segment, filtered by a value absent from the dictionary, read chunk by chunk from the same page.
-// The decoder must end every call positioned at range.end(), whether or not any row survived the filter.
-TEST_F(BinaryDictPageTest, TestNextBatchWithFilterAllDictRejectedAdvancesCursor) {
-    std::vector<std::string> values;
-    std::vector<Slice> slices;
-    for (int i = 0; i < 8; ++i) {
-        values.emplace_back("v_" + std::to_string(i));
-    }
-    for (const auto& v : values) {
-        slices.emplace_back(v);
-    }
-
-    PageBuilderOptions options;
-    options.data_page_size = 256 * 1024;
-    options.dict_page_size = 256 * 1024;
-    BinaryDictPageBuilder page_builder(options);
-    size_t count = slices.size();
-    const Slice* ptr = &slices[0];
-    count = page_builder.add(reinterpret_cast<const uint8_t*>(ptr), count);
-    ASSERT_EQ(8, count);
-    auto s = page_builder.finish()->build();
-
-    OwnedSlice dict_slice = page_builder.get_dictionary_page()->build();
-    auto dict_page_decoder = std::make_unique<BinaryPlainPageDecoder<TYPE_VARCHAR>>(dict_slice.slice());
-    ASSERT_TRUE(dict_page_decoder->init().ok());
-
-    Slice encoded_data = s.slice();
-    PageFooterPB footer;
-    footer.set_type(DATA_PAGE);
-    footer.mutable_data_page_footer()->set_nullmap_size(0);
-    std::unique_ptr<std::vector<uint8_t>> page = nullptr;
-    ASSERT_TRUE(StoragePageDecoder::decode_page(&footer, 0, starrocks::DICT_ENCODING, &page, &encoded_data).ok());
-
-    BinaryDictPageDecoder<TYPE_VARCHAR> page_decoder(encoded_data);
-    page_decoder.set_dict_decoder(dict_page_decoder.get());
-    ASSERT_TRUE(page_decoder.init().ok());
-    ASSERT_EQ(DICT_ENCODING, page_decoder.encoding_type());
-
-    // "zzz" is in no dictionary entry, so the dictionary-level selection is empty for every range of this page.
-    std::unique_ptr<ColumnPredicate> predicate(new_column_eq_predicate(get_type_info(TYPE_VARCHAR), 0, "zzz"));
-    std::vector<const ColumnPredicate*> predicates{predicate.get()};
-
-    auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
-    std::vector<uint8_t> selection(8, 1);
-    std::vector<uint16_t> selected_idx(8);
-
-    // First half of the page: nothing selected, and the decoder has to stand at row 4 afterwards.
-    Status st = page_decoder.next_batch_with_filter(column.get(), SparseRange<>(0, 4), predicates, nullptr,
-                                                    selection.data(), selected_idx.data());
-    ASSERT_TRUE(st.ok()) << st.to_string();
-    ASSERT_EQ(0, column->size());
-    for (int i = 0; i < 4; ++i) {
-        ASSERT_EQ(0, selection[i]) << i;
-    }
-    ASSERT_EQ(4, page_decoder.current_index());
-
-    // Second half: exactly what ParsedPageV2::read_with_filter issues for the next chunk of the same page.
-    st = page_decoder.next_batch_with_filter(column.get(), SparseRange<>(4, 8), predicates, nullptr,
-                                             selection.data() + 4, selected_idx.data() + 4);
-    ASSERT_TRUE(st.ok()) << st.to_string();
-    ASSERT_EQ(0, column->size());
-    ASSERT_EQ(8, page_decoder.current_index());
 }
 
 } // namespace starrocks

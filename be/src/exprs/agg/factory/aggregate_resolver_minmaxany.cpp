@@ -17,7 +17,6 @@
 #include "exprs/agg/factory/aggregate_factory.hpp"
 #include "exprs/agg/factory/aggregate_resolver.hpp"
 #include "exprs/agg/maxmin.h"
-#include "exprs/agg/minmax_n.h"
 #include "types/bitmap_value.h"
 #include "types/logical_type.h"
 #include "types/logical_type_infra.h"
@@ -73,31 +72,32 @@ struct MinMaxAnyDispatcher {
     }
 };
 
-struct MinNDispatcher {
-    template <LogicalType lt>
+template <LogicalType ret_type, bool is_max_by>
+struct MaxMinByDispatcherInner {
+    template <LogicalType arg_type>
     void operator()(AggregateFuncResolver* resolver) {
-        if constexpr (lt_is_integer<lt> || lt_is_decimal<lt> || lt_is_float<lt> || lt_is_string<lt> ||
-                      lt_is_date_or_datetime<lt> || lt_is_boolean<lt>) {
-            // min_n(value, n) returns array(value)
-            AggregateFunctionPtr func = AggregateFactory::MakeMinNAggregateFunction<lt>();
-            using MinNState = MinMaxNAggregateState<lt, true>;
-            // Use add_aggregate_mapping with IgnoreNull=false to support nullable array elements
-            resolver->add_aggregate_mapping<lt, TYPE_ARRAY, MinNState>("min_n", false, func);
+        if constexpr ((lt_is_aggregate<arg_type> || lt_is_json<arg_type>)&&(
+                              lt_is_aggregate<ret_type> || lt_is_json<ret_type> || lt_is_collection<ret_type>)) {
+            if constexpr (is_max_by) {
+                resolver->add_aggregate_mapping_notnull<arg_type, ret_type>(
+                        "max_by", true, AggregateFactory::MakeMaxByAggregateFunction<arg_type, false>());
+                resolver->add_aggregate_mapping_notnull<arg_type, ret_type>(
+                        "max_by_v2", true, AggregateFactory::MakeMaxByAggregateFunction<arg_type, true>());
+            } else {
+                resolver->add_aggregate_mapping_notnull<arg_type, ret_type>(
+                        "min_by", true, AggregateFactory::MakeMinByAggregateFunction<arg_type, false>());
+                resolver->add_aggregate_mapping_notnull<arg_type, ret_type>(
+                        "min_by_v2", true, AggregateFactory::MakeMinByAggregateFunction<arg_type, true>());
+            }
         }
     }
 };
 
-struct MaxNDispatcher {
+template <bool is_max_by>
+struct MaxMinByDispatcher {
     template <LogicalType lt>
-    void operator()(AggregateFuncResolver* resolver) {
-        if constexpr (lt_is_integer<lt> || lt_is_decimal<lt> || lt_is_float<lt> || lt_is_string<lt> ||
-                      lt_is_date_or_datetime<lt> || lt_is_boolean<lt>) {
-            // max_n(value, n) returns array(value)
-            AggregateFunctionPtr func = AggregateFactory::MakeMaxNAggregateFunction<lt>();
-            using MaxNState = MinMaxNAggregateState<lt, false>;
-            // Use add_aggregate_mapping with IgnoreNull=false to support nullable array elements
-            resolver->add_aggregate_mapping<lt, TYPE_ARRAY, MaxNState>("max_n", false, func);
-        }
+    void operator()(AggregateFuncResolver* resolver, LogicalType ret_type) {
+        type_dispatch_all(ret_type, MaxMinByDispatcherInner<lt, is_max_by>(), resolver);
     }
 };
 
@@ -107,14 +107,15 @@ void AggregateFuncResolver::register_minmaxany() {
     minmax_types.push_back(TYPE_ARRAY);
     minmax_types.push_back(TYPE_STRUCT);
     minmax_types.push_back(TYPE_MAP);
-    for (auto type : minmax_types) {
-        type_dispatch_all(type, MinMaxAnyDispatcher(), this);
+    for (auto ret_type : minmax_types) {
+        for (auto arg_type : minmax_types) {
+            type_dispatch_all(arg_type, MaxMinByDispatcher<true>(), this, ret_type);
+            type_dispatch_all(arg_type, MaxMinByDispatcher<false>(), this, ret_type);
+        }
     }
 
-    // Register min_n(value, n) and max_n(value, n) functions
     for (auto type : minmax_types) {
-        type_dispatch_all(type, MinNDispatcher(), this);
-        type_dispatch_all(type, MaxNDispatcher(), this);
+        type_dispatch_all(type, MinMaxAnyDispatcher(), this);
     }
 }
 

@@ -146,13 +146,7 @@ public class FileListTableRepo extends FileListRepo {
 
     @Override
     public void destroy() {
-        try {
-            RepoAccessor.getInstance().deleteByPipe(pipeId.getId());
-        } catch (Exception e) {
-            // Removing the file list is best-effort: dropping the pipe must not be blocked when the
-            // internal bookkeeping table is unavailable, it only leaves stale records behind.
-            LOG.warn("failed to remove the file list of pipe {}", pipeId, e);
-        }
+        RepoAccessor.getInstance().deleteByPipe(pipeId.getId());
     }
 
     /**

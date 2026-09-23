@@ -15,8 +15,7 @@
 #pragma once
 
 #include "common/status.h"
-#include "gutil/macros.h"
-#include "runtime/runtime_fwd.h"
+#include "runtime/runtime_state.h"
 
 namespace starrocks::pipeline {
 
@@ -35,8 +34,7 @@ public:
     ContextWithDependency() = default;
     virtual ~ContextWithDependency() = default;
 
-    ContextWithDependency(const ContextWithDependency&) = delete;
-    ContextWithDependency& operator=(const ContextWithDependency&) = delete;
+    DISALLOW_COPY_AND_ASSIGN(ContextWithDependency);
 
     // For pipeline, it is called by unref() when the last operator is unreffed.
     // For non-pipeline, it is called by close() of the exec node directly

@@ -47,10 +47,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 public class IcebergColumnMinMaxMgr implements IMinMaxStatsMgr, MemoryTrackable {
-    // Key by the primitive snapshot version rather than the StatsVersion object: StatsVersion has no
-    // value-based equals/hashCode (and its version field is mutable), so caching by the object would make
-    // every lookup a distinct key and never hit the warmed entry.
-    private record CacheKey(ColumnIdentifier id, long version) {}
+    private record CacheKey(ColumnIdentifier id, StatsVersion version) {}
 
     private static final Logger LOG = LogManager.getLogger(IcebergColumnMinMaxMgr.class);
 
@@ -75,7 +72,7 @@ public class IcebergColumnMinMaxMgr implements IMinMaxStatsMgr, MemoryTrackable 
         }
 
         try {
-            CompletableFuture<Optional<ColumnMinMax>> result = cache.get(new CacheKey(identifier, version.getVersion()));
+            CompletableFuture<Optional<ColumnMinMax>> result = cache.get(new CacheKey(identifier, version));
             if (result.isDone()) {
                 return result.get();
             }
@@ -86,22 +83,7 @@ public class IcebergColumnMinMaxMgr implements IMinMaxStatsMgr, MemoryTrackable 
     }
 
     @Override
-    public Optional<ColumnMinMax> getStatsSync(ColumnIdentifier identifier, StatsVersion version) {
-        if (!ConnectContext.get().getSessionVariable().isEnableMinMaxOptimization()) {
-            return Optional.empty();
-        }
-
-        try {
-            CompletableFuture<Optional<ColumnMinMax>> result = cache.get(new CacheKey(identifier, version.getVersion()));
-            return result.get();
-        } catch (Exception e) {
-            LOG.warn("Failed to get MinMax for column: {}, version: {}", identifier, version, e);
-        }
-        return Optional.empty();
-    }
-
-    @Override
-    public void removeStats(ColumnIdentifier identifier) {
+    public void removeStats(ColumnIdentifier identifier, StatsVersion version) {
         throw new SemanticException("Iceberg column min/max stats unsupported the method");
     }
 
@@ -131,7 +113,7 @@ public class IcebergColumnMinMaxMgr implements IMinMaxStatsMgr, MemoryTrackable 
                     String tableName = StatisticUtils.quoting(names.get(0), names.get(1), names.get(2));
 
                     String sql = "select min(" + columnName + ") as min, max(" + columnName + ") as max " +
-                            " from " + tableName + " VERSION AS OF " + key.version;
+                            " from " + tableName + " VERSION AS OF " + key.version.getVersion();
 
                     ConnectContext context = SIMPLE_EXECUTOR.createConnectContext();
                     context.getSessionVariable().setPipelineDop(1);

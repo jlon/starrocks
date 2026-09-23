@@ -17,12 +17,10 @@
 #include <memory>
 
 #include "exec/olap_meta_scan_node.h"
-#include "runtime/runtime_state.h"
 #include "storage/metadata_util.h"
 #include "storage/storage_engine.h"
 #include "storage/tablet.h"
 #include "storage/tablet_manager.h"
-#include "storage/virtual_column_utils.h"
 
 namespace starrocks {
 
@@ -86,14 +84,6 @@ Status OlapMetaScanner::_init_meta_reader_params() {
         TabletSchemaSPtr tmp_schema = TabletSchema::copy(*_reader_params.tablet_schema);
         int field_number = starrocks::next_uniq_id(_parent->_meta_scan_node);
         for (auto& path : _parent->_column_access_paths) {
-            // Only JSONV2 extended paths become synthetic tablet columns here, and they are always
-            // linear (one subfield per path). Non-extended paths (e.g. cbo_prune_subfield's merged
-            // multi-child subfield tree) are consumed by the reader's leaf iterator, not the schema;
-            // linear_path() below assumes a single-child chain and crashes on a multi-child tree.
-            // Skip them, consistent with extend_schema_by_access_paths().
-            if (!path->is_extended()) {
-                continue;
-            }
             int root_column_index = tmp_schema->field_index(path->path());
             RETURN_IF(root_column_index < 0, Status::RuntimeError("unknown access path: " + path->path()));
 
@@ -111,8 +101,6 @@ Status OlapMetaScanner::_init_meta_reader_params() {
         }
         _reader_params.tablet_schema = tmp_schema;
     }
-
-    ASSIGN_OR_RETURN(_reader_params.tablet_schema, extend_schema_by_virtual_columns(_reader_params.tablet_schema));
     _reader_params.desc_tbl = &_parent->_desc_tbl;
 
     VLOG(2) << "init_meta_reader schema: " << _reader_params.tablet_schema->debug_string();

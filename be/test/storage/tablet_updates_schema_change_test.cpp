@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "base/failpoint/fail_point.h"
-#include "common/config_compaction_fwd.h"
 #include "tablet_updates_test.h"
+#include "util/failpoint/fail_point.h"
 
 namespace starrocks {
 
@@ -176,14 +175,6 @@ void TabletUpdatesTest::test_convert_from(bool enable_persistent_index) {
         fp = starrocks::failpoint::FailPointRegistry::GetInstance()->get("verify_rowset_failed");
         trigger_mode.set_mode(FailPointTriggerModeType::ENABLE);
         fp->setMode(trigger_mode);
-        // Both are process-global: if the assertion below fails, the plain resets at the end of this
-        // block are skipped and every later test compacts with rowset verification on.
-        DeferOp restore_verify([&]() {
-            PFailPointTriggerMode disable_mode;
-            disable_mode.set_mode(FailPointTriggerModeType::DISABLE);
-            fp->setMode(disable_mode);
-            config::enable_rowset_verify = false;
-        });
         config::enable_rowset_verify = true;
         ASSERT_FALSE(tablet_to_schema_change->updates()
                              ->convert_from(_tablet, 4, chunk_changer.get(), _tablet->tablet_schema())
@@ -354,14 +345,6 @@ void TabletUpdatesTest::test_reorder_from(bool enable_persistent_index) {
         fp = starrocks::failpoint::FailPointRegistry::GetInstance()->get("verify_rowset_failed");
         trigger_mode.set_mode(FailPointTriggerModeType::ENABLE);
         fp->setMode(trigger_mode);
-        // Both are process-global: if the assertion below fails, the plain resets at the end of this
-        // block are skipped and every later test compacts with rowset verification on.
-        DeferOp restore_verify([&]() {
-            PFailPointTriggerMode disable_mode;
-            disable_mode.set_mode(FailPointTriggerModeType::DISABLE);
-            fp->setMode(disable_mode);
-            config::enable_rowset_verify = false;
-        });
         config::enable_rowset_verify = true;
         ASSERT_FALSE(tablet_with_sort_key1->updates()
                              ->convert_from(_tablet, 4, chunk_changer.get(), _tablet->tablet_schema())

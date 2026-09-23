@@ -81,11 +81,10 @@ struct DiskCacheReadOptions {
 };
 
 struct DataCacheDiskMetrics {
-    DataCacheStatus status = DataCacheStatus::NORMAL;
+    DataCacheStatus status;
 
-    size_t disk_quota_bytes = 0;
-    size_t disk_used_bytes = 0;
-    size_t meta_used_bytes = 0;
+    size_t disk_quota_bytes;
+    size_t disk_used_bytes;
 };
 
 class LocalDiskCacheEngine {

@@ -21,7 +21,8 @@ import com.starrocks.catalog.OlapTable;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.Status;
 import com.starrocks.common.jmockit.Deencapsulation;
-import com.starrocks.lake.LakeMetaVersionNotFoundException;
+import com.starrocks.planner.AggregateInfo;
+import com.starrocks.planner.BinlogScanNode;
 import com.starrocks.planner.DataPartition;
 import com.starrocks.planner.EmptySetNode;
 import com.starrocks.planner.JoinNode;
@@ -31,31 +32,35 @@ import com.starrocks.planner.PlanFragmentId;
 import com.starrocks.planner.PlanNodeId;
 import com.starrocks.planner.RuntimeFilterDescription;
 import com.starrocks.planner.ScanNode;
+import com.starrocks.planner.SlotDescriptor;
+import com.starrocks.planner.SlotId;
 import com.starrocks.planner.TupleDescriptor;
 import com.starrocks.planner.TupleId;
-import com.starrocks.proto.AIExecutionStatisticsPB;
-import com.starrocks.proto.PPlanFragmentCancelReason;
-import com.starrocks.proto.PQueryStatistics;
+import com.starrocks.planner.stream.StreamAggNode;
 import com.starrocks.qe.scheduler.dag.ExecutionFragment;
 import com.starrocks.qe.scheduler.dag.FragmentInstance;
 import com.starrocks.qe.scheduler.dag.JobSpec;
+import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.KeysType;
 import com.starrocks.sql.ast.QueryStatement;
 import com.starrocks.sql.ast.ValuesRelation;
 import com.starrocks.sql.plan.PlanTestBase;
-import com.starrocks.thrift.TAIExecutionStatistics;
-import com.starrocks.thrift.TAuditStatistics;
+import com.starrocks.statistic.StatisticUtils;
+import com.starrocks.system.Backend;
+import com.starrocks.thrift.TBinlogOffset;
 import com.starrocks.thrift.TDescriptorTable;
 import com.starrocks.thrift.TPartitionType;
 import com.starrocks.thrift.TPlanNode;
-import com.starrocks.thrift.TReportAuditStatisticsParams;
 import com.starrocks.thrift.TScanRangeLocations;
+import com.starrocks.thrift.TScanRangeParams;
 import com.starrocks.thrift.TStatusCode;
 import com.starrocks.thrift.TStorageType;
 import com.starrocks.thrift.TUniqueId;
 import com.starrocks.type.IntegerType;
 import com.starrocks.utframe.UtFrameUtils;
 import mockit.Expectations;
+import mockit.Mock;
+import mockit.MockUp;
 import org.apache.commons.compress.utils.Lists;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -65,12 +70,10 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 public class CoordinatorTest extends PlanTestBase {
     ConnectContext ctx;
@@ -96,68 +99,6 @@ public class CoordinatorTest extends PlanTestBase {
                 new PlanFragment(new PlanFragmentId(1), new EmptySetNode(new PlanNodeId(1), tupleIdArrayList),
                         new DataPartition(TPartitionType.RANDOM));
         return fragment;
-    }
-
-    @Test
-    public void testAuditStatisticsSnapshotsAreDetached() {
-        Assertions.assertNull(coordinator.getAuditStatistics());
-        coordinator.updateAuditStatistics(aiAuditReport(1));
-        PQueryStatistics first = coordinator.getAuditStatistics();
-        coordinator.updateAuditStatistics(aiAuditReport(2));
-        PQueryStatistics second = coordinator.getAuditStatistics();
-        Assertions.assertEquals(10L, first.aiStatistics.promptTokens);
-        Assertions.assertEquals(1L, first.aiStatistics.promptUsageCount);
-        Assertions.assertEquals(30L, second.aiStatistics.promptTokens);
-        Assertions.assertEquals(3L, second.aiStatistics.promptUsageCount);
-        Assertions.assertNotSame(first, second);
-        Assertions.assertNotSame(first.aiStatistics, second.aiStatistics);
-
-        second.aiStatistics.promptTokens = 999L;
-        second.scanRows = 999L;
-        PQueryStatistics third = coordinator.getAuditStatistics();
-        Assertions.assertEquals(30L, third.aiStatistics.promptTokens);
-        Assertions.assertEquals(3L, third.scanRows);
-    }
-
-    @Test
-    public void testConcurrentAuditSnapshotsKeepUsagePairsConsistent() throws Exception {
-        coordinator.updateAuditStatistics(aiAuditReport(1));
-        CountDownLatch start = new CountDownLatch(1);
-        ExecutorService workers = Executors.newFixedThreadPool(2);
-        try {
-            Future<?> writer = workers.submit(() -> {
-                start.await();
-                for (int i = 0; i < 1000; i++) {
-                    coordinator.updateAuditStatistics(aiAuditReport(1));
-                }
-                return null;
-            });
-            Future<?> reader = workers.submit(() -> {
-                start.await();
-                for (int i = 0; i < 1000; i++) {
-                    AIExecutionStatisticsPB ai = coordinator.getAuditStatistics().aiStatistics;
-                    Assertions.assertEquals(ai.promptUsageCount * 10, ai.promptTokens);
-                    Assertions.assertEquals(ai.completionUsageCount * 20, ai.completionTokens);
-                    Assertions.assertEquals(ai.totalUsageCount * 30, ai.totalTokens);
-                }
-                return null;
-            });
-            start.countDown();
-            writer.get(30, TimeUnit.SECONDS);
-            reader.get(30, TimeUnit.SECONDS);
-        } finally {
-            workers.shutdownNow();
-            Assertions.assertTrue(workers.awaitTermination(30, TimeUnit.SECONDS));
-        }
-    }
-
-    private static TReportAuditStatisticsParams aiAuditReport(long count) {
-        TAIExecutionStatistics ai = new TAIExecutionStatistics()
-                .setPrompt_tokens(10 * count).setPrompt_usage_count(count)
-                .setCompletion_tokens(20 * count).setCompletion_usage_count(count)
-                .setTotal_tokens(30 * count).setTotal_usage_count(count);
-        return new TReportAuditStatisticsParams().setAudit_statistics(
-                new TAuditStatistics().setScan_rows(count).setAi_statistics(ai));
     }
 
     private void testComputeBucketSeq2InstanceOrdinal(JoinNode.DistributionMode mode)
@@ -259,118 +200,110 @@ public class CoordinatorTest extends PlanTestBase {
     }
 
     @Test
-    public void testTimeoutHintUsesMetadataCollectQueryTimeoutForMetadataContext() {
-        ctx.setMetadataContext(true);
+    public void testBinlogScan() throws Exception {
+        PlanFragmentId fragmentId = new PlanFragmentId(0);
+        PlanNodeId planNodeId = new PlanNodeId(1);
+        TupleDescriptor tupleDesc = new TupleDescriptor(new TupleId(2));
 
-        JobSpec jobSpec = Deencapsulation.getField(coordinator, "jobSpec");
-        jobSpec.getQueryOptions().setQuery_timeout(300);
+        OlapTable olapTable = getOlapTable("t0");
+        List<Long> olapTableTabletIds =
+                olapTable.getAllPartitions().stream().flatMap(x -> x.getDefaultPhysicalPartition().getLatestBaseIndex()
+                                .getTabletIdsInOrder().stream())
+                        .collect(Collectors.toList());
+        Assertions.assertFalse(olapTableTabletIds.isEmpty());
+        tupleDesc.setTable(olapTable);
 
-        Status timeoutStatus = new Status(TStatusCode.TIMEOUT, "timeout");
-        com.starrocks.common.TimeoutException ex = Assertions.assertThrows(
-                com.starrocks.common.TimeoutException.class,
-                () -> Deencapsulation.invoke(coordinator, "dealStatusToTryRetry", timeoutStatus));
-        Assertions.assertTrue(ex.getMessage().contains(SessionVariable.METADATA_COLLECT_QUERY_TIMEOUT));
-        Assertions.assertFalse(ex.getMessage().contains("'" + SessionVariable.QUERY_TIMEOUT + "'"));
-    }
+        new MockUp<BinlogScanNode>() {
 
-    @Test
-    public void testTimeoutHintUsesInsertTimeoutForLoad() {
-        // In practice INSERT/CTAS timeouts are intercepted FE-side in StmtExecutor (which renders a richer
-        // hint including the load timeout property). This test covers the fallback when BE returns TIMEOUT
-        // before that polling fires: dealStatusToTryRetry must still name insert_timeout, not query_timeout.
-        StmtExecutor executor = new StmtExecutor(ctx, new QueryStatement(ValuesRelation.newDualRelation()));
-        new Expectations(executor) {
-            {
-                executor.isExecLoadType();
-                result = true;
-                minTimes = 0;
+            @Mock
+            TBinlogOffset getBinlogOffset(long tabletId) {
+                TBinlogOffset offset = new TBinlogOffset();
+                offset.setTablet_id(1);
+                offset.setLsn(2);
+                offset.setVersion(3);
+                return offset;
             }
         };
-        ctx.setExecutor(executor);
 
-        JobSpec jobSpec = Deencapsulation.getField(coordinator, "jobSpec");
-        jobSpec.getQueryOptions().setQuery_timeout(300);
+        BinlogScanNode binlogScan = new BinlogScanNode(planNodeId, tupleDesc);
+        binlogScan.setFragmentId(fragmentId);
+        binlogScan.finalizeStats();
 
-        Status timeoutStatus = new Status(TStatusCode.TIMEOUT, "timeout");
-        com.starrocks.common.TimeoutException ex = Assertions.assertThrows(
-                com.starrocks.common.TimeoutException.class,
-                () -> Deencapsulation.invoke(coordinator, "dealStatusToTryRetry", timeoutStatus));
-        Assertions.assertTrue(ex.getMessage().contains(SessionVariable.INSERT_TIMEOUT));
-        Assertions.assertFalse(ex.getMessage().contains("'" + SessionVariable.QUERY_TIMEOUT + "'"));
+        List<ScanNode> scanNodes = Arrays.asList(binlogScan);
+        CoordinatorPreprocessor prepare = new CoordinatorPreprocessor(Lists.newArrayList(), scanNodes,
+                StatisticUtils.buildConnectContext());
+        prepare.computeFragmentInstances();
+
+        FragmentScanRangeAssignment scanRangeMap =
+                prepare.getFragmentScanRangeAssignment(fragmentId);
+        Backend backend = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackends().get(0);
+        Assertions.assertFalse(scanRangeMap.isEmpty());
+        Long expectedWorkerId = backend.getId();
+        Assertions.assertTrue(scanRangeMap.containsKey(expectedWorkerId));
+        Map<Integer, List<TScanRangeParams>> rangesPerNode = scanRangeMap.get(expectedWorkerId);
+        Assertions.assertTrue(rangesPerNode.containsKey(planNodeId.asInt()));
+        List<TScanRangeParams> ranges = rangesPerNode.get(planNodeId.asInt());
+        List<Long> tabletIds =
+                ranges.stream().map(x -> x.getScan_range().getBinlog_scan_range().getTablet_id())
+                        .collect(Collectors.toList());
+        Assertions.assertEquals(olapTableTabletIds, tabletIds);
     }
 
     @Test
-    public void testLakeMetaVersionNotFoundStatusRaisesRetryableException() {
-        String errorMsg = "lake tablet metadata version not found, tablet_id=10001, partition_id=10002, "
-                + "version=144847: Not found";
-        Status status = new Status(TStatusCode.LAKE_META_VERSION_NOT_FOUND, errorMsg);
+    public void testStreamAgg() throws Exception {
+        new MockUp<BinlogScanNode>() {
 
-        LakeMetaVersionNotFoundException ex = Assertions.assertThrows(LakeMetaVersionNotFoundException.class,
-                () -> Deencapsulation.invoke(coordinator, "dealStatusToTryRetry", status));
-        Assertions.assertEquals(errorMsg, ex.getMessage());
-    }
+            @Mock
+            TBinlogOffset getBinlogOffset(long tabletId) {
+                TBinlogOffset offset = new TBinlogOffset();
+                offset.setTablet_id(1);
+                offset.setLsn(2);
+                offset.setVersion(3);
+                return offset;
+            }
+        };
 
-    @Test
-    public void testRetryableStatusReplacesRecordedCancelledStatus() {
-        // A fragment that was merely cancelled can report before the one that actually failed. Letting
-        // the CANCELLED stand would bury a retryable cause and fail a query that a retry would answer.
-        Status queryStatus = Deencapsulation.getField(coordinator, "queryStatus");
-        queryStatus.setStatus(Status.CANCELLED);
-        queryStatus.setErrorMsg("Cancelled");
+        PlanFragmentId fragmentId = new PlanFragmentId(0);
+        TupleDescriptor scanTuple = new TupleDescriptor(new TupleId(2));
+        scanTuple.setTable(getOlapTable("t0"));
+        TupleDescriptor aggTuple = new TupleDescriptor(new TupleId(3));
+        SlotDescriptor groupBySlot = new SlotDescriptor(new SlotId(4), "groupBy", IntegerType.INT, false);
+        SlotDescriptor aggFuncSlot = new SlotDescriptor(new SlotId(5), "aggFunc", IntegerType.INT, false);
+        aggTuple.addSlot(groupBySlot);
+        aggTuple.addSlot(aggFuncSlot);
 
-        Deencapsulation.invoke(coordinator, "updateStatus",
-                new Status(TStatusCode.LAKE_META_VERSION_NOT_FOUND, "lake tablet metadata version not found"),
-                new TUniqueId(1, 1));
+        // Build scan node
+        List<PlanFragment> fragments = new ArrayList<>();
+        BinlogScanNode binlogScan = new BinlogScanNode(new PlanNodeId(1), scanTuple);
+        binlogScan.setFragmentId(fragmentId);
+        binlogScan.finalizeStats();
+        List<ScanNode> scanNodes = Arrays.asList(binlogScan);
 
-        Status updated = Deencapsulation.getField(coordinator, "queryStatus");
-        Assertions.assertEquals(TStatusCode.LAKE_META_VERSION_NOT_FOUND, updated.getErrorCode());
-    }
+        // Build agg node
+        AggregateInfo aggInfo = new AggregateInfo(new ArrayList<>(), new ArrayList<>(), AggregateInfo.AggPhase.SECOND);
+        aggInfo.setOutputTupleDesc(aggTuple);
+        StreamAggNode aggNode = new StreamAggNode(new PlanNodeId(2), binlogScan, aggInfo);
 
-    @Test
-    public void testNonRetryableStatusKeepsRecordedCancelledStatus() {
-        Status queryStatus = Deencapsulation.getField(coordinator, "queryStatus");
-        queryStatus.setStatus(Status.CANCELLED);
-        queryStatus.setErrorMsg("Cancelled");
+        // Build fragment
+        PlanFragment fragment = new PlanFragment(fragmentId, aggNode, DataPartition.RANDOM);
+        fragments.add(fragment);
 
-        Deencapsulation.invoke(coordinator, "updateStatus",
-                new Status(TStatusCode.INTERNAL_ERROR, "some other failure"), new TUniqueId(1, 1));
+        // Build topology
+        CoordinatorPreprocessor prepare = new CoordinatorPreprocessor(fragments, scanNodes,
+                StatisticUtils.buildConnectContext());
+        prepare.computeFragmentInstances();
 
-        Status updated = Deencapsulation.getField(coordinator, "queryStatus");
-        Assertions.assertEquals(TStatusCode.CANCELLED, updated.getErrorCode());
-    }
+        // Assert
+        Map<PlanFragmentId, ExecutionFragment> fragmentParams = prepare.getExecutionDAG().getIdToFragment();
+        fragmentParams.forEach((k, v) -> System.err.println("Fragment " + k + " : " + v));
+        Assertions.assertTrue(fragmentParams.containsKey(fragmentId));
+        ExecutionFragment fragmentParam = fragmentParams.get(fragmentId);
+        FragmentScanRangeAssignment scanRangeAssignment = fragmentParam.getScanRangeAssignment();
+        List<FragmentInstance> instances = fragmentParam.getInstances();
+        Assertions.assertFalse(fragmentParams.isEmpty());
+        Assertions.assertEquals(1, scanRangeAssignment.size());
+        Assertions.assertEquals(1, instances.size());
 
-    @Test
-    public void testDeliberateCancelIsNotReplacedByRetryableStatus() {
-        // A KILL (or timeout, or limit reached) is final: a fragment error arriving afterwards must not
-        // turn the stopped query into a retry.
-        coordinator.cancel(PPlanFragmentCancelReason.USER_CANCEL, "cancelled by user");
-
-        Deencapsulation.invoke(coordinator, "updateStatus",
-                new Status(TStatusCode.LAKE_META_VERSION_NOT_FOUND, "lake tablet metadata version not found"),
-                new TUniqueId(1, 1));
-
-        Status updated = Deencapsulation.getField(coordinator, "queryStatus");
-        Assertions.assertEquals(TStatusCode.CANCELLED, updated.getErrorCode());
-    }
-
-    @Test
-    public void testKillAfterFragmentCancellationStillBlocksRetryableStatus() {
-        // Ordering that the first version of this guard got wrong: a fragment records CANCELLED first,
-        // so the user's KILL takes cancel()'s "we can't cancel twice" early return. The deliberate stop
-        // must be recorded anyway, or a retryable fragment error arriving next would replace the
-        // CANCELLED and make StmtExecutor replan and rerun a query the user explicitly stopped.
-        Status queryStatus = Deencapsulation.getField(coordinator, "queryStatus");
-        queryStatus.setStatus(Status.CANCELLED);
-        queryStatus.setErrorMsg("Cancelled");
-
-        coordinator.cancel(PPlanFragmentCancelReason.USER_CANCEL, "cancelled by user");
-
-        Deencapsulation.invoke(coordinator, "updateStatus",
-                new Status(TStatusCode.LAKE_META_VERSION_NOT_FOUND, "lake tablet metadata version not found"),
-                new TUniqueId(1, 1));
-
-        Status updated = Deencapsulation.getField(coordinator, "queryStatus");
-        Assertions.assertEquals(TStatusCode.CANCELLED, updated.getErrorCode());
     }
 
     private static java.lang.reflect.Method handleErrorExecutionMethod() throws NoSuchMethodException {

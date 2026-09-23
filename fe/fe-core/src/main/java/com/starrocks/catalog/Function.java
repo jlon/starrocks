@@ -45,13 +45,11 @@ import com.google.gson.JsonParser;
 import com.google.gson.annotations.SerializedName;
 import com.starrocks.common.Pair;
 import com.starrocks.common.io.Writable;
-import com.starrocks.common.util.PrintableMap;
 import com.starrocks.credential.CloudConfiguration;
 import com.starrocks.sql.ast.CreateFunctionStmt;
 import com.starrocks.sql.ast.HdfsURI;
 import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.common.TypeManager;
-import com.starrocks.thrift.TAIModelSource;
 import com.starrocks.thrift.TCloudConfiguration;
 import com.starrocks.thrift.TFunction;
 import com.starrocks.thrift.TFunctionBinaryType;
@@ -140,9 +138,6 @@ public class Function implements Writable {
     @SerializedName(value = "binaryType")
     private TFunctionBinaryType binaryType;
 
-    @SerializedName(value = "aiModelSource")
-    private TAIModelSource aiModelSource;
-
     // Absolute path in HDFS for the binary that contains this function.
     // e.g. /udfs/udfs.jar
     @SerializedName(value = "location")
@@ -174,11 +169,6 @@ public class Function implements Writable {
 
     @SerializedName(value = "cloud_configuration")
     private CloudConfiguration cloudConfiguration;
-
-    // Input format passed to the BE ("arrow" for vectorized UDFs; null = the default per-row path).
-    // See TFunction.input_type and CreateFunctionStmt.INPUT_TYPE.
-    @SerializedName(value = "inputType")
-    private String inputType;
 
     // Only used for serialization
     protected Function() {
@@ -250,7 +240,6 @@ public class Function implements Writable {
         userVisible = other.userVisible;
         location = other.location;
         binaryType = other.binaryType;
-        aiModelSource = other.aiModelSource;
         checksum = other.checksum;
         functionId = other.functionId;
         isPolymorphic = other.isPolymorphic;
@@ -258,15 +247,6 @@ public class Function implements Writable {
         isNullable = other.isNullable;
         isMetaFunction = other.isMetaFunction;
         aggStateDesc = other.aggStateDesc;
-        inputType = other.inputType;
-    }
-
-    public void setInputType(String inputType) {
-        this.inputType = inputType;
-    }
-
-    public String getInputType() {
-        return inputType;
     }
 
     public FunctionName getFunctionName() {
@@ -324,18 +304,6 @@ public class Function implements Writable {
 
     public void setBinaryType(TFunctionBinaryType type) {
         binaryType = type;
-    }
-
-    public boolean isAi() {
-        return binaryType == TFunctionBinaryType.AI;
-    }
-
-    public TAIModelSource getAiModelSource() {
-        return aiModelSource;
-    }
-
-    public void setAiModelSource(TAIModelSource aiModelSource) {
-        this.aiModelSource = aiModelSource;
     }
 
     public void setArgNames(List<String> names) {
@@ -821,60 +789,13 @@ public class Function implements Writable {
         if (aggStateDesc != null) {
             fn.setAgg_state_desc(TypeSerializer.toThrift(aggStateDesc));
         }
-        if (inputType != null) {
-            fn.setInput_type(inputType);
-        }
         fn.setCould_apply_dict_optimize(couldApplyDictOptimize);
-        if (aiModelSource != null) {
-            fn.setAi_model_source(aiModelSource);
-        }
         return fn;
     }
 
     // Child classes must override this function.
     public String toSql(boolean ifNotExists) {
         return "";
-    }
-
-    protected void appendCreateHeader(StringBuilder sb, String functionTypeKeyword, boolean ifNotExists) {
-        boolean isGlobal = getFunctionName().isGlobalFunction();
-        sb.append("CREATE ");
-        if (isGlobal) {
-            sb.append("GLOBAL ");
-        }
-        if (functionTypeKeyword != null && !functionTypeKeyword.isEmpty()) {
-            sb.append(functionTypeKeyword).append(" ");
-        }
-        sb.append("FUNCTION ");
-        if (ifNotExists) {
-            sb.append("IF NOT EXISTS ");
-        }
-        if (!isGlobal) {
-            sb.append(dbName()).append(".");
-        }
-    }
-
-    protected static void appendPropertiesBlock(StringBuilder sb, Map<String, String> props) {
-        if (props == null || props.isEmpty()) {
-            return;
-        }
-        sb.append("PROPERTIES (\n")
-                .append(new PrintableMap<>(props, "=", true, true, true))
-                .append("\n)\n");
-    }
-
-    protected static String binaryTypeToPropertyValue(TFunctionBinaryType type) {
-        if (type == null) {
-            return null;
-        }
-        switch (type) {
-            case SRJAR:
-                return CreateFunctionStmt.TYPE_STARROCKS_JAR;
-            case PYTHON:
-                return CreateFunctionStmt.TYPE_STARROCKS_PYTHON;
-            default:
-                return null;
-        }
     }
 
     public static Function getFunction(List<Function> fns, Function desc, CompareMode mode) {
@@ -1025,6 +946,7 @@ public class Function implements Writable {
                 row.add("SQL");
                 row.add("NULL");
             } else {
+                TableFunction tableFunc = (TableFunction) this;
                 row.add("Table");
                 row.add("NULL");
             }

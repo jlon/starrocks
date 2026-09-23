@@ -3,5 +3,4 @@ label: 'JSON query and processing'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: json-query-and-processing-functions
+  type: generated-index

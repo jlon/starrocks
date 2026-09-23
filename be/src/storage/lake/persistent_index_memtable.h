@@ -14,13 +14,10 @@
 
 #pragma once
 
-#include <condition_variable>
-#include <mutex>
-
-#include "base/phmap/btree.h"
-#include "common/thread/threadpool.h"
 #include "storage/lake/types_fwd.h"
 #include "storage/persistent_index.h"
+#include "util/phmap/btree.h"
+#include "util/threadpool.h"
 
 namespace starrocks::lake {
 
@@ -82,8 +79,6 @@ public:
 
     Status flush();
 
-    void advance_max_rss_rowid(uint64_t max_rss_rowid);
-
     void clear();
 
     const uint64_t max_rss_rowid() const { return _max_rss_rowid; }
@@ -97,11 +92,6 @@ public:
     void cancel() override;
 
     Status flush_status() const;
-
-    // Block until async flush (`run()`) or `cancel()` has published a result, or |timeout_us|
-    // elapses. OK means `release_sstable()` can take the SST. A memtable that was flushed
-    // synchronously before being queued as inactive returns immediately.
-    Status wait_for_flush(int64_t timeout_us);
 
 private:
     Status flush(WritableFile* wf, uint64_t* filesize, PersistentIndexSstableRangePB* range_pb);
@@ -120,7 +110,6 @@ private:
     Status _flush_status = Status::OK();
     // flush state mutex
     mutable std::mutex _flush_mutex;
-    std::condition_variable _flush_cv;
 };
 
 } // namespace starrocks::lake

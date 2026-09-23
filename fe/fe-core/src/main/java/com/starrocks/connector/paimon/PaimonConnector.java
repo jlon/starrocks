@@ -14,9 +14,7 @@
 
 package com.starrocks.connector.paimon;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
-import com.starrocks.common.ThreadPoolManager;
 import com.starrocks.connector.Connector;
 import com.starrocks.connector.ConnectorContext;
 import com.starrocks.connector.ConnectorMetadata;
@@ -33,19 +31,13 @@ import com.starrocks.credential.aws.AwsCloudConfiguration;
 import com.starrocks.credential.aws.AwsCloudCredential;
 import com.starrocks.server.GlobalStateMgr;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.iceberg.util.PropertyUtil;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
-import org.apache.paimon.options.CatalogOptions;
-import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
-import org.apache.paimon.privilege.PrivilegedCatalog;
 
-import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
 
 import static org.apache.paimon.options.CatalogOptions.METASTORE;
@@ -57,22 +49,8 @@ public class PaimonConnector implements Connector {
     public static final String PAIMON_CATALOG_WAREHOUSE = "paimon.catalog.warehouse";
     private static final String HIVE_METASTORE_URIS = "hive.metastore.uris";
     private static final String DLF_CATGALOG_ID = "dlf.catalog.id";
-    // implicit for user, mirrors iceberg_meta_cache_ttl_sec
-    public static final String PAIMON_META_CACHE_TTL = "paimon_meta_cache_ttl_sec";
-    private static final long DEFAULT_META_CACHE_TTL_SEC = 24L * 60 * 60;
-    // mirrors iceberg_table_cache_refresh_interval_sec, which feeds Caffeine's refreshAfterWrite
-    public static final String PAIMON_TABLE_CACHE_REFRESH_INTERVAL =
-            "paimon_table_cache_refresh_interval_sec";
-    private static final long DEFAULT_TABLE_CACHE_REFRESH_INTERVAL_SEC = 60L;
-    private static final long CACHE_PARTITION_MAX_NUM = 1000L;
-    // same sizing as the iceberg background pool
-    private static final int REFRESH_THREAD_NUM = Math.max(2, Runtime.getRuntime().availableProcessors() / 8);
-    private static final MemorySize CACHE_MANIFEST_FILE_THRESHOLD = MemorySize.ofMebiBytes(10);
-    private static final MemorySize CACHE_MANIFEST_MEMORY = MemorySize.ofMebiBytes(1024);
     private final HdfsEnvironment hdfsEnvironment;
     private Catalog paimonNativeCatalog;
-    private final ExecutorService refreshExecutor;
-    private final long tableCacheRefreshIntervalSec;
     private final String catalogName;
     private final Options paimonOptions;
     private final ConnectorProperties connectorProperties;
@@ -115,24 +93,14 @@ public class PaimonConnector implements Connector {
         }
         initFsOption(cloudConfiguration);
 
-        // Both must be set, or the one left out keeps its default (10min / 30min) and binds instead.
-        // With equal values expire-after-write binds, which is Iceberg's write-only TTL semantics.
-        Duration metaCacheTtl = Duration.ofSeconds(
-                PropertyUtil.propertyAsLong(properties, PAIMON_META_CACHE_TTL, DEFAULT_META_CACHE_TTL_SEC));
-        this.tableCacheRefreshIntervalSec = PropertyUtil.propertyAsLong(properties, PAIMON_TABLE_CACHE_REFRESH_INTERVAL,
-                DEFAULT_TABLE_CACHE_REFRESH_INTERVAL_SEC);
-        // built here, not on the lazy catalog path: two concurrent first queries would otherwise
-        // each build a pool and only the last one stored could ever be shut down
-        this.refreshExecutor = ThreadPoolManager.newDaemonFixedThreadPoolWithUnboundedQueue(
-                REFRESH_THREAD_NUM, catalogName + "-paimon-refresh-pool", true);
-        this.paimonOptions.set(CatalogOptions.CACHE_EXPIRE_AFTER_ACCESS, metaCacheTtl);
-        this.paimonOptions.set(CatalogOptions.CACHE_EXPIRE_AFTER_WRITE, metaCacheTtl);
+        // cache expire time, set to 2h
+        this.paimonOptions.set("cache.expiration-interval", "7200s");
         // max num of cached partitions of a Paimon catalog
-        this.paimonOptions.set(CatalogOptions.CACHE_PARTITION_MAX_NUM, CACHE_PARTITION_MAX_NUM);
+        this.paimonOptions.set("cache.partition.max-num", "1000");
         // max size of cached manifest files, 10m means cache all since files usually no more than 8m
-        this.paimonOptions.set(CatalogOptions.CACHE_MANIFEST_SMALL_FILE_THRESHOLD, CACHE_MANIFEST_FILE_THRESHOLD);
+        this.paimonOptions.set("cache.manifest.small-file-threshold", "10m");
         // max size of memory manifest cache uses
-        this.paimonOptions.set(CatalogOptions.CACHE_MANIFEST_SMALL_FILE_MEMORY, CACHE_MANIFEST_MEMORY);
+        this.paimonOptions.set("cache.manifest.small-file-memory", "1g");
 
         String keyPrefix = "paimon.option.";
         Set<String> optionKeys = properties.keySet().stream().filter(k -> k.startsWith(keyPrefix)).collect(Collectors.toSet());
@@ -173,11 +141,6 @@ public class PaimonConnector implements Connector {
         }
     }
 
-    @VisibleForTesting
-    public long getTableCacheRefreshIntervalSec() {
-        return tableCacheRefreshIntervalSec;
-    }
-
     public Options getPaimonOptions() {
         return this.paimonOptions;
     }
@@ -186,21 +149,9 @@ public class PaimonConnector implements Connector {
         if (paimonNativeCatalog == null) {
             Configuration configuration = new Configuration();
             hdfsEnvironment.getCloudConfiguration().applyToConfiguration(configuration);
-            CatalogContext context = CatalogContext.create(getPaimonOptions(), configuration);
-            // Build the cache layer ourselves so background refresh can track access time and
-            // snapshot/schema revisions; privilege wrapper stays outside, as in createCatalog.
-            Catalog unwrapped = CatalogFactory.createUnwrappedCatalog(context,
-                    CatalogFactory.class.getClassLoader());
-            if (!getPaimonOptions().get(CatalogOptions.CACHE_ENABLED)) {
-                // no cache layer, hence nothing for the background refresh to track
-                this.paimonNativeCatalog = PrivilegedCatalog.tryToCreate(unwrapped, getPaimonOptions());
-                return paimonNativeCatalog;
-            }
-            CachingPaimonCatalog cachingCatalog = new CachingPaimonCatalog(catalogName, unwrapped, getPaimonOptions(),
-                    refreshExecutor, tableCacheRefreshIntervalSec);
-            this.paimonNativeCatalog = PrivilegedCatalog.tryToCreate(cachingCatalog, getPaimonOptions());
+            this.paimonNativeCatalog = CatalogFactory.createCatalog(CatalogContext.create(getPaimonOptions(), configuration));
             GlobalStateMgr.getCurrentState().getConnectorTableMetadataProcessor()
-                    .registerPaimonCatalog(catalogName, cachingCatalog);
+                    .registerPaimonCatalog(catalogName, this.paimonNativeCatalog);
         }
         return paimonNativeCatalog;
     }
@@ -213,6 +164,5 @@ public class PaimonConnector implements Connector {
     @Override
     public void shutdown() {
         GlobalStateMgr.getCurrentState().getConnectorTableMetadataProcessor().unRegisterPaimonCatalog(catalogName);
-        refreshExecutor.shutdown();
     }
 }

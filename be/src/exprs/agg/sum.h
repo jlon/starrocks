@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "exprs/agg/aggregate.h"
 #include "gutil/casts.h"
 #include "types/logical_type.h"
@@ -121,9 +121,8 @@ public:
         DCHECK_GT(end, start);
         ResultType result = this->data(state).sum;
         auto* column = down_cast<ResultColumnType*>(dst);
-        auto* data = column->get_data().data();
         for (size_t i = start; i < end; ++i) {
-            data[i] = result;
+            column->get_data()[i] = result;
         }
     }
 

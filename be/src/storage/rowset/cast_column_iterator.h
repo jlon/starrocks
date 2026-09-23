@@ -65,11 +65,11 @@ public:
     std::string name() const override { return "CastColumnIterator"; }
 
 private:
-    Status do_cast(Column* target);
+    void do_cast(Column* target);
 
     std::unique_ptr<ObjectPool> _obj_pool;
     // managed by |_obj_pool|
-    Expr* _cast_expr{nullptr};
+    Expr* _cast_expr;
     // Chunk for holding data read from the source column iterator
     Chunk _source_chunk;
 };

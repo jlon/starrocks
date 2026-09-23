@@ -160,12 +160,11 @@ public class MVTaskRunProcessor extends BaseTaskRunProcessor implements MVRefres
     }
 
     /**
-     * Build the refresh plan for the materialized view, keeping the skip reason so the caller can tell why
-     * there is no plan.
-     * @return the would-be task run result; its execPlan is null when nothing was planned
+     * Get the execution plan for refreshing the materialized view.
+     * @return the execution plan for refreshing the materialized view, or null if no refresh is needed.
      * @throws Exception if an error occurs while getting the execution plan.
      */
-    public MVRefreshProcessor.ProcessExecPlan getMVRefreshProcessExecPlan() throws Exception {
+    public ExecPlan getMVRefreshExecPlan() throws Exception {
         Preconditions.checkNotNull(mvTaskRunContext);
         Preconditions.checkNotNull(mvRefreshProcessor);
 
@@ -175,11 +174,10 @@ public class MVTaskRunProcessor extends BaseTaskRunProcessor implements MVRefres
         MVRefreshProcessor.ProcessExecPlan processExecPlan =
                 mvRefreshProcessor.getProcessExecPlan(mvTaskRunContext);
         if (processExecPlan == null || processExecPlan.state() != Constants.TaskRunState.SUCCESS) {
-            logger.info("No refresh plan for mv: {}, state: {}, skip reason: {}", mv.getName(),
-                    processExecPlan == null ? null : processExecPlan.state(),
-                    processExecPlan == null ? null : processExecPlan.skipReason());
+            logger.info("No need to refresh mv: {}, because the materialized view is up to date.", mv.getName());
+            return null;
         }
-        return processExecPlan;
+        return processExecPlan.execPlan();
     }
 
     @Override
@@ -209,14 +207,8 @@ public class MVTaskRunProcessor extends BaseTaskRunProcessor implements MVRefres
                     logger.info("Refresh materialized view {} finished successfully.", mv.getName());
                     // advance LAST_FRESHNESS_CONFIRMED_AT even when the refresh changed no version
                     mvRefreshProcessor.confirmFreshness();
+                    // if success, try to generate next task run
                     spawnedNext = mvRefreshProcessor.generateNextTaskRunIfNeeded();
-                    if (!spawnedNext && mvRefreshProcessor.hasNextBatchRun()) {
-                        // A pending next batch could not be enqueued (e.g. the task-run queue is full): the
-                        // refresh is incomplete, so fail it through the normal failure path below, keeping the
-                        // metric, task history and materialized_view_refresh_jobs consistent on FAILED.
-                        throw new DmlException("Materialized view %s refresh incomplete: " +
-                                "a pending batch could not be scheduled", mv.getName());
-                    }
                 } else {
                     logger.info("Refresh materialized view {} failed with state: {}.", mv.getName(), taskRunState);
                 }
@@ -375,7 +367,6 @@ public class MVTaskRunProcessor extends BaseTaskRunProcessor implements MVRefres
             parentStmtExecutor.registerSubStmtExecutor(executor);
         }
         ctx.setStmtId(STMT_ID_GENERATOR.incrementAndGet());
-        ctx.setMultiStmt(false);
         // Add running query detail for MV refresh
         ctx.setQuerySource(QueryDetail.QuerySource.MV);
 
@@ -393,8 +384,6 @@ public class MVTaskRunProcessor extends BaseTaskRunProcessor implements MVRefres
             throw e;
         } finally {
             logger.info("[QueryId:{}] finished to refresh mv in DML", ctx.getQueryId());
-            // the MV refresh uses its own fresh ConnectContext whose audit builder starts at the default value.
-            executor.recordExecStatsIntoContext();
             auditAfterExec(mvTaskRunContext, executor.getParsedStmt(), executor.getQueryStatisticsForAuditLog());
             executor.addFinishedQueryDetail();
         }

@@ -19,7 +19,6 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableName;
-import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.common.util.PropertyAnalyzer;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.Analyzer;
@@ -78,16 +77,6 @@ public class StatisticsMetaMgrTest extends PlanTestBase  {
         m.alterFullStatisticsTable(connectContext, table);
         Assertions.assertTrue(m.checkTableCompatible(tblName));
         Assertions.assertTrue(m.alterTable(FULL_STATISTICS_TABLE_NAME));
-    }
-
-    @Test
-    public void testRefreshStatisticsTableReturnsWhenStopped() {
-        StatisticsMetaManager m = new StatisticsMetaManager();
-        m.setStop();
-
-        Deencapsulation.invoke(m, "refreshStatisticsTable", FULL_STATISTICS_TABLE_NAME);
-
-        Assertions.assertTrue(m.isStopRequested());
     }
 
     private TableRef createTableRef(TableName tableName) {

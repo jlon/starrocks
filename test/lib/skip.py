@@ -38,6 +38,7 @@ skip_res_cmd = [
     "SHOW ALTER TABLE COLUMN ORDER BY CreateTime DESC LIMIT 1.*",
     "show load.*",
     "SELECT `v2` FROM `test_except_with_only_one_tablet`.*",
+    "SHOW PARTITIONS.*",
     "SHOW REPLICA",
     "show routine load",
     "SELECT DISTINCT k1 FROM aggregate_tbl LIMIT 1",
@@ -67,6 +68,7 @@ skip_res_cmd = [
 
 skip_files = set([
     'test_window_skew_rewrite_with_mcv',
+    'test_event_schedule_with_grf',
     # 'test_parquet_dict_null_predicate'
     # refresh_mode=auto is not exposed to users; these tests exercise the AUTO path via
     # SQL and are kept on disk for future revival when AUTO is re-introduced.

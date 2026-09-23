@@ -14,9 +14,7 @@
 
 #pragma once
 
-#include <utility>
-
-#include "types/datum.h"
+#include "column/datum.h"
 
 namespace starrocks {
 
@@ -24,7 +22,7 @@ class CopiedDatum {
 public:
     CopiedDatum() = default;
 
-    CopiedDatum(Datum datum) : _datum(std::move(datum)) { copy(); }
+    CopiedDatum(const Datum& datum) : _datum(datum) { copy(); }
 
     CopiedDatum(const CopiedDatum& other) : CopiedDatum(other.get()) {}
 

@@ -14,8 +14,8 @@
 
 #include "formats/orc/orc_chunk_reader.h"
 
-#include <base/testutil/assert.h>
 #include <gtest/gtest.h>
+#include <testutil/assert.h>
 
 #include <ctime>
 #include <filesystem>
@@ -23,10 +23,7 @@
 #include <vector>
 
 #include "column/struct_column.h"
-#include "common/config_exec_fwd.h"
 #include "common/object_pool.h"
-#include "connector/hive/scanner/hdfs_scanner_context.h"
-#include "exprs/expr_factory.h"
 #include "exprs/is_null_predicate.h"
 #include "formats/orc/memory_stream/MemoryInputStream.hh"
 #include "formats/orc/memory_stream/MemoryOutputStream.hh"
@@ -83,7 +80,8 @@ void create_tuple_descriptor(RuntimeState* state, ObjectPool* pool, const SlotDe
     DescriptorTbl* tbl = nullptr;
     auto st = DescriptorTbl::create(state, pool, table_desc_builder.desc_tbl(), &tbl, config::vector_chunk_size);
     CHECK(st.ok()) << st;
-    *tuple_desc = tbl->get_tuple_descriptor(row_tuples[0]);
+    RowDescriptor* row_desc = pool->add(new RowDescriptor(*tbl, row_tuples));
+    *tuple_desc = row_desc->tuple_descriptors()[0];
     return;
 }
 
@@ -376,7 +374,7 @@ static ExprContext* create_expr_context(ObjectPool* pool, const std::vector<TExp
     TExpr texpr;
     texpr.__set_nodes(nodes);
     ExprContext* ctx;
-    Status st = ExprFactory::create_expr_tree(pool, texpr, &ctx, nullptr);
+    Status st = Expr::create_expr_tree(pool, texpr, &ctx, nullptr);
     DCHECK(st.ok()) << st.message();
     return ctx;
 }

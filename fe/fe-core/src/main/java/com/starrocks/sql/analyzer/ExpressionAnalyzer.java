@@ -151,7 +151,6 @@ public class ExpressionAnalyzer {
     }
 
     public void analyze(Expr expression, AnalyzeState analyzeState, Scope scope) {
-        analyzeState.registerLocalScope(scope);
         Visitor visitor = new Visitor(analyzeState, session);
         bottomUpAnalyze(visitor, expression, scope);
     }
@@ -162,7 +161,6 @@ public class ExpressionAnalyzer {
     }
 
     public void analyzeWithVisitor(Expr expression, AnalyzeState analyzeState, Scope scope, Visitor visitor) {
-        analyzeState.registerLocalScope(scope);
         bottomUpAnalyze(visitor, expression, scope);
     }
 
@@ -715,8 +713,6 @@ public class ExpressionAnalyzer {
             // construct a new scope to analyze the lambda function
             Scope lambdaScope = new Scope(args, scope);
             ExpressionAnalyzer.analyzeExpression(node.getChild(0), this.analyzeState, lambdaScope, this.session);
-            AIFunctionUsageAnalyzer.verifyNoAIFunctions(
-                    node.getChild(0), AIFunctionUsageAnalyzer.PlacementContext.LAMBDA_FUNCTION_BODY);
             node.setType(FunctionType.FUNCTION);
             scope.clearLambdaInputs();
             return null;
@@ -761,11 +757,11 @@ public class ExpressionAnalyzer {
         public Void visitBinaryPredicate(BinaryPredicate node, Scope scope) {
             Type type1 = node.getChild(0).getType();
             Type type2 = node.getChild(1).getType();
-            final String ERROR_MSG = "Column type %s does not support binary predicate operation with type %s";
 
             Type compatibleType =
                     TypeManager.getCompatibleTypeForBinary(!node.getOp().isNotRangeComparison(), type1, type2);
             // check child type can be cast
+            final String ERROR_MSG = "Column type %s does not support binary predicate operation with type %s";
             if (!TypeManager.canCastTo(type1, compatibleType)) {
                 throw new SemanticException(String.format(ERROR_MSG, type1.toSql(), type2.toSql()), node.getPos());
             }
@@ -905,6 +901,7 @@ public class ExpressionAnalyzer {
                         "subquery must return the same number of columns as provided by the IN predicate",
                         node.getPos());
             }
+
             for (int i = 0; i < rightTypes.size(); ++i) {
                 if (leftTypes.get(i).isJsonType() || rightTypes.get(i).isJsonType() || leftTypes.get(i).isMapType() ||
                         rightTypes.get(i).isMapType() || leftTypes.get(i).isStructType() ||
@@ -1114,79 +1111,9 @@ public class ExpressionAnalyzer {
             Type[] argumentTypes = node.getChildren().stream().map(Expr::getType).toArray(Type[]::new);
             // check fn & throw exception direct if analyze failed
             checkFunction(fnName, node, argumentTypes);
-
-            // Handle named arguments reordering before function lookup
-            List<String> exprsNames = node.getParams().getExprsNames();
-            if (exprsNames != null && !exprsNames.isEmpty()) {
-                // Named arguments are used - we need to find the function first, then reorder
-                Function fn = FunctionAnalyzer.getAnalyzedFunctionForNamedArgs(session, node, argumentTypes, exprsNames);
-                if (fn == null) {
-                    // Try to provide a more user-friendly error message
-                    FunctionAnalyzer.throwFriendlyNamedArgError(fnName, argumentTypes, exprsNames);
-                    // Fallback to generic error if no specific error was thrown
-                    String msg = String.format("No matching function with signature: %s(%s)",
-                            fnName, FunctionAnalyzer.getNamedArgStr(node.getParams()));
-                    throw new SemanticException(msg, node.getPos());
-                }
-
-                // This prevents confusing IllegalStateException when duplicate parameters exist.
-                // validateNamedArgumentsStructure checks: duplicates, unknown params, missing required params
-                FunctionAnalyzer.validateNamedArgumentsStructure(fnName, fn, exprsNames);
-
-                // Reorder arguments according to function definition
-                FunctionAnalyzer.reorderNamedArgAndAppendDefaults(node.getParams(), fn);
-
-                // Update children to match reordered params
-                node.clearChildren();
-                node.addChildren(node.getParams().exprs());
-
-                // Re-analyze children after reordering (includes default values)
-                for (Expr child : node.getChildren()) {
-                    if (!child.isAnalyzed()) {
-                        visit(child, scope);
-                    }
-                }
-
-                // Validate NULL constraints AFTER reordering
-                // This must be after reordering because it depends on parameter positions
-                FunctionAnalyzer.validateNullConstraints(fnName, fn, node);
-
-                node.setFn(fn);
-                node.setType(fn.getReturnType());
-                FunctionAnalyzer.analyze(node);
-                verifyNoAiInConditionalFunction(node);
-                checkGetQueryProfileAccess(node);
-                return null;
-            }
-
             // get function by function expression and argument types
             Function fn = FunctionAnalyzer.getAnalyzedFunction(session, node, argumentTypes);
             if (fn == null) {
-                // Try to find a function with named arguments that can accept positional arguments
-                fn = FunctionAnalyzer.getAnalyzedFunctionForPositionalCallWithNamedArgs(
-                        session, fnName, argumentTypes);
-                if (fn != null) {
-                    // Append default values for remaining parameters
-                    FunctionAnalyzer.appendDefaultsForPositionalArgs(node.getParams(), fn);
-                    // Update children to match the expanded params
-                    node.clearChildren();
-                    node.addChildren(node.getParams().exprs());
-                    // Re-analyze new children (default values)
-                    for (Expr child : node.getChildren()) {
-                        if (!child.isAnalyzed()) {
-                            visit(child, scope);
-                        }
-                    }
-                    node.setFn(fn);
-                    node.setType(fn.getReturnType());
-                    FunctionAnalyzer.analyze(node);
-                    verifyNoAiInConditionalFunction(node);
-                    checkGetQueryProfileAccess(node);
-                    return null;
-                }
-                // Try to provide a more user-friendly error message for positional calls
-                FunctionAnalyzer.throwFriendlyPositionalArgError(fnName, argumentTypes);
-                // Fallback to generic error if no specific error was thrown
                 String msg = String.format("No matching function with signature: %s(%s)",
                         fnName,
                         node.getParams().isStar() ? "*" : Joiner.on(", ")
@@ -1196,29 +1123,7 @@ public class ExpressionAnalyzer {
             node.setFn(fn);
             node.setType(fn.getReturnType());
             FunctionAnalyzer.analyze(node);
-            verifyNoAiInConditionalFunction(node);
-            checkGetQueryProfileAccess(node);
             return null;
-        }
-
-        // get_query_profile() serves the same payload as ANALYZE PROFILE through a BE-side RPC that carries no
-        // caller identity, so the access rule is applied here, once the call has resolved to the builtin; a UDF
-        // that happens to share the name never touches the profile RPC and is left alone.
-        private void checkGetQueryProfileAccess(FunctionCallExpr node) {
-            if (Authorizer.isGetQueryProfileBuiltin(node.getFn()) && node.getChildren().size() == 1) {
-                Authorizer.checkGetQueryProfileAccess(session, node.getChild(0));
-            }
-        }
-
-        private void verifyNoAiInConditionalFunction(FunctionCallExpr node) {
-            String resolvedFunctionName = node.getFn().functionName();
-            if (FunctionSet.IF.equalsIgnoreCase(resolvedFunctionName)
-                    || FunctionSet.IFNULL.equalsIgnoreCase(resolvedFunctionName)
-                    || FunctionSet.NULLIF.equalsIgnoreCase(resolvedFunctionName)
-                    || FunctionSet.COALESCE.equalsIgnoreCase(resolvedFunctionName)) {
-                AIFunctionUsageAnalyzer.verifyNoAIFunctions(
-                        node, AIFunctionUsageAnalyzer.PlacementContext.CONDITIONAL_EXPRESSION);
-            }
         }
 
         /**
@@ -1653,8 +1558,6 @@ public class ExpressionAnalyzer {
             }
 
             node.setType(returnType);
-            AIFunctionUsageAnalyzer.verifyNoAIFunctions(
-                    node, AIFunctionUsageAnalyzer.PlacementContext.CONDITIONAL_EXPRESSION);
             return null;
         }
 
@@ -1682,9 +1585,6 @@ public class ExpressionAnalyzer {
             }
             node.getPartitionExprs().forEach(e -> visit(e, context));
             node.getOrderByElements().stream().map(OrderByElement::getExpr).forEach(e -> visit(e, context));
-            if (node.getSkewColumn() != null) {
-                visit(node.getSkewColumn(), context);
-            }
             verifyAnalyticExpression(node);
             return null;
         }
@@ -2023,7 +1923,7 @@ public class ExpressionAnalyzer {
             Table table = GlobalStateMgr.getCurrentState().getMetadataMgr().getTable(
                     session, dictionary.getCatalogName(), dictionary.getDbName(), dictionary.getQueryableObject());
             if (table == null) {
-                throw new SemanticException("dict table %s is not found", dictionary.getQueryableObject());
+                throw new SemanticException("dict table %s is not found", table.getName());
             }
 
             List<Column> schema = table.getFullSchema();

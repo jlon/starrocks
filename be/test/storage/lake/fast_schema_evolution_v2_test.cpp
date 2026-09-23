@@ -21,15 +21,14 @@
 #include <unordered_map>
 #include <vector>
 
-#include "base/testutil/assert.h"
-#include "base/testutil/id_generator.h"
-#include "base/testutil/sync_point.h"
-#include "exec/exec_env.h"
 #include "gen_cpp/FrontendService_types.h"
+#include "runtime/exec_env.h"
 #include "storage/lake/tablet.h"
 #include "storage/lake/tablet_metadata.h"
 #include "storage/lake/txn_log_applier.h"
-#include "storage/storage_env.h"
+#include "testutil/assert.h"
+#include "testutil/id_generator.h"
+#include "testutil/sync_point.h"
 
 namespace starrocks::lake {
 
@@ -53,7 +52,7 @@ public:
     void SetUp() override {
         _sp = std::make_unique<ScopedSyncPoint>();
         ASSERT_NE(ExecEnv::GetInstance(), nullptr);
-        ASSERT_NE(StorageEnv::GetInstance()->lake_tablet_manager(), nullptr);
+        ASSERT_NE(ExecEnv::GetInstance()->lake_tablet_manager(), nullptr);
     }
 
     void TearDown() override { _sp.reset(); }
@@ -126,7 +125,7 @@ protected:
     }
 
     static std::unique_ptr<TxnLogApplier> new_applier(int64_t tablet_id, const MutableTabletMetadataPtr& meta) {
-        Tablet tablet(StorageEnv::GetInstance()->lake_tablet_manager(), tablet_id);
+        Tablet tablet(ExecEnv::GetInstance()->lake_tablet_manager(), tablet_id);
         return new_txn_log_applier(tablet, meta, /*new_version=*/2, /*rebuild_pindex=*/false,
                                    /*skip_write_tablet_metadata=*/true);
     }

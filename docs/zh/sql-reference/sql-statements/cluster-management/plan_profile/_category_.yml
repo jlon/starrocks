@@ -3,5 +3,4 @@ label: '执行计划和 Profile'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: plan_profile
+  type: generated-index

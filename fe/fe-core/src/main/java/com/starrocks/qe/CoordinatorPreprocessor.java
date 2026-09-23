@@ -279,7 +279,6 @@ public class CoordinatorPreprocessor {
         validateExecutionDAG();
 
         executionDAG.prepareCaptureVersion(enablePhasedSchedule);
-        executionDAG.preparePreExecutedFragments();
         executionDAG.finalizeDAG();
     }
 

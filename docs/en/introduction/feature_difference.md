@@ -1,5 +1,4 @@
 ---
-sidebar_position: 40
 displayed_sidebar: docs
 sidebar_label: "Feature Differences"
 description: "Comparison of features supported in StarRocks shared-nothing versus shared-data cluster deployments."

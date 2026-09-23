@@ -15,7 +15,7 @@
 package com.starrocks.connector.delta;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.google.common.cache.Cache;
+import com.google.common.cache.LoadingCache;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.starrocks.common.Pair;
@@ -72,7 +72,7 @@ public class DeltaLakeMetastoreTest {
             }
         };
 
-        Cache<Pair<DeltaLakeFileStatus, StructType>, List<ColumnarBatch>> checkpointCache =
+        LoadingCache<Pair<DeltaLakeFileStatus, StructType>, List<ColumnarBatch>> checkpointCache =
                 getCheckpointCache(createMetastoreForTest());
         checkpointCache.put(createCheckpointCacheKey(), Lists.newArrayList());
 
@@ -105,7 +105,7 @@ public class DeltaLakeMetastoreTest {
             }
         };
 
-        Cache<DeltaLakeFileStatus, List<JsonNode>> jsonCache = getJsonCache(createMetastoreForTest());
+        LoadingCache<DeltaLakeFileStatus, List<JsonNode>> jsonCache = getJsonCache(createMetastoreForTest());
         jsonCache.put(createJsonCacheKey(), Lists.newArrayList());
 
         Assertions.assertTrue(keyEstimateCalls.get() > 0);
@@ -133,7 +133,7 @@ public class DeltaLakeMetastoreTest {
             }
         };
 
-        Cache<Pair<DeltaLakeFileStatus, StructType>, List<ColumnarBatch>> checkpointCache =
+        LoadingCache<Pair<DeltaLakeFileStatus, StructType>, List<ColumnarBatch>> checkpointCache =
                 getCheckpointCache(createMetastoreForTest());
         checkpointCache.put(createCheckpointCacheKey(), Lists.newArrayList());
 
@@ -159,7 +159,7 @@ public class DeltaLakeMetastoreTest {
             }
         };
 
-        Cache<DeltaLakeFileStatus, List<JsonNode>> jsonCache = getJsonCache(createMetastoreForTest());
+        LoadingCache<DeltaLakeFileStatus, List<JsonNode>> jsonCache = getJsonCache(createMetastoreForTest());
         jsonCache.put(createJsonCacheKey(), Lists.newArrayList());
 
         Assertions.assertTrue(fallbackCalls.get() > 0);
@@ -173,18 +173,18 @@ public class DeltaLakeMetastoreTest {
     }
 
     @SuppressWarnings("unchecked")
-    private Cache<Pair<DeltaLakeFileStatus, StructType>, List<ColumnarBatch>> getCheckpointCache(
+    private LoadingCache<Pair<DeltaLakeFileStatus, StructType>, List<ColumnarBatch>> getCheckpointCache(
             DeltaLakeMetastore testMetastore) throws Exception {
         Field checkpointCacheField = DeltaLakeMetastore.class.getDeclaredField("checkpointCache");
         checkpointCacheField.setAccessible(true);
-        return (Cache<Pair<DeltaLakeFileStatus, StructType>, List<ColumnarBatch>>) checkpointCacheField.get(testMetastore);
+        return (LoadingCache<Pair<DeltaLakeFileStatus, StructType>, List<ColumnarBatch>>) checkpointCacheField.get(testMetastore);
     }
 
     @SuppressWarnings("unchecked")
-    private Cache<DeltaLakeFileStatus, List<JsonNode>> getJsonCache(DeltaLakeMetastore testMetastore) throws Exception {
+    private LoadingCache<DeltaLakeFileStatus, List<JsonNode>> getJsonCache(DeltaLakeMetastore testMetastore) throws Exception {
         Field jsonCacheField = DeltaLakeMetastore.class.getDeclaredField("jsonCache");
         jsonCacheField.setAccessible(true);
-        return (Cache<DeltaLakeFileStatus, List<JsonNode>>) jsonCacheField.get(testMetastore);
+        return (LoadingCache<DeltaLakeFileStatus, List<JsonNode>>) jsonCacheField.get(testMetastore);
     }
 
     private Pair<DeltaLakeFileStatus, StructType> createCheckpointCacheKey() {

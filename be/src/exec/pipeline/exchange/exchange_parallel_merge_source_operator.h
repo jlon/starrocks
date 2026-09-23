@@ -14,14 +14,11 @@
 
 #pragma once
 
-#include <memory>
-
-#include "compute_env/sorting/merge_path.h"
-#include "exec_primitive/pipeline/source_operator.h"
+#include "exec/pipeline/source_operator.h"
+#include "exec/sorting/merge_path.h"
 
 namespace starrocks {
 class SortExecExprs;
-class DataStreamRecvr;
 namespace pipeline {
 
 // The number of sender may not equal to the degree of parallelism at the receiver side.
@@ -85,12 +82,12 @@ private:
 class ExchangeParallelMergeSourceOperatorFactory final : public SourceOperatorFactory {
 public:
     ExchangeParallelMergeSourceOperatorFactory(int32_t id, int32_t plan_node_id, int32_t num_sender,
-                                               RecordDescriptor record_desc, SortExecExprs* sort_exec_exprs,
+                                               const RowDescriptor& row_desc, SortExecExprs* sort_exec_exprs,
                                                const std::vector<bool>& is_asc_order,
                                                const std::vector<bool>& nulls_first, int64_t offset, int64_t limit)
             : SourceOperatorFactory(id, "global_parallel_merge_source", plan_node_id),
               _num_sender(num_sender),
-              _record_desc(std::move(record_desc)),
+              _row_desc(row_desc),
               _sort_exec_exprs(sort_exec_exprs),
               _is_asc_order(is_asc_order),
               _nulls_first(nulls_first),
@@ -115,7 +112,7 @@ public:
 
 private:
     const int32_t _num_sender;
-    const RecordDescriptor _record_desc;
+    const RowDescriptor& _row_desc;
     SortExecExprs* _sort_exec_exprs;
     const std::vector<bool>& _is_asc_order;
     const std::vector<bool>& _nulls_first;

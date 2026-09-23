@@ -372,11 +372,6 @@ struct TGetTablesParams {
   // If not set, match default_catalog
   22: optional string catalog_name
   23: optional string table_name
-
-  // Remaining query_timeout (seconds) of the outer user query. Forwarded by the BE schema scanner so the
-  // FE side can bound internal reads (e.g. task_run_history for information_schema.materialized_views) by
-  // the user's query_timeout instead of statistic_collect_query_timeout when the request is not FE-evaluated.
-  24: optional i64 query_timeout
 }
 
 struct TTableStatus {
@@ -436,7 +431,6 @@ struct TMaterializedViewStatus {
     35: optional string refresh_policy
     36: optional string resource_group
     37: optional string query_rewrite_status_reason
-    // Ids 38/39 must stay as branch-4.1 shipped them in 4.1.4: rolling upgrade runs new BEs against old FEs.
     38: optional string base_table_refresh_version_times
     39: optional string last_freshness_confirmed_at
 }
@@ -632,10 +626,6 @@ struct TGetLoadsParams {
     18: optional i64 load_finish_time_to_ms
     19: optional i64 create_time_from_ms
     20: optional i64 create_time_to_ms
-    // Only return loads whose job id >= this value. Setting the field is how a caller
-    // declares it understands TGetLoadsResult.next_job_id_offset; FE returns the whole
-    // result set unpaged when it is absent, so an old BE keeps its previous behavior.
-    21: optional i64 start_job_id_offset
 }
 
 struct TTrackingLoadInfo {
@@ -674,10 +664,6 @@ struct TLoadInfo {
     21: optional i64 num_filtered_rows
     22: optional i64 num_unselected_rows
     23: optional i64 num_sink_rows
-    // Deprecated: the BE-local tab-delimited rejected-record file was
-    // removed. Rejected rows are now in `_statistics_.rejected_records`,
-    // queryable by load label / txn_id. The field ordinal is kept for
-    // wire compatibility across rolling upgrades; BE never populates it.
     24: optional string rejected_record_path
     25: optional string load_id
     26: optional string profile_id
@@ -700,8 +686,6 @@ struct TLoadInfo {
 
 struct TGetLoadsResult {
     1: optional list<TLoadInfo> loads
-    // max job id in loads + 1, if set to 0 or absent, it means reaches end
-    2: optional i64 next_job_id_offset
 }
 
 struct TRoutineLoadJobInfo {
@@ -855,9 +839,6 @@ struct TReportExecStatusParams {
 
   25: optional list<Types.TSinkCommitInfo> sink_commit_infos
 
-  // Deprecated: see TLoadInfo.rejected_record_path for the original field
-  // and the migration note explaining why it's gone. Kept for wire
-  // compatibility; BE never populates it.
   27: optional string rejected_record_path
 
   28: optional RuntimeProfile.TRuntimeProfileTree load_channel_profile;
@@ -885,22 +866,6 @@ struct TAuditStatisticsItem {
     3: optional i64 table_id
 }
 
-// Additive observed AI task statistics; token usage counts distinguish unknown from reported zero.
-struct TAIExecutionStatistics {
-    1: optional i64 task_count
-    2: optional i64 request_count
-    3: optional i64 retry_count
-    4: optional i64 timeout_count
-    5: optional i64 error_count
-    6: optional i64 http_time_ns
-    7: optional i64 prompt_tokens
-    8: optional i64 completion_tokens
-    9: optional i64 total_tokens
-    10: optional i64 prompt_usage_count
-    11: optional i64 completion_usage_count
-    12: optional i64 total_usage_count
-}
-
 struct TAuditStatistics {
     3: optional i64 scan_rows
     4: optional i64 scan_bytes
@@ -912,7 +877,6 @@ struct TAuditStatistics {
     9: optional list<TAuditStatisticsItem> stats_items
     11: optional i64 read_local_cnt
     12: optional i64 read_remote_cnt
-    13: optional TAIExecutionStatistics ai_statistics
 }
 
 struct TReportAuditStatisticsParams {
@@ -1119,8 +1083,6 @@ struct TStreamLoadPutRequest {
     54: optional byte escape
     55: optional Types.TPartialUpdateMode partial_update_mode
     56: optional string payload_compression_type
-    // CDC envelope format
-    57: optional PlanNodes.TEnvelopeType envelope
 
     // begin from 101, in case of conflict with other's change
     101: optional string warehouse  // deprecated, use backend_id implicitly convey information about the warehouse
@@ -1142,12 +1104,6 @@ struct TMergeCommitRequest {
     6: optional i64 backend_id
     7: optional string backend_host;
     8: optional map<string, string> params;
-    // Cluster-internal trust token: when set and matching the FE cluster
-    // token, the request bypasses Basic-style password verification and
-    // is dispatched as ROOT. Only honored for designated system tables
-    // (currently `_statistics_.rejected_records`); any other db/tbl
-    // falls back to the normal user/passwd check regardless of token.
-    9: optional string internal_token;
 }
 
 struct TMergeCommitResult {
@@ -1583,8 +1539,6 @@ struct TCreatePartitionRequest {
     // for each partition column's partition values
     4: optional list<list<string>> partition_values
     5: optional bool is_temp
-    // timeout in seconds for partition creation request
-    6: optional i32 timeout_s
 }
 
 struct TCreatePartitionResult {
@@ -1685,35 +1639,6 @@ struct TPartitionMetaInfo {
     30: optional bool tablet_balanced
     31: optional i64 metadata_switch_version
     32: optional i64 path_id // deprecated
-    // [min, max] vector-index built-version span across the partition's base-index
-    // tablets. Only meaningful for tables with an async vector index (shared-data).
-    33: optional i64 min_vi_built_version
-    34: optional i64 max_vi_built_version
-    // Last time this partition was scanned by a query (unix seconds). In-memory only on FE
-    // (not persisted); 0/absent = never accessed, or the value was lost on FE restart/failover.
-    35: optional i64 last_access_time
-    // Last time this partition was modified by a user write (load/DML, excluding compaction),
-    // in unix seconds. 0/absent = unknown.
-    36: optional i64 last_update_time
-}
-
-// Ask one FE for its local in-memory partition query-access times of a table, so the querying FE
-// can aggregate (max) across all FEs. Best-effort: callers tolerate a missing/slow FE.
-struct TPartitionAccessTimeTableRef {
-    1: optional i64 db_id
-    2: optional i64 table_id
-}
-
-struct TGetPartitionAccessTimesRequest {
-    // One entry per requested table. SHOW PARTITIONS sends a single element; partitions_meta sends the
-    // whole page so a single RPC per FE covers many tables (O(FEs) round-trips, not O(tables * FEs)).
-    // Logical partition ids are globally unique, so the response merges into one logicalPartitionId -> ms map.
-    1: optional list<TPartitionAccessTimeTableRef> tables
-}
-
-struct TGetPartitionAccessTimesResponse {
-    1: optional Status.TStatus status
-    2: optional map<i64, i64> partition_id_to_access_time_ms // logicalPartitionId -> lastAccessTime(ms)
 }
 
 struct TGetPartitionsMetaResponse {
@@ -2365,15 +2290,6 @@ struct TUpdateFailPointRequest {
     2: optional bool is_enable;
     3: optional i32 times;
     4: optional double probability;
-    // Pause mode: park threads reaching this failpoint until it is disabled. A pause request also
-    // sets is_enable = false, so a frontend that predates this field disables the failpoint instead
-    // of enabling it. Readers must check `pause` before `is_enable`.
-    5: optional bool pause;
-    // Pause timeout, snapshotted by the arming frontend and carried with the request, exactly as
-    // PUpdateFailPointStatusRequest.pause_timeout_second is for backends. Receivers must NOT re-read
-    // their own config at park time: that would let ADMIN SET FRONTEND CONFIG between arming and
-    // parking desynchronize the frontends from each other and from the backends.
-    6: optional i32 pause_timeout_second;
 }
 
 struct TUpdateFailPointResponse {
@@ -2474,14 +2390,6 @@ struct TGetTabletMetadataRequest {
     5: optional i64 version;
 }
 
-// Extension point for TCloudTabletMeta. DO NOT MODIFY: do not add fields here,
-// and do not rename, renumber or remove it. The field numbers inside are
-// allocated separately, so anything added here collides with them, and
-// renaming or removing it breaks whatever fills it in. New TCloudTabletMeta
-// fields belong on TCloudTabletMeta itself, whose remaining numbers are free.
-struct TCloudTabletMetaExt {
-}
-
 // Subset of tablet metadata fields needed to construct a version-1 TabletMetadataPB
 // on CN. The shape currently overlaps with AgentService.TCreateTabletReq; the two
 // must be kept in sync per the NOTE on TCreateTabletReq. Higher versions will need
@@ -2498,7 +2406,6 @@ struct TCloudTabletMeta {
     8: optional i64 gtid;
     9: optional Types.TCompressionType compression_type;
     10: optional i32 compression_level;
-    11: optional TCloudTabletMetaExt ext;
 }
 
 struct TGetTabletMetadataResponse {
@@ -2645,8 +2552,6 @@ service FrontendService {
     TTableReplicationResponse startTableReplication(1: TTableReplicationRequest request)
 
     TGetPartitionsMetaResponse getPartitionsMeta(1: TGetPartitionsMetaRequest request)
-
-    TGetPartitionAccessTimesResponse getPartitionAccessTimes(1: optional TGetPartitionAccessTimesRequest request)
 
     TReportLakeCompactionResponse reportLakeCompaction(1: TReportLakeCompactionRequest request)
 

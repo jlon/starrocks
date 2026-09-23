@@ -17,14 +17,13 @@
 #include <gtest/gtest.h>
 
 #include "column/chunk.h"
-#include "column/chunk_factory.h"
 #include "column/column_helper.h"
+#include "column/datum.h"
 #include "column/schema.h"
 #include "fs/fs_util.h"
 #include "gutil/stringprintf.h"
 #include "storage/chunk_helper.h"
 #include "storage/row_store_encoder_factory.h"
-#include "types/datum.h"
 
 using namespace std;
 
@@ -60,7 +59,7 @@ void common_encode_decode(RowStoreEncoderPtr& row_encoder, std::unique_ptr<Schem
     MutableColumns read_value_columns(value_column_ids.size());
     read_value_columns.reserve(value_column_ids.size());
     for (uint32_t i = 0; i < value_column_ids.size(); ++i) {
-        auto column = ChunkFactory::column_from_field(*read_value_schema->field(i).get());
+        auto column = ChunkHelper::column_from_field(*read_value_schema->field(i).get());
         read_value_columns[i] = column->clone_empty();
     }
     row_encoder->decode_columns_from_full_row_column(*schema_with_row, *full_row_col, value_column_ids,
@@ -114,7 +113,7 @@ TEST(RowStoreEncoderTest, testEncodeFullRowColumn) {
                                           {TYPE_VARCHAR, false}});
     // fill chunk
     const int n = 2;
-    auto pchunk = ChunkFactory::new_chunk(*schema, n);
+    auto pchunk = ChunkHelper::new_chunk(*schema, n);
     auto obj_column = down_cast<ObjectColumn<BitmapValue>*>(pchunk->columns()[6]->as_mutable_ptr().get());
     size_t ss = 0;
     for (int i = 0; i < n; i++) {

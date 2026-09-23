@@ -15,13 +15,11 @@
 #include "exec/aggregate/aggregate_base_node.h"
 
 #include "exec/aggregator.h"
-#include "exec_primitive/runtime_filter/runtime_filter_descriptor.h"
-#include "exprs/expr_factory.h"
 
 namespace starrocks {
 
 AggregateBaseNode::AggregateBaseNode(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs)
-        : PipelineNode(pool, tnode, descs), _tnode(tnode) {}
+        : ExecNode(pool, tnode, descs), _tnode(tnode) {}
 
 AggregateBaseNode::~AggregateBaseNode() {
     if (runtime_state() != nullptr) {
@@ -31,8 +29,7 @@ AggregateBaseNode::~AggregateBaseNode() {
 
 Status AggregateBaseNode::init(const TPlanNode& tnode, RuntimeState* state) {
     RETURN_IF_ERROR(ExecNode::init(tnode, state));
-    RETURN_IF_ERROR(
-            ExprFactory::create_expr_trees(_pool, tnode.agg_node.grouping_exprs, &_group_by_expr_ctxs, state, true));
+    RETURN_IF_ERROR(Expr::create_expr_trees(_pool, tnode.agg_node.grouping_exprs, &_group_by_expr_ctxs, state, true));
     for (auto& expr : _group_by_expr_ctxs) {
         auto& type_desc = expr->root()->type();
         if (!type_desc.support_groupby()) {
@@ -46,6 +43,17 @@ Status AggregateBaseNode::init(const TPlanNode& tnode, RuntimeState* state) {
             _build_runtime_filters.emplace_back(rf_desc);
         }
     }
+    return Status::OK();
+}
+
+Status AggregateBaseNode::prepare(RuntimeState* state) {
+    RETURN_IF_ERROR(ExecNode::prepare(state));
+    auto params = convert_to_aggregator_params(_tnode);
+
+    // Avoid partial-prepared Aggregator, which is dangerous to close
+    auto aggregator = std::make_shared<Aggregator>(std::move(params));
+    RETURN_IF_ERROR(aggregator->prepare(state, runtime_profile()));
+    _aggregator = std::move(aggregator);
     return Status::OK();
 }
 
@@ -81,6 +89,54 @@ void AggregateBaseNode::push_down_tuple_slot_mappings(RuntimeState* state,
 
     for (auto& child : _children) {
         child->push_down_tuple_slot_mappings(state, _tuple_slot_mappings);
+    }
+}
+
+void AggregateBaseNode::push_down_join_runtime_filter(RuntimeState* state, RuntimeFilterProbeCollector* collector) {
+    // accept runtime filters from parent if possible.
+    _runtime_filter_collector.push_down(state, id(), collector, _tuple_ids, _local_rf_waiting_set);
+
+    // check to see if runtime filters can be rewritten
+    auto& descriptors = _runtime_filter_collector.descriptors();
+    RuntimeFilterProbeCollector pushdown_collector;
+
+    auto iter = descriptors.begin();
+    while (iter != descriptors.end()) {
+        RuntimeFilterProbeDescriptor* rf_desc = iter->second;
+        if (!rf_desc->can_push_down_runtime_filter()) {
+            ++iter;
+            continue;
+        }
+        SlotId slot_id;
+        // bound to this tuple and probe expr is slot ref.
+        if (!rf_desc->is_bound(_tuple_ids) || !rf_desc->is_probe_slot_ref(&slot_id)) {
+            ++iter;
+            continue;
+        }
+
+        bool match = false;
+        for (ExprContext* group_expr_ctx : _group_by_expr_ctxs) {
+            if (group_expr_ctx->root()->is_slotref()) {
+                auto* slot = down_cast<ColumnRef*>(group_expr_ctx->root());
+                if (slot->slot_id() == slot_id) {
+                    match = true;
+                    break;
+                }
+            }
+        }
+
+        if (match) {
+            pushdown_collector.add_descriptor(rf_desc);
+            iter = descriptors.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
+
+    // push down rewritten runtime filters to children
+    if (!pushdown_collector.empty()) {
+        push_down_join_runtime_filter_to_children(state, &pushdown_collector);
+        pushdown_collector.close(state);
     }
 }
 

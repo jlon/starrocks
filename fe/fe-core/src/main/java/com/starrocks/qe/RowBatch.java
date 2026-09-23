@@ -17,8 +17,6 @@
 
 package com.starrocks.qe;
 
-import com.starrocks.common.InternalErrorCode;
-import com.starrocks.common.Status;
 import com.starrocks.proto.PQueryStatistics;
 import com.starrocks.thrift.TResultBatch;
 
@@ -26,8 +24,6 @@ public final class RowBatch {
     private TResultBatch batch;
     private PQueryStatistics statistics;
     private boolean eos;
-    private Status status;
-    private InternalErrorCode internalErrorCode;
 
     public RowBatch() {
         eos = true;
@@ -55,21 +51,5 @@ public final class RowBatch {
 
     public void setEos(boolean eos) {
         this.eos = eos;
-    }
-
-    public Status getStatus() {
-        return status;
-    }
-
-    public void setStatus(Status status) {
-        this.status = status;
-    }
-
-    public InternalErrorCode getInternalErrorCode() {
-        return internalErrorCode;
-    }
-
-    public void setInternalErrorCode(InternalErrorCode errorCode) {
-        this.internalErrorCode = errorCode;
     }
 }

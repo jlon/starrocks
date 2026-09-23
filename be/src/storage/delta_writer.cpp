@@ -17,31 +17,24 @@
 #include <mutex>
 #include <utility>
 
-#include "column/raw_data_visitor.h"
-#include "common/config_cache_fwd.h"
-#include "common/config_ingest_fwd.h"
-#include "common/config_primary_key_fwd.h"
-#include "common/config_storage_fwd.h"
 #include "common/tracer.h"
 #include "io/io_profiler.h"
 #include "runtime/current_thread.h"
 #include "runtime/descriptors.h"
 #include "runtime/load_fail_point.h"
-#include "runtime/runtime_env.h"
-#include "storage/chunk_helper.h"
 #include "storage/compaction_manager.h"
 #include "storage/memtable.h"
 #include "storage/memtable_flush_executor.h"
 #include "storage/memtable_rowset_writer_sink.h"
+#include "storage/primary_key_encoder.h"
 #include "storage/rowset/rowset_factory.h"
 #include "storage/segment_replicate_executor.h"
 #include "storage/storage_engine.h"
-#include "storage/storage_metrics.h"
 #include "storage/tablet_manager.h"
 #include "storage/tablet_updates.h"
 #include "storage/txn_manager.h"
 #include "storage/update_manager.h"
-#include "storage_primitive/primary_key_encoder.h"
+#include "util/starrocks_metrics.h"
 
 namespace starrocks {
 
@@ -55,19 +48,21 @@ StatusOr<std::unique_ptr<DeltaWriter>> DeltaWriter::open(const DeltaWriterOption
 }
 
 DeltaWriter::DeltaWriter(DeltaWriterOptions opt, MemTracker* mem_tracker, StorageEngine* storage_engine)
-        : _opt(std::move(opt)),
+        : _state(kUninitialized),
+          _opt(std::move(opt)),
           _mem_tracker(mem_tracker),
           _storage_engine(storage_engine),
           _tablet(nullptr),
           _cur_rowset(nullptr),
           _rowset_writer(nullptr),
-
+          _schema_initialized(false),
           _mem_table(nullptr),
           _mem_table_sink(nullptr),
           _tablet_schema(nullptr),
           _flush_token(nullptr),
           _replicate_token(nullptr),
-          _segment_flush_token(nullptr) {}
+          _segment_flush_token(nullptr),
+          _with_rollback_log(true) {}
 
 DeltaWriter::~DeltaWriter() {
     SCOPED_THREAD_LOCAL_MEM_SETTER(_mem_tracker, false);
@@ -407,9 +402,7 @@ Status DeltaWriter::_check_partial_update_with_sort_key(const Chunk& chunk) {
         if (_opt.slots != nullptr && _opt.slots->back()->col_name() == "__op") {
             size_t op_column_id = chunk.num_columns() - 1;
             const auto& op_column = chunk.get_column_by_index(op_column_id);
-            RawDataVisitor visitor;
-            RETURN_IF_ERROR(op_column->accept(&visitor));
-            const auto* ops = visitor.result();
+            auto* ops = reinterpret_cast<const uint8_t*>(op_column->raw_data());
             ok = !std::any_of(ops, ops + chunk.num_rows(), [](auto op) { return op == TOpType::UPSERT; });
         } else {
             ok = false;
@@ -431,10 +424,6 @@ Status DeltaWriter::_check_partial_update_with_sort_key(const Chunk& chunk) {
 Status DeltaWriter::write(const Chunk& chunk, const uint32_t* indexes, uint32_t from, uint32_t size) {
     SCOPED_THREAD_LOCAL_MEM_SETTER(_mem_tracker, false);
     RETURN_IF_ERROR(_check_partial_update_with_sort_key(chunk));
-    // A column addresses its bytes with uint32 offsets, so a chunk wider than that cannot be
-    // carried through to apply. Fail the load here, where the statement can still be retried with
-    // less data per batch, rather than let it commit and leave apply to fail on every retry.
-    RETURN_IF_ERROR(ChunkHelper::reject_if_over_capacity(chunk, "load chunk", _opt.tablet_id, _opt.txn_id));
     ADD_COUNTER_RELAXED(_stats.write_count, 1);
     ADD_COUNTER_RELAXED(_stats.row_count, size);
     int64_t start_time = MonotonicNanos();
@@ -445,7 +434,7 @@ Status DeltaWriter::write(const Chunk& chunk, const uint32_t* indexes, uint32_t 
     if (_mem_table == nullptr) {
         // When loading memory usage is larger than hard limit, we will reject new loading task.
         if (!config::enable_new_load_on_memory_limit_exceeded &&
-            is_tracker_hit_hard_limit(RuntimeEnv::GetInstance()->load_mem_tracker(),
+            is_tracker_hit_hard_limit(GlobalEnv::GetInstance()->load_mem_tracker(),
                                       config::load_process_max_memory_hard_limit_ratio)) {
             return Status::MemoryLimitExceeded(
                     "memory limit exceeded, please reduce load frequency or increase config "
@@ -528,10 +517,10 @@ Status DeltaWriter::write_segment(const SegmentPB& segment_pb, butil::IOBuf& dat
     ADD_COUNTER_RELAXED(_stats.add_segment_time_ns, duration_ns);
     ADD_COUNTER_RELAXED(_stats.add_segment_io_time_ns, io_time_ns);
 
-    StorageMetrics::instance()->segment_flush_total.increment(1);
-    StorageMetrics::instance()->segment_flush_duration_us.increment(duration_ns / 1000);
-    StorageMetrics::instance()->segment_flush_io_time_us.increment(io_time_ns / 1000);
-    StorageMetrics::instance()->segment_flush_bytes_total.increment(segment_pb.data_size());
+    StarRocksMetrics::instance()->segment_flush_total.increment(1);
+    StarRocksMetrics::instance()->segment_flush_duration_us.increment(duration_ns / 1000);
+    StarRocksMetrics::instance()->segment_flush_io_time_us.increment(io_time_ns / 1000);
+    StarRocksMetrics::instance()->segment_flush_bytes_total.increment(segment_pb.data_size());
     VLOG(2) << "Flush segment tablet " << _opt.tablet_id << " segment: " << segment_pb.DebugString()
             << ", duration: " << duration_ns / 1000 << "us, io_time: " << (io_time_ns / 1000) << "us";
     return Status::OK();
@@ -662,8 +651,8 @@ Status DeltaWriter::_flush_memtable() {
     auto elapsed_time = watch.elapsed_time();
     ADD_COUNTER_RELAXED(_stats.memory_exceed_count, 1);
     ADD_COUNTER_RELAXED(_stats.write_wait_flush_time_ns, elapsed_time);
-    StorageMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
-    StorageMetrics::instance()->delta_writer_wait_flush_duration_us.increment(elapsed_time / 1000);
+    StarRocksMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
+    StarRocksMetrics::instance()->delta_writer_wait_flush_duration_us.increment(elapsed_time / 1000);
     return st;
 }
 
@@ -823,11 +812,12 @@ Status DeltaWriter::_do_commit_body() {
     ADD_COUNTER_RELAXED(_stats.commit_rowset_build_time_ns, rowset_build_ts - flush_ts);
     ADD_COUNTER_RELAXED(_stats.commit_wait_replica_time_ns, replica_ts - rowset_build_ts);
     ADD_COUNTER_RELAXED(_stats.commit_txn_commit_time_ns, commit_txn_ts - replica_ts);
-    StorageMetrics::instance()->delta_writer_commit_task_total.increment(1);
-    StorageMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
-    StorageMetrics::instance()->delta_writer_wait_flush_duration_us.increment(flush_ts / 1000);
-    StorageMetrics::instance()->delta_writer_wait_replica_duration_us.increment((replica_ts - rowset_build_ts) / 1000);
-    StorageMetrics::instance()->delta_writer_txn_commit_duration_us.increment((commit_txn_ts - replica_ts) / 1000);
+    StarRocksMetrics::instance()->delta_writer_commit_task_total.increment(1);
+    StarRocksMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
+    StarRocksMetrics::instance()->delta_writer_wait_flush_duration_us.increment(flush_ts / 1000);
+    StarRocksMetrics::instance()->delta_writer_wait_replica_duration_us.increment((replica_ts - rowset_build_ts) /
+                                                                                  1000);
+    StarRocksMetrics::instance()->delta_writer_txn_commit_duration_us.increment((commit_txn_ts - replica_ts) / 1000);
     return Status::OK();
 }
 
@@ -898,7 +888,6 @@ const char* DeltaWriter::replica_state_name(ReplicaState state) {
 Status DeltaWriter::_fill_auto_increment_id(Chunk& chunk) {
     // 1. get pk column from chunk
     vector<uint32_t> pk_columns;
-    pk_columns.reserve(_tablet_schema->num_key_columns());
     for (size_t i = 0; i < _tablet_schema->num_key_columns(); i++) {
         pk_columns.push_back((uint32_t)i);
     }

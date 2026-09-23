@@ -20,7 +20,6 @@ import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.common.Config;
 import com.starrocks.common.util.FrontendDaemon;
 import com.starrocks.load.loadv2.LoadsHistorySyncer;
-import com.starrocks.load.rejected.RejectedRecordsTable;
 import com.starrocks.qe.SimpleExecutor;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.statistic.columns.ExternalPredicateColumnsStorage;
@@ -206,7 +205,6 @@ public class TableKeeper {
             keeperList.add(com.starrocks.lake.TabletWriteLogHistorySyncer.createKeeper());
             keeperList.add(PredicateColumnsStorage.createKeeper());
             keeperList.add(ExternalPredicateColumnsStorage.createKeeper());
-            keeperList.add(RejectedRecordsTable.createKeeper());
             // TODO: add FileListPipeRepo
             // TODO: add statistic table
         }

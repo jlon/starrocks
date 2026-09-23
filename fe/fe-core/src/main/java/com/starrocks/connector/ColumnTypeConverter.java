@@ -20,7 +20,6 @@ import com.starrocks.catalog.Column;
 import com.starrocks.connector.delta.DeltaDataType;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.type.ArrayType;
-import com.starrocks.type.GeoTypeDescriptor;
 import com.starrocks.type.MapType;
 import com.starrocks.type.NullType;
 import com.starrocks.type.PrimitiveType;
@@ -84,7 +83,6 @@ import static com.starrocks.type.IntegerType.BIGINT;
 import static com.starrocks.type.IntegerType.INT;
 import static com.starrocks.type.IntegerType.SMALLINT;
 import static com.starrocks.type.IntegerType.TINYINT;
-import static com.starrocks.type.TypeFactory.CATALOG_MAX_VARCHAR_LENGTH;
 import static com.starrocks.type.UnknownType.UNKNOWN_TYPE;
 import static com.starrocks.type.VarbinaryType.VARBINARY;
 import static java.util.Objects.requireNonNull;
@@ -106,8 +104,6 @@ import static org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory.stringTypeI
 import static org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory.timestampTypeInfo;
 
 public class ColumnTypeConverter {
-    // UUID canonical string form: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-    public static final int UUID_VARCHAR_LENGTH = 36;
     public static final String DECIMAL_PATTERN = "^decimal\\((\\d+), *(\\d+)\\)";
     public static final String COMPLEX_PATTERN = "([0-9a-z<>(),:_ ]+)";
     public static final String ARRAY_PATTERN = "^array<" + COMPLEX_PATTERN + ">";
@@ -565,18 +561,11 @@ public class ColumnTypeConverter {
         }
 
         public Type visit(TimestampType timestampType) {
-            // Paimon TIMESTAMP is timezone-naive (NTZ): carry the flag so the BE reader keeps the
-            // wall clock unshifted. The flag rides along on the type (survives clone, ignored by
-            // equals) and is read at slot toThrift. TIMESTAMP_LTZ (below) is a UTC instant -> default.
-            return ScalarType.createDatetimeNtzType();
+            return DATETIME;
         }
 
         public Type visit(LocalZonedTimestampType timestampType) {
             return DATETIME;
-        }
-
-        public Type visit(org.apache.paimon.types.VariantType variantType) {
-            return VariantType.VARIANT;
         }
 
         public Type visit(org.apache.paimon.types.ArrayType arrayType) {
@@ -610,7 +599,6 @@ public class ColumnTypeConverter {
             String fieldName = field.name();
             org.apache.paimon.types.DataType type = field.type();
             Type fieldType = ColumnTypeConverter.fromPaimonType(type);
-            // Force all Paimon columns to be nullable (true) regardless of their DataType's nullable property.
             Column column = new Column(fieldName, fieldType, true, field.description());
             columns.add(column);
         }
@@ -655,8 +643,6 @@ public class ColumnTypeConverter {
                     return DataTypes.CHAR(CharType.MAX_LENGTH);
                 case VARBINARY:
                     return DataTypes.VARBINARY(VarBinaryType.MAX_LENGTH);
-                case VARIANT:
-                    return DataTypes.VARIANT();
                 case DECIMAL32:
                 case DECIMAL64:
                 case DECIMAL128:
@@ -688,122 +674,6 @@ public class ColumnTypeConverter {
         }
 
         throw new StarRocksConnectorException("Unsupported complex column type %s", type);
-    }
-
-    public static Type fromFlussType(org.apache.fluss.types.DataType type) {
-        return type.accept(FlussTypeToSRTypeVisitor.INSTANCE);
-    }
-
-    private static class FlussTypeToSRTypeVisitor extends org.apache.fluss.types.DataTypeDefaultVisitor<Type> {
-        private static final FlussTypeToSRTypeVisitor INSTANCE = new FlussTypeToSRTypeVisitor();
-
-        @Override
-        public Type visit(org.apache.fluss.types.CharType charType) {
-            return TypeFactory.createCharType(charType.getLength());
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.StringType stringType) {
-            return TypeFactory.createDefaultCatalogString();
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.BooleanType booleanType) {
-            return TypeFactory.createType(PrimitiveType.BOOLEAN);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.BinaryType binaryType) {
-            return TypeFactory.createType(PrimitiveType.VARBINARY);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.BytesType bytesType) {
-            return TypeFactory.createType(PrimitiveType.VARBINARY);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.DecimalType decimalType) {
-            return TypeFactory.createUnifiedDecimalType(decimalType.getPrecision(), decimalType.getScale());
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.TinyIntType tinyIntType) {
-            return TypeFactory.createType(PrimitiveType.TINYINT);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.SmallIntType smallIntType) {
-            return TypeFactory.createType(PrimitiveType.SMALLINT);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.IntType intType) {
-            return TypeFactory.createType(PrimitiveType.INT);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.BigIntType bigIntType) {
-            return TypeFactory.createType(PrimitiveType.BIGINT);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.FloatType floatType) {
-            return TypeFactory.createType(PrimitiveType.FLOAT);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.DoubleType doubleType) {
-            return TypeFactory.createType(PrimitiveType.DOUBLE);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.DateType dateType) {
-            return TypeFactory.createType(PrimitiveType.DATE);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.TimeType timeType) {
-            // StarRocks TIME does not preserve the fractional-second precision of Fluss TIME(p).
-            return TypeFactory.createType(PrimitiveType.TIME);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.TimestampType timestampType) {
-            return TypeFactory.createType(PrimitiveType.DATETIME);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.LocalZonedTimestampType localZonedTimestampType) {
-            return TypeFactory.createType(PrimitiveType.DATETIME);
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.ArrayType arrayType) {
-            return new ArrayType(fromFlussType(arrayType.getElementType()));
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.MapType mapType) {
-            return new MapType(fromFlussType(mapType.getKeyType()), fromFlussType(mapType.getValueType()));
-        }
-
-        @Override
-        public Type visit(org.apache.fluss.types.RowType rowType) {
-            List<org.apache.fluss.types.DataField> fields = rowType.getFields();
-            ArrayList<StructField> structFields = new ArrayList<>(fields.size());
-            for (org.apache.fluss.types.DataField field : fields) {
-                String fieldName = field.getName();
-                Type fieldType = fromFlussType(field.getType());
-                structFields.add(new StructField(fieldName, fieldType));
-            }
-            return new StructType(structFields);
-        }
-
-        @Override
-        protected Type defaultMethod(org.apache.fluss.types.DataType dataType) {
-            return UNKNOWN_TYPE;
-        }
     }
 
     public static Type fromKuduType(ColumnSchema columnSchema) {
@@ -928,37 +798,21 @@ public class ColumnTypeConverter {
                 }
                 return new StructType(structFields);
             case BINARY:
-                return VarbinaryType.VARBINARY;
             case UUID:
-                return TypeFactory.createVarcharType(UUID_VARCHAR_LENGTH);
+                return VarbinaryType.VARBINARY;
             case TIME:
                 return com.starrocks.type.DateType.TIME;
             case VARIANT:
                 return VariantType.VARIANT;
-            case GEOGRAPHY:
-                Types.GeographyType geography = (Types.GeographyType) icebergType;
-                if ((geography.crs() == null || geography.crs().equals("OGC:CRS84"))
-                        && (geography.algorithm() == null || geography.algorithm().name().equals("SPHERICAL"))) {
-                    return ScalarType.createGeoType(PrimitiveType.GEOGRAPHY,
-                            new GeoTypeDescriptor(GeoTypeDescriptor.LogicalType.GEOGRAPHY,
-                                    GeoTypeDescriptor.CoordinateSystem.SPHERICAL,
-                                    GeoTypeDescriptor.EdgeAlgorithm.SPHERICAL, "OGC:CRS84", 4326));
-                }
-                return UnknownType.UNKNOWN_TYPE;
             case FIXED:
-            case GEOMETRY:
-                // External geo metadata is transported separately by IcebergApiConverter.
-                // Recognition must not expose WKB as ordinary SQL binary values.
-                return UnknownType.UNKNOWN_TYPE;
             default:
                 primitiveType = PrimitiveType.UNKNOWN_TYPE;
         }
         return TypeFactory.createType(primitiveType);
     }
 
-    private static Type convertToArrayTypeForIceberg(org.apache.iceberg.types.Type icebergType) {
-        Type elementType = fromIcebergType(icebergType.asNestedType().asListType().elementType());
-        return elementType.isUnknown() ? UnknownType.UNKNOWN_TYPE : new ArrayType(elementType);
+    private static ArrayType convertToArrayTypeForIceberg(org.apache.iceberg.types.Type icebergType) {
+        return new ArrayType(fromIcebergType(icebergType.asNestedType().asListType().elementType()));
     }
 
     private static Type convertToMapTypeForIceberg(org.apache.iceberg.types.Type icebergType) {
@@ -1011,12 +865,12 @@ public class ColumnTypeConverter {
             }
             int fieldId = -1;
             String fieldPhysicalName = "";
-            if (columnMappingMode.equalsIgnoreCase(ColumnMapping.ColumnMappingMode.ID.value) &&
+            if (columnMappingMode.equalsIgnoreCase(ColumnMapping.COLUMN_MAPPING_MODE_ID) &&
                     field.getMetadata().contains(ColumnMapping.COLUMN_MAPPING_ID_KEY)) {
                 fieldId = ((Long) field.getMetadata().get(ColumnMapping.COLUMN_MAPPING_ID_KEY)).intValue();
             }
 
-            if (columnMappingMode.equalsIgnoreCase(ColumnMapping.ColumnMappingMode.NAME.value) &&
+            if (columnMappingMode.equalsIgnoreCase(ColumnMapping.COLUMN_MAPPING_MODE_NAME) &&
                     field.getMetadata().contains(ColumnMapping.COLUMN_MAPPING_PHYSICAL_NAME_KEY)) {
                 fieldPhysicalName = (String) field.getMetadata().get(ColumnMapping.COLUMN_MAPPING_PHYSICAL_NAME_KEY);
             }
@@ -1142,16 +996,7 @@ public class ColumnTypeConverter {
     public static int getVarcharLength(String typeStr) {
         Matcher matcher = Pattern.compile(VARCHAR_PATTERN).matcher(typeStr.toLowerCase(Locale.ROOT));
         if (matcher.find()) {
-            // Notes:
-            // 1. In Hive, varchar(n) limits the number of characters.
-            // 2. In StarRocks, varchar(n) limits the number of bytes.
-            // 3. To be compatible with Hive character length, we assume that a single
-            //    character may occupy up to 4 bytes (maximum for UTF-8 encoding).
-            // 4. The final returned value is:
-            //        min(parsed character length * 4, CATALOG_MAX_VARCHAR_LENGTH)
-            //    i.e., it is capped at StarRocks' maximum varchar length.
-            int length = Integer.parseInt(matcher.group(1));
-            return length == -1 ? length : Math.min(length * 4, CATALOG_MAX_VARCHAR_LENGTH);
+            return Integer.parseInt(matcher.group(1));
         }
         throw new StarRocksConnectorException("Failed to get varchar length at " + typeStr);
     }
@@ -1241,3 +1086,4 @@ public class ColumnTypeConverter {
         return true;
     }
 }
+

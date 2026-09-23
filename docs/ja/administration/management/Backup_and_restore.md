@@ -1,5 +1,4 @@
 ---
-sidebar_position: 50
 displayed_sidebar: docs
 description: "StarRocks はデータをスナップショットとしてリモートストレージにバックアップし、任意のクラスターに復元可能。"
 ---

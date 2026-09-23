@@ -24,7 +24,7 @@ public class AdminShowReplicaStatusStmtTest {
     @Test
     public void testNormal() throws Exception {
         String sql = "ADMIN SHOW REPLICA STATUS FROM db1.tbl1 WHERE STATUS = 'DEAD'";
-        UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+        AdminShowReplicaStatusStmt stmt = (AdminShowReplicaStatusStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
 
     }
 }

@@ -24,7 +24,6 @@ public class TrinoQueryTest extends TrinoTestBase {
     public static void beforeClass() throws Exception {
         TrinoTestBase.beforeClass();
         starRocksAssert.getCtx().getSessionVariable().setCboPushDownAggregateMode(-1);
-        starRocksAssert.getCtx().getSessionVariable().setEnableGlobalLateMaterialization(false);
     }
 
     @Test

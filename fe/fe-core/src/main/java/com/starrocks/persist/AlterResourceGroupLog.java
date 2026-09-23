@@ -64,9 +64,6 @@ public class AlterResourceGroupLog implements Writable {
     @SerializedName(value = "spillMemLimitThreshold")
     private Double spillMemLimitThreshold;
 
-    @SerializedName(value = "memUsedPctLimit")
-    private Double memUsedPctLimit;
-
     @SerializedName(value = "workGroupType")
     private TWorkGroupType resourceGroupType;
 
@@ -186,14 +183,6 @@ public class AlterResourceGroupLog implements Writable {
 
     public void setSpillMemLimitThreshold(Double spillMemLimitThreshold) {
         this.spillMemLimitThreshold = spillMemLimitThreshold;
-    }
-
-    public Double getMemUsedPctLimit() {
-        return memUsedPctLimit;
-    }
-
-    public void setMemUsedPctLimit(Double memUsedPctLimit) {
-        this.memUsedPctLimit = memUsedPctLimit;
     }
 
     public TWorkGroupType getResourceGroupType() {

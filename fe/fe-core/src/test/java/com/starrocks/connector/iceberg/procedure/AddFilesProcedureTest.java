@@ -219,6 +219,7 @@ public class AddFilesProcedureTest {
 
     @Test
     public void testCreateDataFileFromLocationWithMetrics() throws Exception {
+        AddFilesProcedure procedure = AddFilesProcedure.getInstance();
 
         // Mock table schema and partition spec
         Schema schema = new Schema(
@@ -601,7 +602,6 @@ public class AddFilesProcedureTest {
         assertTrue(metrics.upperBounds().isEmpty());
     }
 
-
     @Test
     public void testExtractOrcMetrics(@Mocked Table table,
                                       @Mocked IcebergHiveCatalog catalog,
@@ -621,7 +621,6 @@ public class AddFilesProcedureTest {
                 .addField("id", TypeDescription.createInt())
                 .addField("name", TypeDescription.createString());
 
-
         long totalRows = 100L;
 
         // index 0: root struct statistics (should not be mapped to any column)
@@ -629,12 +628,10 @@ public class AddFilesProcedureTest {
         Mockito.when(rootStats.getNumberOfValues()).thenReturn(totalRows);
         Mockito.when(rootStats.hasNull()).thenReturn(false);
 
-        // index 1: "id" column statistics, 90 non-null values, has nulls
         ColumnStatistics idStats = Mockito.mock(ColumnStatistics.class);
         Mockito.when(idStats.getNumberOfValues()).thenReturn(90L);
         Mockito.when(idStats.hasNull()).thenReturn(true);
 
-        // index 2: "name" column statistics, 80 non-null values, has nulls
         ColumnStatistics nameStats = Mockito.mock(ColumnStatistics.class);
         Mockito.when(nameStats.getNumberOfValues()).thenReturn(80L);
         Mockito.when(nameStats.hasNull()).thenReturn(true);
@@ -670,7 +667,6 @@ public class AddFilesProcedureTest {
         Metrics metrics = (Metrics) method.invoke(procedure, context, table, fileStatus);
 
         assertEquals(totalRows, metrics.recordCount());
-
 
         assertNotNull(metrics.valueCounts());
         assertTrue(metrics.valueCounts().containsKey(1));

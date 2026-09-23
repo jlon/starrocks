@@ -54,11 +54,6 @@ public class AlterJobV2HookTest {
         }
 
         @Override
-        protected void resetTransientState() {
-            // Mock: nothing transient to reset.
-        }
-
-        @Override
         protected void runPendingJob() throws AlterCancelException {
         }
 
@@ -91,13 +86,6 @@ public class AlterJobV2HookTest {
         @Override
         public Optional<Long> getTransactionId() {
             return Optional.of(100L);
-        }
-
-        @Override
-        public AlterJobV2 copyForPersist() {
-            MockedAlterJobV2 copy = new MockedAlterJobV2(this.type);
-            copyBaseFields(copy);
-            return copy;
         }
 
         @Override

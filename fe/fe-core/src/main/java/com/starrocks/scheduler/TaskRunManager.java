@@ -51,10 +51,6 @@ public class TaskRunManager implements MemoryTrackable {
     // Use to execute actual TaskRun
     private final TaskRunExecutor taskRunExecutor = new TaskRunExecutor();
 
-    public TaskRunExecutor getTaskRunExecutor() {
-        return taskRunExecutor;
-    }
-
     private final QueryableReentrantLock taskRunLock = new QueryableReentrantLock(true);
 
     public TaskRunManager(TaskRunScheduler taskRunScheduler) {

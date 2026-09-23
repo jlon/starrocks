@@ -18,7 +18,6 @@
 #include "common/object_pool.h"
 #include "exprs/cast_expr.h"
 #include "exprs/column_ref.h"
-#include "runtime/descriptors.h"
 
 namespace starrocks {
 
@@ -26,7 +25,7 @@ CastColumnIterator::CastColumnIterator(std::unique_ptr<ColumnIterator> source_it
                                        const TypeDescriptor& target_type, bool nullable_source)
         : ColumnIteratorDecorator(source_iter.release(), kTakesOwnership),
           _obj_pool(new ObjectPool()),
-
+          _cast_expr(nullptr),
           _source_chunk() {
     auto slot_id = SlotId{0};
     auto column = ColumnHelper::create_column(source_type, nullable_source);
@@ -41,9 +40,10 @@ CastColumnIterator::CastColumnIterator(std::unique_ptr<ColumnIterator> source_it
 
 CastColumnIterator::~CastColumnIterator() = default;
 
-Status CastColumnIterator::do_cast(Column* target) {
-    ASSIGN_OR_RETURN(auto cast_result, _cast_expr->evaluate_checked(nullptr, &_source_chunk));
-    cast_result = ColumnHelper::unfold_const_column(_cast_expr->type(), _source_chunk.num_rows(), cast_result);
+void CastColumnIterator::do_cast(Column* target) {
+    auto cast_result = _cast_expr->evaluate(nullptr, &_source_chunk);
+    cast_result =
+            ColumnHelper::unfold_const_column(_cast_expr->type(), _source_chunk.num_rows(), std::move(cast_result));
     if ((target->is_nullable() == cast_result->is_nullable()) && (target->size() == 0)) {
         target->swap_column(*(cast_result->as_mutable_raw_ptr()));
     } else if (!target->is_nullable() && cast_result->is_nullable()) {
@@ -52,14 +52,13 @@ Status CastColumnIterator::do_cast(Column* target) {
     } else {
         target->append(*cast_result, 0, cast_result->size());
     }
-    return Status::OK();
 }
 
 Status CastColumnIterator::next_batch(size_t* n, Column* dst) {
     _source_chunk.reset();
     auto* source_column = _source_chunk.get_column_raw_ptr_by_index(0);
     RETURN_IF_ERROR(_parent->next_batch(n, source_column));
-    RETURN_IF_ERROR(do_cast(dst));
+    do_cast(dst);
     return Status::OK();
 }
 
@@ -67,7 +66,7 @@ Status CastColumnIterator::next_batch(const SparseRange<>& range, Column* dst) {
     _source_chunk.reset();
     auto* source_column = _source_chunk.get_column_raw_ptr_by_index(0);
     RETURN_IF_ERROR(_parent->next_batch(range, source_column));
-    RETURN_IF_ERROR(do_cast(dst));
+    do_cast(dst);
     return Status::OK();
 }
 
@@ -75,7 +74,7 @@ Status CastColumnIterator::fetch_values_by_rowid(const rowid_t* rowids, size_t s
     _source_chunk.reset();
     auto* source_column = _source_chunk.get_column_raw_ptr_by_index(0);
     RETURN_IF_ERROR(_parent->fetch_values_by_rowid(rowids, size, source_column));
-    RETURN_IF_ERROR(do_cast(values));
+    do_cast(values);
     return Status::OK();
 }
 

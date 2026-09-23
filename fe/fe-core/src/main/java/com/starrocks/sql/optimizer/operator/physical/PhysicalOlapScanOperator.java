@@ -148,7 +148,7 @@ public class PhysicalOlapScanOperator extends PhysicalScanOperator {
         for (Long partitionId : getSelectedPartitionId()) {
             final Partition partition = ((OlapTable) getTable()).getPartition(partitionId);
             for (PhysicalPartition subPartition : partition.getSubPartitions()) {
-                final MaterializedIndex selectedTable = subPartition.getQueryableIndex(getSelectedIndexMetaId());
+                final MaterializedIndex selectedTable = subPartition.getLatestIndex(getSelectedIndexMetaId());
                 totalTabletsNum += selectedTable.getTablets().size();
             }
         }
@@ -319,16 +319,10 @@ public class PhysicalOlapScanOperator extends PhysicalScanOperator {
             builder.needOutputChunkByBucket = operator.needOutputChunkByBucket;
             builder.usePkIndex = operator.usePkIndex;
             builder.globalDicts = operator.globalDicts;
-            builder.globalDictsExpr = operator.globalDictsExpr;
-
             builder.prunedPartitionPredicates = operator.prunedPartitionPredicates;
             builder.vectorSearchOptions = operator.vectorSearchOptions;
             builder.sample = operator.getSample();
             builder.columnAccessPaths = operator.columnAccessPaths;
-
-            builder.withoutColocateRequirement = operator.withoutColocateRequirement;
-            builder.needOutputChunkByBucket = operator.needOutputChunkByBucket;
-            builder.needSortedByKeyPerTablet = operator.needSortedByKeyPerTablet;
             return this;
         }
 

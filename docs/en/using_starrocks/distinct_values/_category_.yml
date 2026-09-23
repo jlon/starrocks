@@ -3,5 +3,4 @@ label: 'Computing distinct value count'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: distinct_values
+  type: generated-index

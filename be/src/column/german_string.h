@@ -17,15 +17,15 @@
 #include <glog/logging.h>
 
 #include <cstdint>
-#include <ostream>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "base/container/raw_container.h"
-#include "base/string/memcmp.h"
-#include "base/string/slice.h"
-#include "common/memory/column_allocator.h"
+#include "runtime/mem_pool.h"
+#include "runtime/memory/column_allocator.h"
+#include "util/memcmp.h"
+#include "util/raw_container.h"
+#include "util/slice.h"
 
 namespace starrocks {
 class Slice;

@@ -268,18 +268,11 @@ public class PaimonPredicateConverter extends ScalarOperatorVisitor<Predicate, P
                 case DECIMALV2:
                 case DECIMAL32:
                 case DECIMAL64:
-                case DECIMAL128: {
-                    // paimon serializes the literal with the column's precision/scale
-                    if (!(dataType instanceof DecimalType)) {
-                        return null;
-                    }
-                    DecimalType columnType = (DecimalType) dataType;
+                case DECIMAL128:
                     BigDecimal bigDecimal = operator.getDecimal();
-                    if (bigDecimal.stripTrailingZeros().scale() > columnType.getScale()) {
-                        return null;
-                    }
-                    return Decimal.fromBigDecimal(bigDecimal, columnType.getPrecision(), columnType.getScale());
-                }
+                    PrimitiveType type = operator.getType().getPrimitiveType();
+                    return Decimal.fromBigDecimal(bigDecimal, PrimitiveType.getMaxPrecisionOfDecimal(type),
+                            PrimitiveType.getDefaultScaleOfDecimal(type));
                 case HLL:
                 case VARCHAR:
                 case CHAR:
@@ -381,6 +374,10 @@ public class PaimonPredicateConverter extends ScalarOperatorVisitor<Predicate, P
 
         public String visitVariableReference(ColumnRefOperator operator, Void context) {
             return operator.getName();
+        }
+
+        public String visitCastOperator(CastOperator operator, Void context) {
+            return operator.getChild(0).accept(this, context);
         }
     }
 }

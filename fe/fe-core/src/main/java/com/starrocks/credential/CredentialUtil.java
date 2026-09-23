@@ -54,12 +54,6 @@ public class CredentialUtil {
         doMask(properties, CloudConfigurationConstants.ALIYUN_OSS_ACCESS_KEY);
         doMask(properties, CloudConfigurationConstants.ALIYUN_OSS_SECRET_KEY);
 
-        // Mask for huawei obs credential
-        doMask(properties, CloudConfigurationConstants.HUAWEI_OBS_ACCESS_KEY);
-        doMask(properties, CloudConfigurationConstants.HUAWEI_OBS_SECRET_KEY);
-        doMask(properties, CloudConfigurationConstants.HUAWEI_OBS_ACCESS_KEY_DOT);
-        doMask(properties, CloudConfigurationConstants.HUAWEI_OBS_SECRET_KEY_DOT);
-
         // Mask for tencent's credential
         doMask(properties, CloudConfigurationConstants.TENCENT_COS_ACCESS_KEY);
         doMask(properties, CloudConfigurationConstants.TENCENT_COS_SECRET_KEY);

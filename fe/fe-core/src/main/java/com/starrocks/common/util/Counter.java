@@ -34,7 +34,6 @@
 
 package com.starrocks.common.util;
 
-import com.google.common.math.LongMath;
 import com.starrocks.thrift.TCounterAggregateType;
 import com.starrocks.thrift.TCounterMergeType;
 import com.starrocks.thrift.TCounterMinMaxType;
@@ -116,29 +115,6 @@ public class Counter {
         return Objects.equals(strategy.min_max_type, TCounterMinMaxType.SKIP_ALL);
     }
 
-    /**
-     * Returns true if this counter should be displayed in the profile output.
-     * The display behavior is controlled by the display_threshold in strategy:
-     * - threshold < 0: always display (force show even if zero)
-     * - threshold == 0: always display (default, for compatibility)
-     * - threshold > 0: display only if value > threshold
-     */
-    public boolean shouldDisplay() {
-        // Handle null strategy - default to always display for compatibility
-        if (strategy == null) {
-            return true;
-        }
-        long threshold = strategy.display_threshold;
-        // threshold < 0: always display (force show even if zero)
-        // threshold == 0: always display (default, for compatibility)
-        // threshold > 0: display only if value > threshold
-        if (threshold <= 0) {
-            return true;
-        } else {
-            return value > threshold;
-        }
-    }
-
     public void setStrategy(TCounterStrategy strategy) {
         this.strategy = strategy;
     }
@@ -187,7 +163,6 @@ public class Counter {
         long mergedValue = 0;
         long minValue = Long.MAX_VALUE;
         long maxValue = Long.MIN_VALUE;
-        boolean saturatingSum = counters.get(0).isSum() && counters.get(0).getStrategy().isSaturating_sum();
 
         for (Counter counter : counters) {
             if (counter.getValue() < minValue) {
@@ -204,8 +179,7 @@ public class Counter {
                 maxValue = counter.getMaxValue().get();
             }
 
-            mergedValue = saturatingSum ? LongMath.saturatedAdd(mergedValue, counter.getValue())
-                    : mergedValue + counter.getValue();
+            mergedValue += counter.getValue();
         }
 
         if (counters.get(0).isAvg()) {

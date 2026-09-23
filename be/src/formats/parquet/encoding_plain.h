@@ -15,23 +15,21 @@
 #pragma once
 
 #include <cstring>
-#include <type_traits>
 
-#include "base/bit/bit_stream_utils.h"
-#include "base/bit/bit_util.h"
-#include "base/coding.h"
-#include "base/container/raw_container.h"
-#include "base/string/faststring.h"
-#include "base/string/slice.h"
-#include "base/types/int256.h"
 #include "column/column.h"
 #include "column/column_helper.h"
 #include "column/nullable_column.h"
-#include "column/raw_data_visitor.h"
 #include "column/vectorized_fwd.h"
 #include "common/status.h"
 #include "formats/parquet/encoding.h"
 #include "gutil/strings/substitute.h"
+#include "types/int256.h"
+#include "util/bit_stream_utils.h"
+#include "util/bit_util.h"
+#include "util/coding.h"
+#include "util/faststring.h"
+#include "util/raw_container.h"
+#include "util/slice.h"
 
 #ifdef __AVX2__
 #include <immintrin.h>
@@ -210,14 +208,10 @@ public:
 
         size_t max_size = 0;
         size_t read_count = count - null_cnt;
-        // Reusable members rather than VLAs: large batches blow the stack.
-        _temp_lengths.resize(read_count + 1);
-        _temp_datas.resize(read_count + 1);
-        uint32_t* lengths = _temp_lengths.data();
-        char** datas = _temp_datas.data();
+        uint32_t lengths[read_count + 1];
+        char* datas[read_count + 1];
         size_t i = 0;
         size_t cursor = _offset;
-        size_t total_length = 0;
         //
         for (i = 0; (i < read_count) & (_offset < _data.size); ++i) {
             uint32_t length = decode_fixed32_le(reinterpret_cast<const uint8_t*>(_data.data) + cursor);
@@ -226,7 +220,6 @@ public:
             cursor += length;
             lengths[i] = length;
             max_size = max_size > length ? max_size : length;
-            total_length += length;
         }
 
         _offset = cursor;
@@ -239,21 +232,15 @@ public:
             auto& offsets = binary_column->get_offset();
             auto& bytes = binary_column->get_bytes();
             size_t prev_offsets = offsets.size();
+            raw::stl_vector_resize_uninitialized(&offsets, count + prev_offsets);
             size_t offset = bytes.size();
-            size_t final_offset = offset + total_length;
-            offsets.resize_uninitialized(count + prev_offsets, final_offset);
             size_t cnt = 0;
-            const uint32_t* lengths_ptr = lengths;
-            offsets.visit_storage([prev_offsets, count, is_nulls, lengths_ptr, offset, cnt](auto& offsets_buf) mutable {
-                using OffsetValue = typename std::decay_t<decltype(offsets_buf)>::value_type;
-                auto* dst_offsets = offsets_buf.data() + prev_offsets;
-                for (size_t i = 0; i < count; ++i) {
-                    offset += is_nulls[i] ? 0 : lengths_ptr[cnt++];
-                    dst_offsets[i] = static_cast<OffsetValue>(offset);
-                }
-            });
+            for (size_t i = 0; i < count; ++i) {
+                offset += is_nulls[i] ? 0 : lengths[cnt++];
+                offsets[prev_offsets + i] = offset;
+            }
 
-            binary_column->get_bytes().reserve(final_offset);
+            binary_column->get_bytes().reserve(offset);
         }
 
         if (read_count == 0) {
@@ -261,8 +248,7 @@ public:
         }
 
         // fill bytes data
-        max_size = std::max<decltype(max_size)>(static_cast<decltype(max_size)>(BitUtil::next_power_of_two(max_size)),
-                                                static_cast<decltype(max_size)>(8));
+        max_size = std::max(BitUtil::next_power_of_two(max_size), 8L);
         if (datas[read_count - 1] - _data.data + max_size <= _data.size) {
             binary_column->append_bytes_overflow(datas, lengths, read_count, max_size);
             DCHECK_EQ(binary_column->get_bytes().size(), binary_column->get_offset().back());
@@ -315,9 +301,7 @@ public:
             CHECK_DECODING_BOUND
             bool ret = false;
             // when last slices offset + max_size > _data.size, there is overflow on reading
-            max_size =
-                    std::max<decltype(max_size)>(static_cast<decltype(max_size)>(BitUtil::next_power_of_two(max_size)),
-                                                 static_cast<decltype(max_size)>(8));
+            max_size = std::max(BitUtil::next_power_of_two(max_size), 8L);
             if (slices[count - 1].data - _data.data + max_size <= _data.size) {
                 ret = ColumnHelper::get_binary_column(dst)->append_strings_overflow(slices, num_decoded, max_size);
             } else {
@@ -370,8 +354,6 @@ public:
 private:
     Slice _data;
     size_t _offset = 0;
-    std::vector<uint32_t> _temp_lengths;
-    std::vector<char*> _temp_datas;
 };
 
 // plain encoding for boolean type is stored as `Bit Packed`, `LSB` first format
@@ -393,9 +375,7 @@ public:
     Status next_batch(size_t count, ColumnContentType content_type, Column* dst, const FilterData* filter) override {
         auto original_size = dst->size();
         dst->resize(original_size + count);
-        MutableRawDataVisitor visitor;
-        RETURN_IF_ERROR(dst->accept_mutable(&visitor));
-        auto num_unpacked_values = unpack_batch(count, visitor.result() + original_size);
+        auto num_unpacked_values = unpack_batch(count, dst->mutable_raw_data() + original_size);
         if (num_unpacked_values < count) {
             return Status::InternalError(strings::Substitute(
                     "going to read out-of-bounds data, count=$0,num_unpacked_values=$1", count, num_unpacked_values));
@@ -405,10 +385,9 @@ public:
 
     Status skip(size_t values_to_skip) override {
         //TODO(Smith) still heavy work load
-        // resize() — see encoding_bss.h: reserve() leaves storage uninitialised,
-        // writing through data() is UB.
-        _skip_buffer.resize(values_to_skip);
-        return next_batch(values_to_skip, _skip_buffer.data());
+        std::vector<uint8_t> tmp;
+        tmp.reserve(values_to_skip);
+        return next_batch(values_to_skip, tmp.data());
     }
 
     Status next_batch(size_t count, uint8_t* dst) override {
@@ -425,7 +404,6 @@ private:
     static const int kBitPackedDefaultValue = 8;
 
     BatchedBitReader _batched_bit_reader;
-    std::vector<uint8_t> _skip_buffer;
 
     std::unique_ptr<uint8_t[]> _decoded_values_buffer;
     std::size_t _decoded_buffer_size;
@@ -573,19 +551,13 @@ public:
         }
         auto& offsets = binary_column->get_offset();
         size_t prev_offsets = offsets.size();
-        size_t final_offset = offset + read_count * _type_length;
-        offsets.resize_uninitialized(count + prev_offsets, final_offset);
+        raw::stl_vector_resize_uninitialized(&offsets, count + prev_offsets);
         {
             // fill offset columns
-            offsets.visit_storage(
-                    [prev_offsets, count, is_nulls, type_length = _type_length, offset](auto& offsets_buf) mutable {
-                        using OffsetValue = typename std::decay_t<decltype(offsets_buf)>::value_type;
-                        auto* dst_offsets = offsets_buf.data() + prev_offsets;
-                        for (size_t i = 0; i < count; ++i) {
-                            offset += is_nulls[i] ? 0 : type_length;
-                            dst_offsets[i] = static_cast<OffsetValue>(offset);
-                        }
-                    });
+            for (size_t i = 0; i < count; ++i) {
+                offset += is_nulls[i] ? 0 : _type_length;
+                offsets[prev_offsets + i] = offset;
+            }
         }
         DCHECK_EQ(binary_column->get_bytes().size(), binary_column->get_offset().back());
 
@@ -619,12 +591,9 @@ public:
         __m256i cur = _mm256_set1_epi64x((uint64_t)(_data.data + _offset));
         cur = _mm256_add_epi64(cur, offsets);
         for (; i + 4 <= count; i += 4) {
-            // Interleave (ptr,len) lanes to materialise 4 Slice{ptr,len} structs.
-            // Replaces clang-only __builtin_shufflevector with portable AVX2 intrinsics.
-            __m256i unpacklo = _mm256_unpacklo_epi64(cur, fixed_length); // [ptr0, len, ptr2, len]
-            __m256i unpackhi = _mm256_unpackhi_epi64(cur, fixed_length); // [ptr1, len, ptr3, len]
-            __m256i lo = _mm256_permute2x128_si256(unpacklo, unpackhi, 0x20);
-            __m256i hi = _mm256_permute2x128_si256(unpacklo, unpackhi, 0x31);
+            // mix two i64 to i128
+            __m256i lo = __builtin_shufflevector(cur, fixed_length, 0, 4, 1, 4);
+            __m256i hi = __builtin_shufflevector(cur, fixed_length, 2, 4, 3, 4);
 
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(&slices[i]), lo);
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(&slices[i + 2]), hi);

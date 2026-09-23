@@ -19,15 +19,15 @@
 #include <filesystem>
 #include <fstream>
 
-#include "base/testutil/assert.h"
-#include "base/testutil/sync_point.h"
-#include "base/uid_util.h"
-#include "base/utility/defer_op.h"
 #include "common/status.h"
-#include "common/storage_define.h"
 #include "fs/fs.h"
 #include "gen_cpp/olap_file.pb.h"
 #include "gutil/strings/util.h"
+#include "storage/olap_define.h"
+#include "testutil/assert.h"
+#include "testutil/sync_point.h"
+#include "util/defer_op.h"
+#include "util/uid_util.h"
 
 namespace starrocks {
 

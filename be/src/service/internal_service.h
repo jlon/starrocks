@@ -38,12 +38,13 @@
 #include <bthread/mutex.h>
 #include <google/protobuf/service.h>
 
-#include "base/concurrency/countdown_latch.h"
 #include "common/compiler_util.h"
 #include "common/status.h"
-#include "common/thread/priority_thread_pool.hpp"
-#include "exec_primitive/pipeline/pipeline_fwd.h"
+#include "exec/pipeline/pipeline_fwd.h"
+#include "gen_cpp/MVMaintenance_types.h"
 #include "gen_cpp/internal_service.pb.h"
+#include "util/countdown_latch.h"
+#include "util/priority_thread_pool.hpp"
 
 namespace brpc {
 class Controller;
@@ -52,18 +53,13 @@ class Controller;
 namespace starrocks {
 
 class TExecPlanFragmentParams;
-class BatchWriteMgr;
+class TMVCommitEpochTask;
 class ExecEnv;
-
-namespace orchestration {
-class OrchestrationEnv;
-}
 
 template <typename T>
 class PInternalServiceImplBase : public T {
 public:
-    PInternalServiceImplBase(ExecEnv* exec_env, orchestration::OrchestrationEnv* orchestration_env,
-                             BatchWriteMgr* batch_write_mgr);
+    PInternalServiceImplBase(ExecEnv* exec_env);
     ~PInternalServiceImplBase() override;
 
     void transmit_data(::google::protobuf::RpcController* controller, const ::starrocks::PTransmitDataParams* request,
@@ -205,9 +201,6 @@ public:
     void lookup(google::protobuf::RpcController* controller, const PLookUpRequest* request, PLookUpResponse* response,
                 google::protobuf::Closure* done) override;
 
-    void lookup_close(google::protobuf::RpcController* controller, const PLookUpCloseRequest* request,
-                      PLookUpCloseResponse* response, google::protobuf::Closure* done) override;
-
 private:
     void _transmit_chunk(::google::protobuf::RpcController* controller,
                          const ::starrocks::PTransmitChunkParams* request, ::starrocks::PTransmitChunkResult* response,
@@ -249,6 +242,13 @@ private:
                                            const TExecPlanFragmentParams& t_unique_request);
     Status _exec_plan_fragment_by_non_pipeline(const TExecPlanFragmentParams& t_request);
 
+    // MV Maintenance task
+    Status _submit_mv_maintenance_task(brpc::Controller* cntl);
+    Status _mv_start_maintenance(const TMVMaintenanceTasks& task);
+    Status _mv_start_epoch(const pipeline::QueryContextPtr& query_ctx, const TMVMaintenanceTasks& task);
+    Status _mv_commit_epoch(const pipeline::QueryContextPtr& query_ctx, const TMVMaintenanceTasks& task);
+    Status _mv_abort_epoch(const pipeline::QueryContextPtr& query_ctx, const TMVMaintenanceTasks& task);
+
     // short circuit
     Status _exec_short_circuit(brpc::Controller* cntl, const PExecShortCircuitRequest* request,
                                PExecShortCircuitResult* response);
@@ -258,8 +258,6 @@ private:
 
 protected:
     ExecEnv* _exec_env;
-    orchestration::OrchestrationEnv* _orchestration_env;
-    BatchWriteMgr* _batch_write_mgr;
 };
 
 } // namespace starrocks

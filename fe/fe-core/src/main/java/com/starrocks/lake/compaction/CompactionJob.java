@@ -52,7 +52,6 @@ public class CompactionJob {
     private final ComputeResource computeResource;
     private String warehouse;
     private final Quantiles scoreBefore;
-    private final boolean unshare;
     private Quantiles scoreAfter;
     private boolean partialSuccess; // whether job is partial successful
     private CompactionProfile profile;
@@ -60,12 +59,6 @@ public class CompactionJob {
     public CompactionJob(Database db, Table table, PhysicalPartition partition, long txnId,
             boolean allowPartialSuccess, ComputeResource computeResource, String warehouse,
             Quantiles scoreBefore) {
-        this(db, table, partition, txnId, allowPartialSuccess, computeResource, warehouse, scoreBefore, false);
-    }
-
-    public CompactionJob(Database db, Table table, PhysicalPartition partition, long txnId,
-            boolean allowPartialSuccess, ComputeResource computeResource, String warehouse,
-            Quantiles scoreBefore, boolean unshare) {
         this.db = Objects.requireNonNull(db, "db is null");
         this.table = Objects.requireNonNull(table, "table is null");
         this.partition = Objects.requireNonNull(partition, "partition is null");
@@ -77,7 +70,6 @@ public class CompactionJob {
         this.computeResource = computeResource;
         this.warehouse = warehouse;
         this.scoreBefore = scoreBefore;
-        this.unshare = unshare;
         this.scoreAfter = null;
         this.partialSuccess = false;
         this.profile = null;
@@ -123,6 +115,7 @@ public class CompactionJob {
 
     public CompactionTask.TaskResult getResult() {
         int allSuccess = 0;
+        int partialSuccess = 0;
         int noneSuccess = 0;
         for (CompactionTask task : tasks) {
             CompactionTask.TaskResult subTaskResult = task.getResult();
@@ -130,6 +123,7 @@ public class CompactionJob {
                 case NOT_FINISHED:
                     return subTaskResult; // early return
                 case PARTIAL_SUCCESS:
+                    partialSuccess++;
                     break;
                 case NONE_SUCCESS:
                     noneSuccess++;
@@ -234,10 +228,6 @@ public class CompactionJob {
 
     public boolean getAllowPartialSuccess() {
         return allowPartialSuccess;
-    }
-
-    public boolean isUnshare() {
-        return unshare;
     }
 
     public ComputeResource getComputeResource() {

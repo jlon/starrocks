@@ -281,7 +281,7 @@ public class ListPartitionPruner implements PartitionPruner {
                         SqlToScalarOperatorTranslator.translateWithSlotRef(generatedExpr, slotRefResolver);
 
                 if (call instanceof CallOperator &&
-                        OperatorFunctionChecker.onlyContainIncreasingFunctions((CallOperator) call).first) {
+                        OperatorFunctionChecker.onlyContainMonotonicFunctions((CallOperator) call).first) {
                     List<ColumnRefOperator> columnRefOperatorList = Utils.extractColumnRef(call);
                     for (ColumnRefOperator ref : columnRefOperatorList) {
                         result.add(ref.getName());
@@ -369,7 +369,7 @@ public class ListPartitionPruner implements PartitionPruner {
                     continue;
                 }
                 if (!binaryPredicate.getBinaryType().isEqual()) {
-                    if (!OperatorFunctionChecker.onlyContainIncreasingFunctions((CallOperator) generatedExpr).first) {
+                    if (!OperatorFunctionChecker.onlyContainMonotonicFunctions((CallOperator) generatedExpr).first) {
                         // skip non-monotonic function for not equal predicate
                         continue;
                     }
@@ -378,31 +378,11 @@ public class ListPartitionPruner implements PartitionPruner {
 
             ScalarOperator result = buildDeducedConjunct(conjunct, generatedExpr, generatedColumn);
             if (result != null) {
-                extraConjuncts.add(keepNullPartitions(result, generatedColumn));
+                extraConjuncts.add(result);
             }
         }
 
         partitionConjuncts.addAll(extraConjuncts);
-    }
-
-    /**
-     * A deduced conjunct only describes the rows whose partition value is not NULL.
-     * <p>
-     * The deduction rewrites a predicate on the source column into a predicate on the generated
-     * partition column, which is sound only where the generating function is defined. For a row it
-     * maps to NULL - for example from_unixtime(ts) of a negative ts, which lands the row in the NULL
-     * (default) partition - the source predicate can still be true while the deduced predicate is
-     * not, and every comparison against the partition value map drops the NULL partitions
-     * (evalBinaryPredicate only ever unions matches out of partitionValueMap). Pruning with the
-     * deduced conjunct alone therefore removes partitions that hold matching rows, and the rows are
-     * silently missing from the result.
-     * <p>
-     * OR-ing "generated column IS NULL" keeps exactly those partitions: what the deduced predicate
-     * says nothing about, it may not prune. Where the table has no NULL partition the added branch
-     * matches nothing and pruning is unchanged.
-     */
-    private static ScalarOperator keepNullPartitions(ScalarOperator deduced, ColumnRefOperator generatedColumn) {
-        return Utils.compoundOr(deduced, new IsNullPredicateOperator(generatedColumn));
     }
 
     public static boolean checkDeduceConjunct(List<ColumnRefOperator> partitionColumnRefs,
@@ -657,9 +637,8 @@ public class ListPartitionPruner implements PartitionPruner {
             case NE:
                 // SlotRef != Literal
                 matches.addAll(allPartitions);
-                // remove NULL-only partitions
-                matches.removeIf(id -> nullPartitions.contains(id)
-                        && (listPartitionInfo == null || listPartitionInfo.isSingleValuePartition(id)));
+                // remove null partitions
+                matches.removeAll(nullPartitions);
                 // remove partition matches literal
                 if (partitionValueMap.containsKey(literal)) {
                     if (listPartitionInfo == null) {
@@ -776,10 +755,9 @@ public class ListPartitionPruner implements PartitionPruner {
                 return Sets.newHashSet();
             }
 
-            // all partitions but remove NULL-only partitions
+            // all partitions but remove null partitions
             matches.addAll(allPartitions);
-            matches.removeIf(id -> nullPartitions.contains(id)
-                    && (listPartitionInfo == null || listPartitionInfo.isSingleValuePartition(id)));
+            matches.removeAll(nullPartitions);
         }
 
         for (int i = 1; i < inPredicate.getChildren().size(); ++i) {
@@ -826,9 +804,7 @@ public class ListPartitionPruner implements PartitionPruner {
         if (isNullPredicate.isNotNull()) {
             // is not null
             matches.addAll(allPartitions);
-            // all partitions but remove NULL-only partitions
-            matches.removeIf(id -> nullPartitions.contains(id)
-                    && (listPartitionInfo == null || listPartitionInfo.isSingleValuePartition(id)));
+            matches.removeAll(nullPartitions);
         } else {
             // is null
             matches.addAll(nullPartitions);

@@ -39,19 +39,13 @@
 #include <sstream>
 #include <utility>
 
-#include "base/string/string_util.h"
-#include "base/system/errno.h"
-#include "base/time/monotime.h"
-#include "base/time/time.h"
-#include "base/utility/defer_op.h"
-#include "common/config_storage_fwd.h"
-#include "common/storage_define.h"
-#include "common/system/backend_options.h"
+#include "common/config.h"
 #include "fs/fs.h"
-#include "fs/fs_factory.h"
 #include "fs/fs_util.h"
 #include "gutil/strings/substitute.h"
-#include "platform/path_rw.h"
+#include "runtime/exec_env.h"
+#include "service/backend_options.h"
+#include "storage/olap_define.h"
 #include "storage/rowset/rowset_factory.h"
 #include "storage/rowset/rowset_meta.h"
 #include "storage/rowset/rowset_meta_manager.h"
@@ -60,6 +54,11 @@
 #include "storage/tablet_meta_manager.h"
 #include "storage/tablet_updates.h"
 #include "storage/txn_manager.h"
+#include "storage/utils.h" // for check_dir_existed
+#include "util/defer_op.h"
+#include "util/errno.h"
+#include "util/monotime.h"
+#include "util/string_util.h"
 
 using strings::Substitute;
 
@@ -70,11 +69,13 @@ static const char* const kTestFilePath = "/.testfile";
 DataDir::DataDir(const std::string& path, TStorageMedium::type storage_medium, TabletManager* tablet_manager,
                  TxnManager* txn_manager)
         : _path(path),
-
+          _available_bytes(0),
+          _disk_capacity_bytes(0),
           _storage_medium(storage_medium),
           _tablet_manager(tablet_manager),
           _txn_manager(txn_manager),
-          _cluster_id_mgr(std::make_shared<ClusterIdMgr>(path)) {}
+          _cluster_id_mgr(std::make_shared<ClusterIdMgr>(path)),
+          _current_shard(0) {}
 
 DataDir::~DataDir() {
     delete _id_generator;
@@ -82,7 +83,7 @@ DataDir::~DataDir() {
 }
 
 Status DataDir::init(bool read_only) {
-    ASSIGN_OR_RETURN(_fs, FileSystemFactory::CreateSharedFromString(_path));
+    ASSIGN_OR_RETURN(_fs, FileSystem::CreateSharedFromString(_path));
     RETURN_IF_ERROR(_fs->path_exists(_path));
     std::string align_tag_path = _path + ALIGN_TAG_PREFIX;
     if (access(align_tag_path.c_str(), F_OK) == 0) {

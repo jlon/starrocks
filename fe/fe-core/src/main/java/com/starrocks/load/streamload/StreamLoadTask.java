@@ -32,7 +32,6 @@ import com.starrocks.common.util.DebugUtil;
 import com.starrocks.common.util.LoadPriority;
 import com.starrocks.common.util.LogBuilder;
 import com.starrocks.common.util.LogKey;
-import com.starrocks.common.util.ProfileKeyDictionary;
 import com.starrocks.common.util.ProfileManager;
 import com.starrocks.common.util.RuntimeProfile;
 import com.starrocks.common.util.TimeUtils;
@@ -981,10 +980,7 @@ public class StreamLoadTask extends AbstractStreamLoadTask {
                 Status status = coord.getExecStatus();
                 Map<String, String> loadCounters = coord.getLoadCounters();
                 if (loadCounters == null || loadCounters.get(LoadEtlTask.DPP_NORMAL_ALL) == null) {
-                    // A load that was cancelled never reports its counters, so reaching this without an
-                    // OK status means the load stopped for a reason the user needs to see. Reporting
-                    // "no rows imported" here would hide it behind what looks like a data problem.
-                    throw new LoadException(status.ok() ? ERR_NO_ROWS_IMPORTED.formatErrorMsg() : status.getErrorMsg());
+                    throw new LoadException(ERR_NO_ROWS_IMPORTED.formatErrorMsg());
                 }
                 this.numRowsNormal = Long.parseLong(loadCounters.get(LoadEtlTask.DPP_NORMAL_ALL));
                 this.numRowsAbnormal = Long.parseLong(loadCounters.get(LoadEtlTask.DPP_ABNORMAL_ALL));
@@ -992,7 +988,7 @@ public class StreamLoadTask extends AbstractStreamLoadTask {
                 this.numLoadBytesTotal = Long.parseLong(loadCounters.get(LoadJob.LOADED_BYTES));
 
                 if (numRowsNormal == 0) {
-                    throw new LoadException(status.ok() ? ERR_NO_ROWS_IMPORTED.formatErrorMsg() : status.getErrorMsg());
+                    throw new LoadException(ERR_NO_ROWS_IMPORTED.formatErrorMsg());
                 }
 
                 if (coord.isEnableLoadProfile()) {
@@ -1139,7 +1135,10 @@ public class StreamLoadTask extends AbstractStreamLoadTask {
     }
 
     @Override
-    public void afterPrepared(TransactionState txnState) throws StarRocksException {
+    public void afterPrepared(TransactionState txnState, boolean txnOperated) throws StarRocksException {
+        if (!txnOperated) {
+            return;
+        }
         writeLock();
         try {
             for (int i = 0; i < channelNum; i++) {
@@ -1181,7 +1180,11 @@ public class StreamLoadTask extends AbstractStreamLoadTask {
     }
 
     @Override
-    public void afterCommitted(TransactionState txnState) throws StarRocksException {
+    public void afterCommitted(TransactionState txnState, boolean txnOperated) throws StarRocksException {
+        if (!txnOperated) {
+            return;
+        }
+
         // sync stream load collect profile, here we collect profile only when be has reported
         if (isSyncStreamLoad() && coord != null && coord.isProfileAlreadyReported()) {
             collectProfile(false);
@@ -1222,7 +1225,7 @@ public class StreamLoadTask extends AbstractStreamLoadTask {
         summaryProfile.addInfoString(ProfileManager.QUERY_TYPE, "Load");
         summaryProfile.addInfoString(ProfileManager.LOAD_TYPE, getStringByType());
         summaryProfile.addInfoString(ProfileManager.QUERY_STATE, isAborted ? "Aborted" : "Finished");
-        summaryProfile.addInfoString(ProfileKeyDictionary.STARROCKS_VERSION,
+        summaryProfile.addInfoString("StarRocks Version",
                 String.format("%s-%s", Version.STARROCKS_VERSION, Version.STARROCKS_COMMIT_HASH));
         summaryProfile.addInfoString(ProfileManager.SQL_STATEMENT, getStmt());
         summaryProfile.addInfoString(ProfileManager.DEFAULT_DB, dbName);
@@ -1297,8 +1300,12 @@ public class StreamLoadTask extends AbstractStreamLoadTask {
     }
 
     @Override
-    public void afterAborted(TransactionState txnState, String txnStatusChangeReason)
+    public void afterAborted(TransactionState txnState, boolean txnOperated, String txnStatusChangeReason)
             throws StarRocksException {
+        if (!txnOperated) {
+            return;
+        }
+
         if (isSyncStreamLoad() && coord != null && coord.isProfileAlreadyReported()) {
             collectProfile(true);
         }
@@ -1347,7 +1354,10 @@ public class StreamLoadTask extends AbstractStreamLoadTask {
     }
 
     @Override
-    public void afterVisible(TransactionState txnState) {
+    public void afterVisible(TransactionState txnState, boolean txnOperated) {
+        if (!txnOperated) {
+            return;
+        }
         writeLock();
         try {
             for (int i = 0; i < channelNum; i++) {
@@ -1470,31 +1480,20 @@ public class StreamLoadTask extends AbstractStreamLoadTask {
     }
 
     private void replayTxnAttachment(TransactionState txnState) {
-        TxnCommitAttachment txnCommitAttachment = txnState.getTxnCommitAttachment();
-        if (txnCommitAttachment == null) {
+        if (txnState.getTxnCommitAttachment() == null) {
             return;
         }
-        if (txnCommitAttachment instanceof StreamLoadTxnCommitAttachment) {
-            StreamLoadTxnCommitAttachment attachment = (StreamLoadTxnCommitAttachment) txnCommitAttachment;
-            this.trackingUrl = attachment.getTrackingURL();
-            this.beforeLoadTimeMs = attachment.getBeforeLoadTimeMs();
-            this.startLoadingTimeMs = attachment.getStartLoadingTimeMs();
-            this.startPreparingTimeMs = attachment.getStartPreparingTimeMs();
-            this.finishPreparingTimeMs = attachment.getFinishPreparingTimeMs();
-            this.endTimeMs = attachment.getEndTimeMs();
-            this.numRowsNormal = attachment.getNumRowsNormal();
-            this.numRowsAbnormal = attachment.getNumRowsAbnormal();
-            this.numRowsUnselected = attachment.getNumRowsUnselected();
-            this.numLoadBytesTotal = attachment.getNumLoadBytesTotal();
-            return;
-        }
-        if (txnCommitAttachment instanceof ManualLoadTxnCommitAttachment
-                || txnCommitAttachment instanceof RLTaskTxnCommitAttachment) {
-            setLoadState(txnCommitAttachment, txnState.getReason());
-            return;
-        }
-        LOG.warn("ignore unsupported txn commit attachment {} while replaying stream load task {}",
-                txnCommitAttachment.getClass().getName(), label);
+        StreamLoadTxnCommitAttachment attachment = (StreamLoadTxnCommitAttachment) txnState.getTxnCommitAttachment();
+        this.trackingUrl = attachment.getTrackingURL();
+        this.beforeLoadTimeMs = attachment.getBeforeLoadTimeMs();
+        this.startLoadingTimeMs = attachment.getStartLoadingTimeMs();
+        this.startPreparingTimeMs = attachment.getStartPreparingTimeMs();
+        this.finishPreparingTimeMs = attachment.getFinishPreparingTimeMs();
+        this.endTimeMs = attachment.getEndTimeMs();
+        this.numRowsNormal = attachment.getNumRowsNormal();
+        this.numRowsAbnormal = attachment.getNumRowsAbnormal();
+        this.numRowsUnselected = attachment.getNumRowsUnselected();
+        this.numLoadBytesTotal = attachment.getNumLoadBytesTotal();
     }
 
     public OlapTable getTable() throws MetaNotFoundException {

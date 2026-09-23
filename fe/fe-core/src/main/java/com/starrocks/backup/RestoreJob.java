@@ -232,26 +232,6 @@ public class RestoreJob extends AbstractJob {
         this.mvRestoreContext = mvRestoreContext;
     }
 
-    protected RestoreJob(RestoreJob job) {
-        super(job);
-
-        this.backupTimestamp = job.backupTimestamp;
-        this.jobInfo = job.jobInfo;
-        this.allowLoad = job.allowLoad;
-        this.state = job.state;
-        this.backupMeta = job.backupMeta;
-        this.fileMapping = job.fileMapping;
-        this.metaPreparedTime = job.metaPreparedTime;
-        this.snapshotFinishedTime = job.snapshotFinishedTime;
-        this.downloadFinishedTime = job.downloadFinishedTime;
-        this.restoreReplicationNum = job.restoreReplicationNum;
-        this.restoredPartitions = job.restoredPartitions;
-        this.restoredTbls = job.restoredTbls;
-        this.restoredVersionInfo = job.restoredVersionInfo;
-        this.snapshotInfos = job.snapshotInfos;
-        this.colocatePersistInfos = job.colocatePersistInfos;
-    }
-
     public RestoreJobState getState() {
         return state;
     }
@@ -521,8 +501,8 @@ public class RestoreJob extends AbstractJob {
                         "Failed to restore external catalog, errmsg: " + e.getMessage());
                 return;
             }
-
-            persistStateChange(RestoreJobState.COMMITTING);
+            state = RestoreJobState.COMMITTING;
+            globalStateMgr.getEditLog().logRestoreJob(this);
             return;
         }
 
@@ -1308,7 +1288,6 @@ public class RestoreJob extends AbstractJob {
     protected void createReplicas(OlapTable localTbl, Partition restorePart) {
         Set<ColumnId> bfColumns = localTbl.getBfColumnIds();
         double bfFpp = localTbl.getBfFpp();
-        Set<ColumnId> zstdCompressionColumns = localTbl.getZstdCompressionColumnIds();
         for (PhysicalPartition physicalPartition : restorePart.getSubPartitions()) {
             for (MaterializedIndex restoredIdx : physicalPartition.getLatestMaterializedIndices(IndexExtState.VISIBLE)) {
                 MaterializedIndexMeta indexMeta = localTbl.getIndexMetaByMetaId(restoredIdx.getMetaId());
@@ -1325,7 +1304,6 @@ public class RestoreJob extends AbstractJob {
                         .addColumns(indexMeta.getSchema())
                         .setBloomFilterColumnNames(bfColumns)
                         .setBloomFilterFpp(bfFpp)
-                        .setZstdCompressionColumns(zstdCompressionColumns, localTbl.getZstdCompressionPageSizes())
                         .setIndexes(localTbl.getCopiedIndexes())
                         .setPrimaryKeyEncodingType(localTbl.getPrimaryKeyEncodingType())
                         .build().toTabletSchema();
@@ -1605,8 +1583,9 @@ public class RestoreJob extends AbstractJob {
     private void waitingAllSnapshotsFinished() {
         if (unfinishedSignatureToId.isEmpty()) {
             snapshotFinishedTime = System.currentTimeMillis();
+            state = RestoreJobState.DOWNLOAD;
 
-            persistStateChange(RestoreJobState.DOWNLOAD);
+            globalStateMgr.getEditLog().logRestoreJob(this);
             for (ColocatePersistInfo colocatePersistInfo : colocatePersistInfos) {
                 globalStateMgr.getEditLog().logColocateAddTable(colocatePersistInfo);
             }
@@ -1616,6 +1595,7 @@ public class RestoreJob extends AbstractJob {
 
         LOG.info("waiting {} replicas to make snapshot: [{}]. {}",
                 unfinishedSignatureToId.size(), unfinishedSignatureToId, this);
+        return;
     }
 
     private void downloadSnapshots() {
@@ -1694,7 +1674,9 @@ public class RestoreJob extends AbstractJob {
     protected void waitingAllDownloadFinished() {
         if (unfinishedSignatureToId.isEmpty()) {
             downloadFinishedTime = System.currentTimeMillis();
-            persistStateChange(RestoreJobState.COMMIT);
+            state = RestoreJobState.COMMIT;
+
+            globalStateMgr.getEditLog().logRestoreJob(this);
             LOG.info("finished to download. {}", this);
         }
 
@@ -1862,7 +1844,9 @@ public class RestoreJob extends AbstractJob {
         if (backupMeta != null && !backupMeta.getCatalogs().isEmpty()) {
             if (!isReplay) {
                 finishedTime = System.currentTimeMillis();
-                persistStateChange(RestoreJobState.FINISHED);
+                state = RestoreJobState.FINISHED;
+
+                globalStateMgr.getEditLog().logRestoreJob(this);
             }
             LOG.info("job is finished. is replay: {}. {}", isReplay, this);
             return Status.OK;
@@ -1920,7 +1904,9 @@ public class RestoreJob extends AbstractJob {
             snapshotInfos.clear();
 
             finishedTime = System.currentTimeMillis();
-            persistStateChange(RestoreJobState.FINISHED);
+            state = RestoreJobState.FINISHED;
+
+            globalStateMgr.getEditLog().logRestoreJob(this);
 
             // WRITE (not READ): the post-restore actions below structurally mutate metadata in this db --
             // doAfterRestore rewrites MV baseTableInfos/version maps and the failure branch calls
@@ -2202,7 +2188,9 @@ public class RestoreJob extends AbstractJob {
             snapshotInfos.clear();
             RestoreJobState curState = state;
             finishedTime = System.currentTimeMillis();
-            persistStateChange(RestoreJobState.CANCELLED);
+            state = RestoreJobState.CANCELLED;
+            // log
+            globalStateMgr.getEditLog().logRestoreJob(this);
 
             LOG.info("finished to cancel restore job. current state: {}. is replay: {}. {}",
                     curState.name(), isReplay, this);
@@ -2402,18 +2390,6 @@ public class RestoreJob extends AbstractJob {
         intersect.retainAll(anotherTbl.getPartitionNames());
         intersectPartNames.addAll(intersect);
         return Status.OK;
-    }
-
-    public RestoreJob copyForPersist() {
-        return new RestoreJob(this);
-    }
-
-    protected void persistStateChange(RestoreJobState newState) {
-        RestoreJob persistJob = this.copyForPersist();
-        persistJob.state = newState;
-        globalStateMgr.getEditLog().logRestoreJob(persistJob, wal -> {
-            this.state = newState;
-        });
     }
 
     @Override

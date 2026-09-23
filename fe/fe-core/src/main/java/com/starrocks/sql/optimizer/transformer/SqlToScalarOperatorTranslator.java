@@ -186,10 +186,6 @@ public final class SqlToScalarOperatorTranslator {
                                            boolean useSemiAnti) {
         ColumnRefOperator columnRefOperator = expressionMapping.get(expression);
         if (columnRefOperator != null) {
-            if (expression instanceof GroupingFunctionCallExpr) {
-                ScalarOperator constOperator = expressionMapping.getConstOperator(columnRefOperator);
-                return constOperator == null ? columnRefOperator : constOperator;
-            }
             return columnRefOperator;
         }
 
@@ -380,7 +376,8 @@ public final class SqlToScalarOperatorTranslator {
 
         @Override
         public ScalarOperator visitFieldReference(FieldReference node, Context context) {
-            return expressionMapping.getColumnRefWithIndex(node.getFieldIndex());
+            ColumnRefOperator scalarOperator = expressionMapping.getColumnRefWithIndex(node.getFieldIndex());
+            return scalarOperator;
         }
 
         @Override
@@ -856,8 +853,7 @@ public final class SqlToScalarOperatorTranslator {
                         ErrorType.INTERNAL_ERROR);
             }
 
-            ScalarOperator constOperator = expressionMapping.getConstOperator(columnRef);
-            return constOperator == null ? columnRef : constOperator;
+            return columnRef;
         }
 
         @Override

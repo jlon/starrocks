@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "exec_primitive/pipeline/operator_factory.h"
+#include "exec/pipeline/operator.h"
 
 namespace starrocks::pipeline {
 

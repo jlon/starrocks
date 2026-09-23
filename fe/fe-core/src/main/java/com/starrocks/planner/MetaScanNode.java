@@ -100,7 +100,7 @@ public class MetaScanNode extends AbstractOlapTableScanNode {
         if (RunMode.isSharedDataMode()) {
             List<Long> allTabletIds = Lists.newArrayList();
             for (PhysicalPartition partition : partitions) {
-                List<Tablet> tablets = partition.getQueryableBaseIndex().getTablets();
+                List<Tablet> tablets = partition.getLatestBaseIndex().getTablets();
                 for (Tablet tablet : tablets) {
                     allTabletIds.add(tablet.getId());
                 }
@@ -114,7 +114,7 @@ public class MetaScanNode extends AbstractOlapTableScanNode {
         }
 
         for (PhysicalPartition partition : partitions) {
-            MaterializedIndex index = partition.getQueryableBaseIndex();
+            MaterializedIndex index = partition.getLatestBaseIndex();
             int schemaHash = olapTable.getSchemaHashByIndexMetaId(index.getMetaId());
             List<Tablet> tablets = index.getTablets();
 

@@ -3,5 +3,4 @@ label: 'Utility'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: utility-functions
+  type: generated-index

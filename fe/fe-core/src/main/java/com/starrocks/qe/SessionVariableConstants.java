@@ -45,26 +45,6 @@ public class SessionVariableConstants {
     public static final String ETL = "etl";
     public static final String DEFAULT = "default";
 
-    public enum ExecMode {
-        DEFAULT,
-        ETL;
-
-        public static ExecMode getDefault() {
-            return DEFAULT;
-        }
-
-        public boolean isETL() {
-            return this == ETL;
-        }
-
-        public static ExecMode parse(String str) {
-            try {
-                return EnumUtils.getEnumIgnoreCase(ExecMode.class, str);
-            } catch (Exception e) {
-                return getDefault();
-            }
-        }
-    }
 
     public enum ChooseInstancesMode {
 
@@ -136,22 +116,6 @@ public class SessionVariableConstants {
         public static String MODE_DEFAULT = DEFAULT.toString();
         public static CountDistinctImplMode parse(String str) {
             return EnumUtils.getEnumIgnoreCase(CountDistinctImplMode.class, str);
-        }
-    }
-
-    /**
-     * The default SQL SECURITY characteristic applied when CREATE VIEW omits the SECURITY clause.
-     */
-    public enum DefaultViewSqlSecurity {
-        // Querying the view only checks that the invoker has privileges on the view itself; the tables the view
-        // references are not checked against the invoker (maps to SECURITY NONE).
-        NONE,
-        // Additionally checks that the invoker has privileges on the tables the view references
-        // (maps to SECURITY INVOKER).
-        INVOKER;
-
-        public static DefaultViewSqlSecurity getDefault() {
-            return NONE;
         }
     }
 }

@@ -163,12 +163,6 @@ public class Column implements Writable, GsonPreProcessable, GsonPostProcessable
     // Whether this column is a hidden column, hidden columns are used to store some internal data(eg: _ROW_ID).
     @SerializedName(value = "isHidden")
     private boolean isHidden = false;
-    // Whether this column is a virtual column, virtual columns are computed during query execution (eg: _tablet_id_).
-    // Virtual columns are not persisted and only exist during query analysis and planning.
-    private transient boolean isVirtual = false;
-
-    // Indicates whether this column supports meta scan.
-    private transient boolean isSupportMetaScan = true;
 
     // The timestamp when this column is created, the unit should be the same as
     // PhysicalPartition#visibleVersionTime, which is milliseconds by default.
@@ -462,22 +456,6 @@ public class Column implements Writable, GsonPreProcessable, GsonPostProcessable
 
     public void setIsHidden(boolean hidden) {
         isHidden = hidden;
-    }
-
-    public boolean isVirtual() {
-        return isVirtual;
-    }
-
-    public void setIsVirtual(boolean virtual) {
-        isVirtual = virtual;
-    }
-
-    public boolean isSupportMetaScan() {
-        return isSupportMetaScan;
-    }
-
-    public void setIsSupportMetaScan(boolean supportMetaScan) {
-        isSupportMetaScan = supportMetaScan;
     }
 
     public boolean isShadowColumn() {
@@ -954,105 +932,6 @@ public class Column implements Writable, GsonPreProcessable, GsonPostProcessable
         return this.isHidden == other.isHidden();
     }
 
-    /**
-     * Whether {@code other} differs from this column in {@link #isKey()} only -- i.e. a pure keyness
-     * flip. Every other column attribute that {@link #equals(Object)} considers must be identical,
-     * except: the comment is intentionally ignored (a comment change is not a keyness flip but must
-     * not block one either), and the aggregation type is compared keyness-tolerantly so that the
-     * null vs NONE artifact a key/value distinction carries is not treated as a real change. A real
-     * aggregation function (e.g. an AGG value column carrying SUM) therefore is NOT a keyness flip.
-     *
-     * <p>Maintenance: this attribute list must stay in sync with the column's compatibility checks
-     * (the fields {@link #equals(Object)} considers). If a new column attribute is added there but not
-     * here, a MODIFY COLUMN that changes only that new attribute would be misclassified as a pure
-     * keyness flip and routed to the range rewrite, bypassing finalAnalyze's compatibility validation.
-     */
-    public boolean differsOnlyInKeyness(Column other) {
-        if (other == null) {
-            return false;
-        }
-        if (!this.name.equalsIgnoreCase(other.getName())) {
-            return false;
-        }
-        if (!this.getType().equals(other.getType())) {
-            return false;
-        }
-        if (!(this.aggregationType == other.aggregationType ||
-                (AggregateType.isNullOrNone(this.aggregationType) &&
-                        AggregateType.isNullOrNone(other.getAggregationType())))) {
-            return false;
-        }
-        if (this.aggStateDesc != null && !this.aggStateDesc.equals(other.aggStateDesc)) {
-            return false;
-        }
-        if (this.isAllowNull != other.isAllowNull) {
-            return false;
-        }
-        if (!this.isSameDefaultValue(other)) {
-            return false;
-        }
-        if (this.isGeneratedColumn() != other.isGeneratedColumn()) {
-            return false;
-        }
-        if (this.isGeneratedColumn() &&
-                !this.generatedColumnExpr.equals(other.generatedColumnExpr)) {
-            return false;
-        }
-        if (this.isAutoIncrement != other.isAutoIncrement) {
-            return false;
-        }
-        return this.isHidden == other.isHidden();
-    }
-
-    /**
-     * Whether {@code other} differs from this column in {@link #getType()} ONLY -- i.e. a pure type
-     * change. Every other column attribute {@link #equals(Object)} considers must be identical,
-     * including {@link #isKey()} (keyness unchanged), except the comment (ignored, as in
-     * {@link #differsOnlyInKeyness}). The type is intentionally NOT compared here; the caller decides
-     * whether the type change is an allowed conversion (e.g. an order-preserving integer widen).
-     *
-     * <p>Maintenance: like {@link #differsOnlyInKeyness}, this attribute list must stay in sync with
-     * the column's compatibility checks (the fields {@link #equals(Object)} considers). If a new
-     * attribute is added there but not here, a MODIFY COLUMN that changes only that new attribute
-     * would be misclassified as a pure type change.
-     */
-    public boolean differsOnlyInType(Column other) {
-        if (other == null) {
-            return false;
-        }
-        if (!this.name.equalsIgnoreCase(other.getName())) {
-            return false;
-        }
-        if (this.isKey != other.isKey) {
-            return false;
-        }
-        if (!(this.aggregationType == other.aggregationType ||
-                (AggregateType.isNullOrNone(this.aggregationType) &&
-                        AggregateType.isNullOrNone(other.getAggregationType())))) {
-            return false;
-        }
-        if (this.aggStateDesc != null && !this.aggStateDesc.equals(other.aggStateDesc)) {
-            return false;
-        }
-        if (this.isAllowNull != other.isAllowNull) {
-            return false;
-        }
-        if (!this.isSameDefaultValue(other)) {
-            return false;
-        }
-        if (this.isGeneratedColumn() != other.isGeneratedColumn()) {
-            return false;
-        }
-        if (this.isGeneratedColumn() &&
-                !this.generatedColumnExpr.equals(other.generatedColumnExpr)) {
-            return false;
-        }
-        if (this.isAutoIncrement != other.isAutoIncrement) {
-            return false;
-        }
-        return this.isHidden == other.isHidden();
-    }
-
     public boolean isSchemaCompatible(Column other) {
         if (!this.name.equalsIgnoreCase(other.getName())) {
             return false;
@@ -1141,8 +1020,7 @@ public class Column implements Writable, GsonPreProcessable, GsonPostProcessable
         return Math.max(this.uniqueId, type.getMaxUniqueId());
     }
 
-    public void setIndexFlag(TColumn tColumn, List<Index> indexes, Set<ColumnId> bfColumns,
-                             Set<ColumnId> zstdCompressionColumns, Map<ColumnId, Integer> zstdCompressionPageSizes) {
+    public void setIndexFlag(TColumn tColumn, List<Index> indexes, Set<ColumnId> bfColumns) {
         for (Index index : indexes) {
             if (index.getIndexType() == IndexDef.IndexType.BITMAP) {
                 List<ColumnId> columns = index.getColumns();
@@ -1153,16 +1031,6 @@ public class Column implements Writable, GsonPreProcessable, GsonPostProcessable
         }
         if (bfColumns != null && bfColumns.contains(this.columnId)) {
             tColumn.setIs_bloom_filter_column(true);
-        }
-        if (zstdCompressionColumns != null && zstdCompressionColumns.contains(this.columnId)) {
-            tColumn.setUse_zstd_compression(true);
-            // the page size travels with the flag: a writer that gets the flag without it
-            // compresses the column with ZSTD at the default page size, which is not what
-            // the table asked for.
-            Integer pageSize = zstdCompressionPageSizes == null ? null : zstdCompressionPageSizes.get(this.columnId);
-            if (pageSize != null && pageSize > 0) {
-                tColumn.setZstd_compression_page_size(pageSize);
-            }
         }
     }
 

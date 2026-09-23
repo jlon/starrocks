@@ -81,10 +81,6 @@ public enum PrimitiveType {
     BINARY("BINARY", -1),
     VARBINARY("VARBINARY", 16),
 
-    // Reserved native identities; SQL activation requires separate capabilities.
-    GEOGRAPHY("GEOGRAPHY", 16),
-    GEOMETRY("GEOMETRY", 16),
-
     // If external table column type is unsupported, it will be converted to UNKNOWN_TYPE
     UNKNOWN_TYPE("UNKNOWN_TYPE", -1);
 
@@ -384,9 +380,7 @@ public enum PrimitiveType {
             case CHAR:
             case VARCHAR:
             case VARBINARY:
-            case GEOGRAPHY:
-            case GEOMETRY:
-                // Use 16 as the variable-width slot size estimate.
+                // use 16 as char type estimate size
                 typeSize = 16;
                 break;
             case HLL:

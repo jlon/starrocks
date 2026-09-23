@@ -14,13 +14,13 @@
 
 #pragma once
 
-#include <fmt/format.h>
+#include <iostream>
 
-#include <ostream>
-
-#include "base/utility/guard.h"
+#include "common/logging.h"
 #include "gen_cpp/Opcodes_types.h"
 #include "gen_cpp/Types_types.h"
+#include "types/logical_type.h"
+#include "util/guard.h"
 
 namespace starrocks {
 
@@ -55,8 +55,6 @@ enum LogicalType {
     // Added by StarRocks
     TYPE_DECIMAL256 = 26,
     TYPE_INT256 = 27,
-    TYPE_GEOGRAPHY = 28,
-    TYPE_GEOMETRY = 29,
     // Reserved some field for commutiy version
 
     TYPE_NULL = 42,
@@ -84,8 +82,7 @@ enum LogicalType {
 // TODO(lism): support varbinary for zone map.
 inline bool is_zone_map_key_type(LogicalType type) {
     return type != TYPE_CHAR && type != TYPE_VARCHAR && type != TYPE_JSON && type != TYPE_VARBINARY &&
-           type != TYPE_OBJECT && type != TYPE_HLL && type != TYPE_PERCENTILE && type != TYPE_GEOGRAPHY &&
-           type != TYPE_GEOMETRY;
+           type != TYPE_OBJECT && type != TYPE_HLL && type != TYPE_PERCENTILE;
 }
 
 // The approximation of FLOAT/DOUBLE in a certain precision range, the binary of byte is not
@@ -93,7 +90,7 @@ inline bool is_zone_map_key_type(LogicalType type) {
 // And also HLL/OBJCET/PERCENTILE is too large to calculate the checksum.
 inline bool is_support_checksum_type(LogicalType type) {
     return type != TYPE_FLOAT && type != TYPE_DOUBLE && type != TYPE_HLL && type != TYPE_OBJECT &&
-           type != TYPE_PERCENTILE && type != TYPE_JSON && type != TYPE_GEOGRAPHY && type != TYPE_GEOMETRY;
+           type != TYPE_PERCENTILE && type != TYPE_JSON;
 }
 
 template <LogicalType TYPE>
@@ -137,7 +134,7 @@ constexpr bool is_string_type(LogicalType type) {
 
 constexpr bool is_object_type(LogicalType type) {
     return type == LogicalType::TYPE_HLL || type == LogicalType::TYPE_OBJECT || type == LogicalType::TYPE_JSON ||
-           type == LogicalType::TYPE_PERCENTILE || type == TYPE_VARIANT;
+           type == LogicalType::TYPE_PERCENTILE;
 }
 
 inline bool is_decimalv3_field_type(LogicalType type) {
@@ -392,8 +389,3 @@ inline std::ostream& operator<<(std::ostream& os, starrocks::LogicalType type) {
     os << starrocks::logical_type_to_string(type);
     return os;
 }
-
-template <>
-struct fmt::formatter<starrocks::LogicalType> : formatter<std::string_view> {
-    auto format(starrocks::LogicalType value, format_context& ctx) const -> format_context::iterator;
-};

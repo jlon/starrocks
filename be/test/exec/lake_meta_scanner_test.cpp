@@ -20,12 +20,7 @@
 
 #include <gtest/gtest.h>
 
-#include "base/testutil/id_generator.h"
-#include "base/testutil/sync_point.h"
-#include "base/utility/defer_op.h"
-#include "common/config_exec_fwd.h"
 #include "common/status.h"
-#include "exec/exec_env.h"
 #include "exec/lake_meta_scan_node.h"
 #include "exec/pipeline/fragment_context.h"
 #include "fs/fs_util.h"
@@ -33,6 +28,7 @@
 #include "gen_cpp/Types_types.h"
 #include "gen_cpp/tablet_schema.pb.h"
 #include "runtime/descriptor_helper.h"
+#include "runtime/exec_env.h"
 #include "runtime/mem_tracker.h"
 #include "runtime/runtime_state.h"
 #include "storage/lake/fixed_location_provider.h"
@@ -44,8 +40,10 @@
 #include "storage/lake/tablet_metadata.h"
 #include "storage/lake_meta_reader.h"
 #include "storage/meta_reader.h"
-#include "storage/storage_env.h"
 #include "storage/tablet_schema.h"
+#include "testutil/id_generator.h"
+#include "testutil/sync_point.h"
+#include "util/defer_op.h"
 
 namespace starrocks {
 
@@ -54,7 +52,7 @@ public:
     LakeMetaScannerTest() : _tablet_id(next_id()) {
         // setup TabletManager
         _location_provider = std::make_shared<lake::FixedLocationProvider>(kRootLocation);
-        _tablet_mgr = StorageEnv::GetInstance()->lake_tablet_manager();
+        _tablet_mgr = ExecEnv::GetInstance()->lake_tablet_manager();
         _backup_location_provider = _tablet_mgr->TEST_set_location_provider(_location_provider);
         CHECK(FileSystem::Default()
                       ->create_dir_recursive(lake::join_path(kRootLocation, lake::kSegmentDirectoryName))
@@ -95,9 +93,8 @@ public:
         TUniqueId fragment_id;
         TQueryOptions query_options;
         TQueryGlobals query_globals;
-        auto* exec_env = ExecEnv::GetInstance();
-        _state = _pool.add(new RuntimeState(query_id, fragment_id, query_options, query_globals,
-                                            &exec_env->query_execution_services(), exec_env));
+        _state = _pool.add(
+                new RuntimeState(query_id, fragment_id, query_options, query_globals, ExecEnv::GetInstance()));
         _state->init_mem_trackers(query_id);
 
         // Setup FragmentContext with fe_addr for schema RPC
@@ -106,8 +103,7 @@ public:
         fe.hostname = "127.0.0.1";
         fe.port = 9020;
         _fragment_ctx->set_fe_addr(fe);
-        _state->set_fragment_ctx(_fragment_ctx.get(), &_fragment_ctx->fragment_runtime_state());
-        _state->set_fragment_dict_state(_fragment_ctx->dict_state());
+        _state->set_fragment_ctx(_fragment_ctx.get());
 
         std::vector<::starrocks::TTupleId> tuple_ids{0};
         _tnode = std::make_unique<TPlanNode>();
@@ -266,6 +262,9 @@ TEST_F(LakeMetaScannerTest, test_read_schema) {
         ASSERT_EQ(schema->id(), 200);
         ASSERT_EQ(schema->schema_version(), 5);
 
+        // Verify schema has 2 columns: c0 (INT, key) and c1 (INT, non-key)
+        ASSERT_EQ(schema->num_columns(), 2);
+
         // Verify column c0: INT, key
         const auto& col0 = schema->column(0);
         ASSERT_EQ(col0.name(), "c0");
@@ -305,6 +304,9 @@ TEST_F(LakeMetaScannerTest, test_read_schema) {
         // Verify schema_id=10, version=1 (from tablet metadata)
         ASSERT_EQ(schema->id(), 10);
         ASSERT_EQ(schema->schema_version(), 1);
+
+        // Verify schema has 1 column: c0 (INT, key)
+        ASSERT_EQ(schema->num_columns(), 1);
 
         // Verify column c0: INT, key
         const auto& col0 = schema->column(0);

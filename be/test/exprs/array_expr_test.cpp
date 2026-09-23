@@ -19,23 +19,17 @@
 
 #include <utility>
 
+#include "column/binary_column.h"
 #include "column/column_helper.h"
 #include "column/const_column.h"
 #include "exprs/mock_vectorized_expr.h"
 #include "gutil/casts.h"
 #include "testutil/column_test_helper.h"
+#include "testutil/exprs_test_helper.h"
+#include "testutil/parallel_test.h"
 #include "types/logical_type.h"
 
 namespace starrocks {
-
-static std::unique_ptr<Expr> create_array_expr(const TypeDescriptor& type) {
-    TExprNode node;
-    node.__set_node_type(TExprNodeType::ARRAY_EXPR);
-    node.__set_is_nullable(true);
-    node.__set_type(type.to_thrift());
-    node.__set_num_children(0);
-    return std::unique_ptr<Expr>(ArrayExprFactory::from_thrift(node));
-}
 
 class ArrayExprTest : public ::testing::Test {
 protected:
@@ -74,7 +68,7 @@ TEST_F(ArrayExprTest, test_evaluate) {
 
     // []
     {
-        std::unique_ptr<Expr> expr = create_array_expr(type_arr_int);
+        std::unique_ptr<Expr> expr(ExprsTestHelper::create_array_expr(type_arr_int));
         auto result = expr->evaluate(nullptr, nullptr);
         EXPECT_EQ(1, result->size());
         ASSERT_TRUE(result->is_constant());
@@ -87,7 +81,7 @@ TEST_F(ArrayExprTest, test_evaluate) {
     // [3, 4, 8]
     // [6, 8, 12]
     {
-        std::unique_ptr<Expr> expr = create_array_expr(type_arr_int);
+        std::unique_ptr<Expr> expr(ExprsTestHelper::create_array_expr(type_arr_int));
         expr->add_child(new_mock_expr(ColumnTestHelper::build_column<int32_t>({1, 3, 6}), LogicalType::TYPE_INT));
         expr->add_child(new_mock_expr(ColumnTestHelper::build_column<int32_t>({2, 4, 8}), LogicalType::TYPE_INT));
         expr->add_child(new_mock_expr(ColumnTestHelper::build_column<int32_t>({4, 8, 12}), LogicalType::TYPE_INT));
@@ -114,7 +108,7 @@ TEST_F(ArrayExprTest, test_evaluate) {
     // [3, 4, NULL]
     // [6, 8, 12]
     {
-        std::unique_ptr<Expr> expr = create_array_expr(type_arr_int);
+        std::unique_ptr<Expr> expr(ExprsTestHelper::create_array_expr(type_arr_int));
         expr->add_child(new_mock_expr(ColumnTestHelper::build_column<int32_t>({1, 3, 6}), LogicalType::TYPE_INT));
         expr->add_child(new_mock_expr(ColumnTestHelper::build_column<int32_t>({2, 4, 8}), LogicalType::TYPE_INT));
         expr->add_child(new_mock_expr(ColumnTestHelper::build_nullable_column<int32_t>({4, 0, 12}, {0, 1, 0}),
@@ -144,7 +138,7 @@ TEST_F(ArrayExprTest, test_evaluate) {
     {
         TypeDescriptor type_varchar(LogicalType::TYPE_VARCHAR);
         type_varchar.len = 10;
-        std::unique_ptr<Expr> expr = create_array_expr(type_arr_str);
+        std::unique_ptr<Expr> expr(ExprsTestHelper::create_array_expr(type_arr_str));
         expr->add_child(new_mock_expr(ColumnTestHelper::build_column<Slice>({"a", "ab", ""}), type_varchar));
         expr->add_child(new_mock_expr(ColumnTestHelper::build_column<Slice>({"", "bcd", "xyz"}), type_varchar));
         expr->add_child(
@@ -170,7 +164,7 @@ TEST_F(ArrayExprTest, test_evaluate) {
 
     // constant: [1, 4, 8]
     {
-        std::unique_ptr<Expr> expr = create_array_expr(type_arr_int);
+        std::unique_ptr<Expr> expr(ExprsTestHelper::create_array_expr(type_arr_int));
         expr->add_child(
                 new_mock_expr(ColumnHelper::create_const_column<LogicalType::TYPE_INT>(1, 3), LogicalType::TYPE_INT));
         expr->add_child(
@@ -196,6 +190,37 @@ TEST_F(ArrayExprTest, test_evaluate) {
         EXPECT_EQ(4, result->get(2).get_array()[1].get_int32());
         EXPECT_EQ(8, result->get(2).get_array()[2].get_int32());
     }
+}
+
+// NOLINTNEXTLINE
+GROUP_SLOW_PARALLEL_TEST(ArrayExprOverflowTest, test_flatten_bytes_exceed_uint32_capacity) {
+    // Two children share one 2100-row x 1MB varchar column, so the flattened element
+    // column is ~4.4GB and overflows BinaryColumn's uint32 offsets. Expect an explicit
+    // CapacityLimitExceed error instead of silently wrapped (corrupted) data.
+    // Transient peak memory is ~13GB due to bytes vector growth.
+    TypeDescriptor type_varchar(LogicalType::TYPE_VARCHAR);
+    type_varchar.len = 1048576;
+    TypeDescriptor type_arr_str;
+    type_arr_str.type = LogicalType::TYPE_ARRAY;
+    type_arr_str.children.push_back(type_varchar);
+
+    const size_t num_rows = 2100;
+    const std::string payload(1024 * 1024, 'x');
+    auto fat_column_builder = BinaryColumn::create();
+    fat_column_builder->reserve(num_rows);
+    for (size_t i = 0; i < num_rows; i++) {
+        fat_column_builder->append(Slice(payload));
+    }
+    BinaryColumn::Ptr fat_column = std::move(fat_column_builder);
+
+    ObjectPool pool;
+    std::unique_ptr<Expr> expr(ExprsTestHelper::create_array_expr(type_arr_str));
+    expr->add_child(pool.add(new MockExpr(type_varchar, fat_column)));
+    expr->add_child(pool.add(new MockExpr(type_varchar, fat_column)));
+
+    auto result = expr->evaluate_checked(nullptr, nullptr);
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().is_capacity_limit_exceeded());
 }
 
 } // namespace starrocks

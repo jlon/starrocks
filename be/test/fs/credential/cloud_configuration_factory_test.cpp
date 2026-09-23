@@ -16,7 +16,7 @@
 
 #include <gtest/gtest.h>
 
-#include "base/testutil/assert.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 

@@ -26,7 +26,7 @@ import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.connector.ConnectorTableInfo;
 import com.starrocks.connector.PartitionUtil;
-import com.starrocks.persist.ChangeMaterializedViewRefreshSchemeLog;
+import com.starrocks.scheduler.mv.MVVersionManager;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.MvUtils;
 import org.apache.logging.log4j.LogManager;
@@ -87,9 +87,8 @@ public class MVMetaVersionRepairer {
     private static void repairBaseTableTableVersionChange(MaterializedView mv,
                                                           Table table,
                                                           List<MVRepairHandler.PartitionRepairInfo> partitionRepairInfos) {
-        MaterializedView.MvRefreshScheme copiedScheme = mv.getRefreshScheme().copy(); // copy on write
         // check table existed in mv's version map
-        MaterializedView.AsyncRefreshContext asyncRefreshContext = copiedScheme.getAsyncRefreshContext();
+        MaterializedView.AsyncRefreshContext asyncRefreshContext = mv.getRefreshScheme().getAsyncRefreshContext();
         Map<Long, Map<String, MaterializedView.BasePartitionInfo>> baseTableVersionMap =
                 asyncRefreshContext.getBaseTableVisibleVersionMap();
         List<MVRepairHandler.PartitionRepairInfo> needToUpdatePartitionInfos =
@@ -105,11 +104,7 @@ public class MVMetaVersionRepairer {
                 table.getName(), mv.getName(), changedVersions);
         // update edit log
         long maxChangedTableRefreshTime = MvUtils.getMaxTablePartitionInfoRefreshTime(changedVersions);
-        copiedScheme.setLastRefreshTime(maxChangedTableRefreshTime);
-        ChangeMaterializedViewRefreshSchemeLog changeRefreshSchemeLog =
-                new ChangeMaterializedViewRefreshSchemeLog(mv, copiedScheme);
-        GlobalStateMgr.getCurrentState().getEditLog().logMvChangeRefreshScheme(changeRefreshSchemeLog,
-                wal -> mv.setRefreshScheme(copiedScheme));
+        MVVersionManager.updateEditLogAfterVersionMetaChanged(mv, maxChangedTableRefreshTime);
         LOG.info("Update edit log after version changed for mv {}, maxChangedTableRefreshTime:{}",
                 mv.getName(), maxChangedTableRefreshTime);
     }
@@ -147,21 +142,6 @@ public class MVMetaVersionRepairer {
                         table.getName(), info.getPartitionName(), curBasePartitionInfo.getId(),
                         info.getPartitionId(), curBasePartitionInfo.getVersion(), info.getLastVersion(),
                         curBasePartitionInfo.getLastRefreshTime());
-                continue;
-            }
-            // The repair overwrites BOTH the recorded version and lastRefreshTime, while the check above
-            // only proves the MV was current under isBaseTableChanged's version disjunct. An MV can be
-            // stale purely through the other disjunct (visibleVersionTime > lastRefreshTime), which is
-            // load-bearing for materialized-view base tables whose partitions are overwritten in place and
-            // for tables whose latest physical partition changed. Advancing the watermark in that state
-            // would erase a change the MV never consumed, so a producer that can report the pre-commit
-            // version time must also prove the MV was not behind on it.
-            if (info.getLastVersionTime() >= 0
-                    && curBasePartitionInfo.getLastRefreshTime() < info.getLastVersionTime()) {
-                LOG.info("Base table {} partition {} version time not match, lastRefreshTime {}(mv) < " +
-                                "pre-commit visible version time {}(table), skip to repair",
-                        table.getName(), info.getPartitionName(), curBasePartitionInfo.getLastRefreshTime(),
-                        info.getLastVersionTime());
                 continue;
             }
             needToUpdatePartitionInfos.add(info);

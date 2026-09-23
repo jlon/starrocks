@@ -14,14 +14,10 @@
 
 #include "exec/pipeline/sink/olap_table_sink_operator.h"
 
-#include "compute_env/result/buffer_control_block.h"
-#include "compute_env/result/result_buffer_mgr.h"
-#include "compute_env/workgroup/pipeline_executor_set.h"
-#include "compute_env/workgroup/work_group.h"
-#include "data_sink/tablet/olap_table_sink.h"
-#include "exec/pipeline/fragment_context.h"
-#include "exec/pipeline/fragment_context_cancel.h"
-#include "exec_primitive/pipeline/primitives/driver_executor.h"
+#include "exec/pipeline/pipeline_driver_executor.h"
+#include "exec/tablet_sink.h"
+#include "runtime/buffer_control_block.h"
+#include "runtime/result_buffer_mgr.h"
 #include "runtime/runtime_state.h"
 
 namespace starrocks::pipeline {
@@ -62,7 +58,7 @@ bool OlapTableSinkOperator::pending_finish() const {
         // since is_open_done(), open_wait will not block
         auto st = _sink->open_wait();
         if (!st.ok()) {
-            cancel_fragment_context(_fragment_ctx, st);
+            _fragment_ctx->cancel(st);
             return false;
         }
     }
@@ -76,7 +72,7 @@ bool OlapTableSinkOperator::pending_finish() const {
         auto st = _sink->send_chunk_nonblocking(_fragment_ctx->runtime_state(), _automatic_partition_chunk.get());
         _automatic_partition_chunk.reset();
         if (!st.ok()) {
-            cancel_fragment_context(_fragment_ctx, st);
+            _fragment_ctx->cancel(st);
             return false;
         }
     }
@@ -84,7 +80,7 @@ bool OlapTableSinkOperator::pending_finish() const {
     if (!_sink->is_close_done()) {
         auto st = _sink->try_close(_fragment_ctx->runtime_state());
         if (!st.ok()) {
-            cancel_fragment_context(_fragment_ctx, st);
+            _fragment_ctx->cancel(st);
             return false;
         }
         return true;
@@ -92,7 +88,7 @@ bool OlapTableSinkOperator::pending_finish() const {
 
     auto st = _sink->close(_fragment_ctx->runtime_state(), Status::OK());
     if (!st.ok()) {
-        cancel_fragment_context(_fragment_ctx, st);
+        _fragment_ctx->cancel(st);
     }
 
     return false;

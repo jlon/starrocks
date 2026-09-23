@@ -1,9 +1,6 @@
 -- name: test_vector_index_ivfpq @sequential @native
 
-
--- IVFPQ is a quantized index; turn refine on so distances are recomputed exactly and the
--- distance-range filter is rechecked on the exact distance (results are exact and stable).
-SET enable_vector_index_refine = true;
+ADMIN SET FRONTEND CONFIG("enable_experimental_vector" = "true");
 
 
 
@@ -205,6 +202,7 @@ with w1 as (
 select * from w1 
 order by dis, id limit 10;
 
+ADMIN SET FRONTEND CONFIG("enable_experimental_vector" = "false");
 
 -- basic queries.
 
@@ -270,3 +268,4 @@ with w1 as (
 ) select * from w2 order by dis, id;
 
 
+ADMIN SET FRONTEND CONFIG("enable_experimental_vector" = "false");

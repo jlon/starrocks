@@ -22,6 +22,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "exec/hdfs_scanner/hdfs_scanner.h"
 #include "formats/parquet/group_reader.h"
 #include "formats/parquet/metadata.h"
 #include "gen_cpp/Descriptors_types.h"
@@ -47,8 +48,7 @@ public:
             : _file_metadata(file_metadata), _case_sensitive(case_sensitive) {}
     virtual ~MetaHelper() = default;
 
-    virtual void prepare_read_columns(const std::vector<FormatColumnInfo>& materialized_columns,
-                                      const std::vector<ColumnAccessPathPtr>* column_access_paths,
+    virtual void prepare_read_columns(const std::vector<HdfsScannerContext::ColumnInfo>& materialized_columns,
                                       std::vector<GroupReaderParam::Column>& read_cols,
                                       std::unordered_set<std::string>& existed_column_names) const = 0;
 
@@ -75,8 +75,7 @@ public:
             : MetaHelper(file_metadata, case_sensitive) {}
     ~ParquetMetaHelper() override = default;
 
-    void prepare_read_columns(const std::vector<FormatColumnInfo>& materialized_columns,
-                              const std::vector<ColumnAccessPathPtr>* column_access_paths,
+    void prepare_read_columns(const std::vector<HdfsScannerContext::ColumnInfo>& materialized_columns,
                               std::vector<GroupReaderParam::Column>& read_cols,
                               std::unordered_set<std::string>& existed_column_names) const override;
 
@@ -95,8 +94,7 @@ public:
 
     ~LakeMetaHelper() override = default;
 
-    void prepare_read_columns(const std::vector<FormatColumnInfo>& materialized_columns,
-                              const std::vector<ColumnAccessPathPtr>* column_access_paths,
+    void prepare_read_columns(const std::vector<HdfsScannerContext::ColumnInfo>& materialized_columns,
                               std::vector<GroupReaderParam::Column>& read_cols,
                               std::unordered_set<std::string>& existed_column_names) const override;
 

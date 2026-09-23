@@ -19,14 +19,9 @@
 
 #include <memory>
 
-#include "base/testutil/assert.h"
-#include "base/utility/defer_op.h"
-#include "column/chunk_factory.h"
 #include "column/schema.h"
-#include "common/config_compaction_fwd.h"
-#include "common/config_storage_fwd.h"
-#include "exec/exec_env.h"
 #include "fs/fs_util.h"
+#include "runtime/exec_env.h"
 #include "runtime/mem_pool.h"
 #include "runtime/mem_tracker.h"
 #include "storage/chunk_helper.h"
@@ -40,6 +35,7 @@
 #include "storage/rowset/rowset_writer_context.h"
 #include "storage/storage_engine.h"
 #include "storage/tablet_meta.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 
@@ -197,7 +193,7 @@ public:
         std::vector<std::string> test_data;
         auto schema = ChunkHelper::convert_schema(_tablet_schema);
         for (size_t j = 0; j < 8; ++j) {
-            auto chunk = ChunkFactory::new_chunk(schema, 128);
+            auto chunk = ChunkHelper::new_chunk(schema, 128);
             for (size_t i = 0; i < 128; ++i) {
                 test_data.push_back("well" + std::to_string(i));
                 auto cols = chunk->columns();

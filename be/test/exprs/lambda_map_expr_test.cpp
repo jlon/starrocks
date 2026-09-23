@@ -15,16 +15,12 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
-#include "base/testutil/assert.h"
 #include "butil/time.h"
 #include "column/column_helper.h"
 #include "column/fixed_length_column.h"
 #include "column/map_column.h"
-#include "column/nullable_column.h"
 #include "exprs/arithmetic_expr.h"
 #include "exprs/cast_expr.h"
-#include "exprs/expr_context.h"
-#include "exprs/expr_executor.h"
 #include "exprs/function_call_expr.h"
 #include "exprs/is_null_predicate.h"
 #include "exprs/lambda_function.h"
@@ -33,6 +29,7 @@
 #include "exprs/map_expr.h"
 #include "exprs/mock_vectorized_expr.h"
 #include "runtime/runtime_state.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 
@@ -217,19 +214,14 @@ TEST_F(MapApplyExprTest, test_map_int_int) {
 
         ExprContext exprContext(map_apply_expr.get());
         std::vector<ExprContext*> expr_ctxs = {&exprContext};
-        ASSERT_OK(ExprExecutor::prepare(expr_ctxs, &_runtime_state));
-        ASSERT_OK(ExprExecutor::open(expr_ctxs, &_runtime_state));
+        ASSERT_OK(Expr::prepare(expr_ctxs, &_runtime_state));
+        ASSERT_OK(Expr::open(expr_ctxs, &_runtime_state));
         ColumnPtr result = map_apply_expr->evaluate(&exprContext, &cur_chunk);
-        ColumnPtr result2 = map_apply_expr->evaluate(&exprContext, &cur_chunk);
 
         EXPECT_TRUE(result->is_nullable());
         EXPECT_TRUE(result->debug_string() == column->debug_string());
-        EXPECT_TRUE(result2->is_nullable());
-        EXPECT_TRUE(result2->debug_string() == column->debug_string());
-        auto* nullable_col = down_cast<NullableColumn*>(column.get());
-        EXPECT_EQ(nullable_col->data_column()->size(), nullable_col->null_column()->size());
 
-        ExprExecutor::close(expr_ctxs, &_runtime_state);
+        Expr::close(expr_ctxs, &_runtime_state);
     }
 
     // Inputs:
@@ -254,14 +246,14 @@ TEST_F(MapApplyExprTest, test_map_int_int) {
 
         ExprContext exprContext(map_apply_expr.get());
         std::vector<ExprContext*> expr_ctxs = {&exprContext};
-        ASSERT_OK(ExprExecutor::prepare(expr_ctxs, &_runtime_state));
-        ASSERT_OK(ExprExecutor::open(expr_ctxs, &_runtime_state));
+        ASSERT_OK(Expr::prepare(expr_ctxs, &_runtime_state));
+        ASSERT_OK(Expr::open(expr_ctxs, &_runtime_state));
         ColumnPtr result = map_apply_expr->evaluate(&exprContext, &cur_chunk);
 
         EXPECT_TRUE(result->is_nullable());
         EXPECT_STREQ(result->debug_string().c_str(), "[{0:67}, {0:89}, {0:NULL}, {}, NULL]");
 
-        ExprExecutor::close(expr_ctxs, &_runtime_state);
+        Expr::close(expr_ctxs, &_runtime_state);
     }
 }
 
@@ -325,14 +317,14 @@ TEST_F(MapApplyExprTest, test_map_varchar_int) {
 
         ExprContext exprContext(map_apply_expr.get());
         std::vector<ExprContext*> expr_ctxs = {&exprContext};
-        ASSERT_OK(ExprExecutor::prepare(expr_ctxs, &_runtime_state));
-        ASSERT_OK(ExprExecutor::open(expr_ctxs, &_runtime_state));
+        ASSERT_OK(Expr::prepare(expr_ctxs, &_runtime_state));
+        ASSERT_OK(Expr::open(expr_ctxs, &_runtime_state));
         ColumnPtr result = map_apply_expr->evaluate(&exprContext, &cur_chunk);
 
         EXPECT_FALSE(result->is_nullable());
         EXPECT_TRUE(result->debug_string() == column->debug_string());
 
-        ExprExecutor::close(expr_ctxs, &_runtime_state);
+        Expr::close(expr_ctxs, &_runtime_state);
     }
 
     // Inputs:
@@ -356,14 +348,14 @@ TEST_F(MapApplyExprTest, test_map_varchar_int) {
 
         ExprContext exprContext(map_apply_expr.get());
         std::vector<ExprContext*> expr_ctxs = {&exprContext};
-        ASSERT_OK(ExprExecutor::prepare(expr_ctxs, &_runtime_state));
-        ASSERT_OK(ExprExecutor::open(expr_ctxs, &_runtime_state));
+        ASSERT_OK(Expr::prepare(expr_ctxs, &_runtime_state));
+        ASSERT_OK(Expr::open(expr_ctxs, &_runtime_state));
         ColumnPtr result = map_apply_expr->evaluate(&exprContext, &cur_chunk);
 
         EXPECT_FALSE(result->is_nullable());
         EXPECT_STREQ(result->debug_string().c_str(), "{0:34}, {0:67}, {0:89}, {0:100}, {}");
 
-        ExprExecutor::close(expr_ctxs, &_runtime_state);
+        Expr::close(expr_ctxs, &_runtime_state);
     }
 }
 

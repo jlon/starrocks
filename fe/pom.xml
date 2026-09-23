@@ -25,7 +25,7 @@ under the License.
 
     <groupId>com.starrocks</groupId>
     <artifactId>starrocks-fe</artifactId>
-    <version>main</version>
+    <version>4.1.4</version>
     <packaging>pom</packaging>
 
     <modules>
@@ -54,7 +54,6 @@ under the License.
         <jackson-annotations.version>2.21</jackson-annotations.version>
         <spark.version>3.5.7</spark.version>
         <parquet.version>1.16.0</parquet.version>
-        <ranger.version>2.9.0</ranger.version>
         <orc.version>1.9.1</orc.version>
         <hadoop.version>3.4.3</hadoop.version>
         <gcs.connector.version>3.0.13</gcs.connector.version>
@@ -70,19 +69,18 @@ under the License.
         <hikaricp.version>7.0.2</hikaricp.version>
         <kafka-clients.version>3.9.1</kafka-clients.version>
         <arrow.version>18.0.0</arrow.version>
-        <grpc.version>1.76.0</grpc.version>
-        <io.netty.version>4.1.137.Final</io.netty.version>
+        <grpc.version>1.63.0</grpc.version>
+        <io.netty.version>4.1.136.Final</io.netty.version>
         <puppycrawl.version>10.21.1</puppycrawl.version>
         <aws-v2-sdk.version>2.42.1</aws-v2-sdk.version>
         <avro.version>1.12.0</avro.version>
         <dnsjava.version>3.6.3</dnsjava.version>
         <nimbusds.version>9.37.2</nimbusds.version>
-        <protobuf-java.version>3.25.9</protobuf-java.version>
+        <protobuf-java.version>3.25.5</protobuf-java.version>
         <paimon.version>1.3.1</paimon.version>
-        <fluss.version>0.9.1-incubating</fluss.version>
-        <delta-kernel.version>4.3.0</delta-kernel.version>
+        <delta-kernel.version>4.0.0rc1</delta-kernel.version>
         <iceberg.version>1.10.0</iceberg.version>
-        <staros.version>4.2-rc5</staros.version>
+        <staros.version>4.1.1</staros.version>
         <!-- hadoop-azure requires no more than jetty10+ -->
         <!-- https://stackoverflow.com/questions/66713254/spark-wasb-and-jetty-11 -->
         <jetty.version>9.4.58.v20250814</jetty.version>
@@ -95,18 +93,8 @@ under the License.
         <lz4-java.version>1.10.1</lz4-java.version>
         <async-profiler.version>4.0</async-profiler.version>
         <maven.surefire.plugin.version>3.2.5</maven.surefire.plugin.version>
-        <!-- Stay on 1.49.4: the hazendaz 2.2.0+ line regresses @Mocked on some third-party classes
-             (ASM frame merge AIOOBE on delta-kernel Metadata, VerifyError on iceberg REST catalog
-             classes). 1.49.4 cannot redefine sealed JDK classes (java.net.InetAddress on JDK 19+),
-             so tests must not JMockit-mock those; use Mockito for them instead. -->
-        <jmockit.version>1.49.4</jmockit.version>
-        <!-- Mockito 5.x ships a Byte Buddy that understands Java 21 class files;
-             keep byte-buddy and byte-buddy-agent on the version mockito-core declares -->
-        <mockito.version>5.23.0</mockito.version>
-        <bytebuddy.version>1.17.7</bytebuddy.version>
-        <bouncycastle.version>1.85</bouncycastle.version>
+        <bouncycastle.version>1.84</bouncycastle.version>
         <thrift.version>0.24.0</thrift.version>
-        <httpcore5.version>5.4.3</httpcore5.version>
     </properties>
 
     <profiles>
@@ -320,24 +308,6 @@ under the License.
                 <version>5.4.3</version>
             </dependency>
 
-            <dependency>
-                <groupId>org.apache.httpcomponents.core5</groupId>
-                <artifactId>httpcore5</artifactId>
-                <version>${httpcore5.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.apache.httpcomponents.core5</groupId>
-                <artifactId>httpcore5-h2</artifactId>
-                <version>${httpcore5.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.apache.httpcomponents.core5</groupId>
-                <artifactId>httpcore5-reactive</artifactId>
-                <version>${httpcore5.version}</version>
-            </dependency>
-
             <!-- https://mvnrepository.com/artifact/commons-validator/commons-validator -->
             <dependency>
                 <groupId>commons-validator</groupId>
@@ -432,28 +402,8 @@ under the License.
             <dependency>
                 <groupId>com.github.hazendaz.jmockit</groupId>
                 <artifactId>jmockit</artifactId>
-                <version>${jmockit.version}</version>
+                <version>1.49.4</version>
                 <scope>test</scope>
-            </dependency>
-
-            <!-- https://mvnrepository.com/artifact/org.mockito/mockito-core -->
-            <dependency>
-                <groupId>org.mockito</groupId>
-                <artifactId>mockito-core</artifactId>
-                <version>${mockito.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <!-- assertj-core also pulls byte-buddy; pin both artifacts so Maven's
-                 nearest-wins mediation cannot hand Mockito a pre-Java-21 Byte Buddy -->
-            <dependency>
-                <groupId>net.bytebuddy</groupId>
-                <artifactId>byte-buddy</artifactId>
-                <version>${bytebuddy.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>net.bytebuddy</groupId>
-                <artifactId>byte-buddy-agent</artifactId>
-                <version>${bytebuddy.version}</version>
             </dependency>
 
             <dependency>
@@ -1352,12 +1302,10 @@ under the License.
             </dependency>
 
             <!-- https://mvnrepository.com/artifact/org.apache.groovy/groovy-groovysh -->
-            <!-- 4.0.12+ bundles an ASM that reads Java 21 class files; the Groovy debug shell
-                 (GroovyUDSServer) fails with "Unsupported class file major version 65" on older builds -->
             <dependency>
                 <groupId>org.apache.groovy</groupId>
                 <artifactId>groovy-groovysh</artifactId>
-                <version>4.0.33</version>
+                <version>4.0.9</version>
             </dependency>
 
             <dependency>
@@ -1397,7 +1345,7 @@ under the License.
                         <artifactId>lz4-pure-java</artifactId>
                     </exclusion>
                     <!-- aliyun-java-auth drags in bcprov-jdk15on 1.70 (multiple CVEs);
-                         bcprov-jdk18on 1.85 on the classpath provides the same packages -->
+                         bcprov-jdk18on 1.84 on the classpath provides the same packages -->
                     <exclusion>
                         <groupId>org.bouncycastle</groupId>
                         <artifactId>bcprov-jdk15on</artifactId>
@@ -1411,17 +1359,34 @@ under the License.
                 <version>${odps.version}</version>
             </dependency>
 
-            <!-- Import the gRPC BOM instead of pinning artifacts individually. Individual
-                 <dependency> entries only govern the artifacts they name, so io.grpc artifacts
-                 that arrive transitively are left unmanaged: arrow flight-core brings in
-                 io.grpc:grpc-netty at its own version, which then runs against a grpc-core
-                 pinned here. The BOM covers direct and transitive io.grpc artifacts alike. -->
             <dependency>
                 <groupId>io.grpc</groupId>
-                <artifactId>grpc-bom</artifactId>
+                <artifactId>grpc-api</artifactId>
                 <version>${grpc.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-netty-shaded</artifactId>
+                <version>${grpc.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-protobuf</artifactId>
+                <version>${grpc.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-stub</artifactId>
+                <version>${grpc.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-core</artifactId>
+                <version>${grpc.version}</version>
             </dependency>
 
             <dependency>
@@ -1433,12 +1398,6 @@ under the License.
             <dependency>
                 <groupId>org.apache.arrow</groupId>
                 <artifactId>arrow-memory-netty</artifactId>
-                <version>${arrow.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.apache.arrow</groupId>
-                <artifactId>arrow-compression</artifactId>
                 <version>${arrow.version}</version>
             </dependency>
 
@@ -1513,33 +1472,6 @@ under the License.
             </dependency>
 
             <dependency>
-                <groupId>org.apache.fluss</groupId>
-                <artifactId>fluss-client</artifactId>
-                <version>${fluss.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.fluss</groupId>
-                <artifactId>fluss-common</artifactId>
-                <version>${fluss.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.fluss</groupId>
-                <artifactId>fluss-lake-paimon</artifactId>
-                <version>${fluss.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.fluss</groupId>
-                <artifactId>fluss-flink-common</artifactId>
-                <version>${fluss.version}</version>
-            </dependency>
-            <!-- Required by fluss-flink-common, which declares flink-core with provided scope. -->
-            <dependency>
-                <groupId>org.apache.flink</groupId>
-                <artifactId>flink-core</artifactId>
-                <version>1.20.1</version>
-            </dependency>
-
-            <dependency>
                 <groupId>io.delta</groupId>
                 <artifactId>delta-kernel-api</artifactId>
                 <version>${delta-kernel.version}</version>
@@ -1558,12 +1490,6 @@ under the License.
                         <groupId>org.apache.hadoop</groupId>
                         <artifactId>hadoop-client-runtime</artifactId>
                     </exclusion>
-                  <!-- FE uses slf4j 1.7.x with log4j-slf4j-impl; exclude delta's slf4j 2.x binding to avoid
-                       NoClassDefFoundError: org/slf4j/spi/LoggingEventBuilder at startup -->
-                  <exclusion>
-                    <groupId>org.apache.logging.log4j</groupId>
-                    <artifactId>log4j-slf4j2-impl</artifactId>
-                  </exclusion>
                 </exclusions>
             </dependency>
 
@@ -1679,7 +1605,7 @@ under the License.
             <dependency>
                 <groupId>org.apache.ranger</groupId>
                 <artifactId>ranger-plugins-common</artifactId>
-                <version>${ranger.version}</version>
+                <version>2.8.0</version>
                 <exclusions>
                     <exclusion>
                         <groupId>org.elasticsearch</groupId>
@@ -1696,44 +1622,6 @@ under the License.
                     <exclusion>
                         <groupId>com.sun.jersey</groupId>
                         <artifactId>jersey-bundle</artifactId>
-                    </exclusion>
-                    <!-- Ranger 2.9.0 declares jsr311-api (JAX-RS 1.1) directly; it shadows
-                         jakarta.ws.rs-api 2.1.6, the same clash hadoop-common excludes it for -->
-                    <exclusion>
-                        <groupId>javax.ws.rs</groupId>
-                        <artifactId>jsr311-api</artifactId>
-                    </exclusion>
-                </exclusions>
-            </dependency>
-
-            <!-- https://mvnrepository.com/artifact/org.apache.ranger/ranger-audit-dest-solr -->
-            <!-- Ranger 2.8.0 modularized the audit layer: ranger-plugins-common now only pulls
-                 ranger-audit-core (File destination). The Solr audit destination lives in this
-                 separate module. conf/ranger/ranger-starrocks-audit.xml enables solr audit
-                 (xasecure.audit.solr.is.enabled=true), so SolrAuditDestination must be on the FE
-                 classpath or the audit provider fails to init. solr-solrj (8.11.3) and the heavy
-                 transitive deps (netty/zookeeper/woodstox/jetty) are already excluded upstream in
-                 the dest-solr pom, EXCEPT jetty-client which dest-solr declares directly - it
-                 resolves to the banned 9.4.58 (see the ban-vulnerable-dependencies enforcer rule
-                 below: jetty-client/security/http are CVE-2026-10050 / CVE-2026-2332). Solr audit
-                 uses the Apache HttpClient path (HttpClientUtil / LBHttpSolrClient), not the Jetty
-                 HTTP/2 client, so excluding all of org.eclipse.jetty is runtime-safe. -->
-            <dependency>
-                <groupId>org.apache.ranger</groupId>
-                <artifactId>ranger-audit-dest-solr</artifactId>
-                <version>${ranger.version}</version>
-                <exclusions>
-                    <exclusion>
-                        <groupId>org.elasticsearch</groupId>
-                        <artifactId>*</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.elasticsearch.client</groupId>
-                        <artifactId>*</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.eclipse.jetty</groupId>
-                        <artifactId>*</artifactId>
                     </exclusion>
                 </exclusions>
             </dependency>

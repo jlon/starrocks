@@ -23,6 +23,7 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Table;
+import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.plan.ConnectorPlanTestBase;
@@ -224,16 +225,9 @@ public class StatisticsSQLTest extends PlanTestBase {
                 db, t0, Lists.newArrayList("b.a", "b.c", "d.c.a"),
                 Lists.newArrayList(IntegerType.INT, IntegerType.INT, IntegerType.INT), StatsConstants.ScheduleType.ONCE,
                 Maps.newHashMap());
-        // The job above carries no analyze properties, so the params the traits read from are built
-        // explicitly here - HistogramCollectParams parses all four eagerly.
-        NativeHistogramTraits nativeTraits = new NativeHistogramTraits(histogramStatisticsCollectJob,
-                new HistogramCollectParams(ImmutableMap.of(
-                        StatsConstants.HISTOGRAM_SAMPLE_RATIO, "0.1",
-                        StatsConstants.HISTOGRAM_BUCKET_NUM, "10",
-                        StatsConstants.HISTOGRAM_MCV_SIZE, "3",
-                        StatsConstants.HISTOGRAM_COLLECT_BUCKET_NDV_MODE, "none")));
         for (String col : columnNames) {
-            String sql = nativeTraits.buildMcvQuery(col);
+            String sql = Deencapsulation.invoke(histogramStatisticsCollectJob, "buildCollectMCV",
+                    db, t0, 3L, col, 0.1);
             starRocksAssert.useDatabase("_statistics_");
             String plan = getFragmentPlan(sql);
             assertCContains(plan, "0:OlapScanNode\n" +
@@ -241,8 +235,9 @@ public class StatisticsSQLTest extends PlanTestBase {
         }
 
         for (String col : columnNames) {
-            String sql = nativeTraits.buildHistogramQuery(
-                    0.1, 10L, ImmutableMap.of("d.c.a", "100"), col, IntegerType.INT, false);
+            String sql = Deencapsulation.invoke(histogramStatisticsCollectJob, "buildCollectHistogram",
+                    db, t0, 0.1, 10L, ImmutableMap.of("d.c.a", "100"), col, IntegerType.INT, false);
+            sql = sql.substring(sql.indexOf("SELECT"));
             starRocksAssert.useDatabase("_statistics_");
             String plan = getFragmentPlan(sql);
             assertCContains(plan, "AGGREGATE (update finalize)\n" +
@@ -261,16 +256,9 @@ public class StatisticsSQLTest extends PlanTestBase {
                 "hive0", db, t0, columnNames, Lists.newArrayList(IntegerType.INT, IntegerType.INT),
                 StatsConstants.AnalyzeType.HISTOGRAM, StatsConstants.ScheduleType.ONCE,
                 Maps.newHashMap());
-        // The job above carries no analyze properties, so the params the traits read from are built
-        // explicitly here - HistogramCollectParams parses all four eagerly.
-        ExternalHistogramTraits externalTraits = new ExternalHistogramTraits(hiveHistogramStatisticsCollectJob,
-                new HistogramCollectParams(ImmutableMap.of(
-                        StatsConstants.HISTOGRAM_SAMPLE_RATIO, "0.1",
-                        StatsConstants.HISTOGRAM_BUCKET_NUM, "10",
-                        StatsConstants.HISTOGRAM_MCV_SIZE, "3",
-                        StatsConstants.HISTOGRAM_COLLECT_BUCKET_NDV_MODE, "none")));
         for (String col : columnNames) {
-            String sql = externalTraits.buildMcvQuery(col);
+            String sql = Deencapsulation.invoke(hiveHistogramStatisticsCollectJob, "buildCollectMCV",
+                    db, t0, 3L, col);
             starRocksAssert.useDatabase("_statistics_");
             String plan = getFragmentPlan(sql);
             assertCContains(plan, " 0:HdfsScanNode\n" +
@@ -278,18 +266,15 @@ public class StatisticsSQLTest extends PlanTestBase {
         }
 
         for (String col : columnNames) {
-            String sql = externalTraits.buildHistogramQuery(
-                    0.1, 10L, ImmutableMap.of("col_struct.c1.c11", "100"), col, IntegerType.INT);
+            String sql = Deencapsulation.invoke(hiveHistogramStatisticsCollectJob, "buildCollectHistogram",
+                    db, t0, 0.1, 10L, ImmutableMap.of("col_struct.c1.c11", "100"), col, IntegerType.INT);
+            sql = sql.substring(sql.indexOf("SELECT"));
             starRocksAssert.useDatabase("_statistics_");
             String plan = getFragmentPlan(sql);
             assertCContains(plan, "4:AGGREGATE (update finalize)\n" +
                     "  |  output: histogram");
         }
     }
-
-    // The external placeholder-bucket SQL for char-family columns is asserted end-to-end in
-    // ExternalHistogramStatisticsCollectJobTest#testBatchInsertCalculatesMcvsAndHistogramsForMultipleColumnTypes,
-    // which drives collect() rather than a private builder.
 
     @Test
     public void testEscapeFullSQL() throws Exception {

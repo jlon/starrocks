@@ -14,42 +14,32 @@
 
 #include "storage/lake/column_mode_partial_update_handler.h"
 
-#include <climits>
-
-#include "base/debug/trace.h"
-#include "base/phmap/phmap.h"
-#include "base/testutil/sync_point.h"
-#include "base/time/time.h"
-#include "base/utility/defer_op.h"
-#include "column/chunk_factory.h"
-#include "column/chunk_schema_helper.h"
-#include "column/serde/column_array_serde.h"
-#include "common/config_compaction_fwd.h"
-#include "common/config_primary_key_fwd.h"
-#include "common/config_rowset_fwd.h"
 #include "common/tracer.h"
-#include "fs/fs_factory.h"
 #include "fs/fs_util.h"
+#include "fs/key_cache.h"
 #include "gutil/strings/substitute.h"
-#include "platform/key_cache.h"
 #include "runtime/current_thread.h"
-#include "runtime/runtime_env.h"
+#include "runtime/exec_env.h"
+#include "serde/column_array_serde.h"
 #include "storage/chunk_helper.h"
 #include "storage/delta_column_group.h"
 #include "storage/lake/column_mode_partial_update_handler.h"
 #include "storage/lake/filenames.h"
 #include "storage/lake/meta_file.h"
-#include "storage/lake/parallel_task_runner.h"
 #include "storage/lake/update_manager.h"
+#include "storage/primary_key_encoder.h"
 #include "storage/rowset/column_iterator.h"
-#include "storage/rowset/column_reader.h"
 #include "storage/rowset/default_value_column_iterator.h"
 #include "storage/rowset/rowset.h"
 #include "storage/rowset/rowset_options.h"
 #include "storage/rowset/segment_options.h"
 #include "storage/rowset/segment_rewriter.h"
 #include "storage/tablet.h"
-#include "storage_primitive/primary_key_encoder.h"
+#include "util/defer_op.h"
+#include "util/phmap/phmap.h"
+#include "util/stack_util.h"
+#include "util/time.h"
+#include "util/trace.h"
 
 namespace starrocks::lake {
 
@@ -93,11 +83,8 @@ Status ColumnModePartialUpdateHandler::_load_update_state(const RowsetUpdateStat
         return Status::OK();
     }
 
-    ASSIGN_OR_RETURN(_upt_memory_usage_per_row, _calc_upt_memory_usage_per_row(*params.tablet_schema));
-
     // Build PK schema
     vector<uint32_t> pk_columns;
-    pk_columns.reserve(params.tablet_schema->num_key_columns());
     for (size_t i = 0; i < params.tablet_schema->num_key_columns(); i++) {
         pk_columns.push_back((uint32_t)i);
     }
@@ -108,10 +95,6 @@ Status ColumnModePartialUpdateHandler::_load_update_state(const RowsetUpdateStat
     OlapReaderStatistics stats;
     ASSIGN_OR_RETURN(auto segment_iters, _rowset_ptr->get_each_segment_iterator(pkey_schema, true, &stats));
     RETURN_ERROR_IF_FALSE(segment_iters.size() == num_segments);
-    // Only a SPLIT child's cross publish gets one; nullptr on every ordinary publish, and then every
-    // row is owned. Held by the handler because the iterators keep referencing it.
-    ASSIGN_OR_RETURN(_row_selector, CrossPublishRowSelector::create_if_needed(*params.metadata, params.tablet_schema,
-                                                                              _rowset_ptr->metadata()));
 
     // Create lazy-load SegmentPKIterators with deferred first load.
     // defer_data_load=true avoids loading the first chunk during init(), so that
@@ -120,8 +103,6 @@ Status ColumnModePartialUpdateHandler::_load_update_state(const RowsetUpdateStat
     std::vector<SegmentPKIteratorPtr> pk_iters(num_segments);
     for (uint32_t i = 0; i < num_segments; i++) {
         pk_iters[i] = std::make_unique<SegmentPKIterator>();
-        // Must precede init(): the selection is built inside _load().
-        pk_iters[i]->set_row_selector(_row_selector.get());
         RETURN_IF_ERROR(pk_iters[i]->init(segment_iters[i], pkey_schema, true /*lazy_load*/, pk_encoding_type,
                                           true /*defer_data_load*/));
     }
@@ -129,10 +110,8 @@ Status ColumnModePartialUpdateHandler::_load_update_state(const RowsetUpdateStat
     // Parallel query PK index: each segment's PKs are loaded chunk-by-chunk (lazy)
     // and each chunk is queried against the index in parallel via thread pool.
     std::vector<std::vector<uint64_t>> rss_rowids_per_segment;
-    std::vector<Filter> owned_per_segment;
     RETURN_IF_ERROR(params.tablet->update_mgr()->batch_get_rss_rowids_from_pkindex(
-            params.tablet->id(), _base_version, pk_iters, &rss_rowids_per_segment, false /*need_lock*/,
-            &owned_per_segment));
+            params.tablet->id(), _base_version, pk_iters, &rss_rowids_per_segment, false /*need_lock*/));
 
     // Build rss_rowid_to_update_rowid mapping for each update segment. Pass each
     // segment's physical rowid base (range_start, captured by the iterator during
@@ -141,47 +120,11 @@ Status ColumnModePartialUpdateHandler::_load_update_state(const RowsetUpdateStat
     _partial_update_states.resize(num_segments);
     for (uint32_t i = 0; i < num_segments; i++) {
         _partial_update_states[i].src_rss_rowids = std::move(rss_rowids_per_segment[i]);
-        _partial_update_states[i].build_rss_rowid_to_update_rowid(pk_iters[i]->physical_rowid_base(),
-                                                                  owned_per_segment[i]);
+        _partial_update_states[i].build_rss_rowid_to_update_rowid(pk_iters[i]->physical_rowid_base());
         _partial_update_states[i].inited = true;
     }
 
     return Status::OK();
-}
-
-StatusOr<int64_t> ColumnModePartialUpdateHandler::_calc_upt_memory_usage_per_row(const TabletSchema& tablet_schema) {
-    // RowsetMetadataPB only exposes compressed file sizes. The segment footer's per-column
-    // total_mem_footprint is accumulated from Column::byte_size() by SegmentWriter, which matches
-    // the total_update_row_size accounting used by the shared-nothing update rowset writer.
-    LakeIOOptions lake_io_opts{.fill_data_cache = false, .fill_metadata_cache = true};
-    ASSIGN_OR_RETURN(auto segments, _rowset_ptr->segments(lake_io_opts));
-
-    int64_t total_update_row_size = 0;
-    int64_t num_rows_upt = 0;
-    for (const auto& segment : segments) {
-        if (segment == nullptr) {
-            continue;
-        }
-        num_rows_upt += segment->num_rows();
-        // Sum every column that is actually present in the partial-update segment, including PK
-        // columns. This intentionally retains the conservative shared-nothing accounting even when
-        // the source segment is processed one update-column group at a time.
-        for (size_t cid = 0; cid < tablet_schema.num_columns(); ++cid) {
-            const auto* column_reader = segment->column_with_uid(tablet_schema.column(cid).unique_id());
-            if (column_reader == nullptr) {
-                continue;
-            }
-            const uint64_t column_size = column_reader->total_mem_footprint();
-            if (column_size > static_cast<uint64_t>(INT64_MAX - total_update_row_size)) {
-                return Status::Corruption("partial update row memory footprint overflows int64");
-            }
-            total_update_row_size += static_cast<int64_t>(column_size);
-        }
-    }
-
-    int64_t result = RowsetColumnUpdateState::calc_upt_memory_usage_per_row(total_update_row_size, num_rows_upt);
-    TEST_SYNC_POINT_CALLBACK("ColumnModePartialUpdateHandler::_calc_upt_memory_usage_per_row", &result);
-    return result;
 }
 
 // this function build delta writer for delta column group's file.(end with `.col`)
@@ -208,9 +151,8 @@ StatusOr<std::unique_ptr<SegmentWriter>> ColumnModePartialUpdateHandler::_prepar
     return std::move(segment_writer);
 }
 
-Status ColumnModePartialUpdateHandler::_read_from_source_segment_and_update(
-        const RowsetUpdateStateParams& params, const Schema& schema, uint32_t rssid,
-        const std::function<Status(StreamChunkContainer)>& update_func) {
+StatusOr<ChunkPtr> ColumnModePartialUpdateHandler::_read_from_source_segment(const RowsetUpdateStateParams& params,
+                                                                             const Schema& schema, uint32_t rssid) {
     TRACE_COUNTER_SCOPE_LATENCY_US("pcu_read_from_source_us");
     OlapReaderStatistics stats;
     size_t footer_size_hint = 16 * 1024;
@@ -236,7 +178,7 @@ Status ColumnModePartialUpdateHandler::_read_from_source_segment_and_update(
                                            fileinfo, rssid - rowset_id /* segment id inside rowset */,
                                            &footer_size_hint, lake_io_opts, true, params.tablet_schema));
     SegmentReadOptions seg_options;
-    ASSIGN_OR_RETURN(seg_options.fs, FileSystemFactory::CreateSharedFromString(fileinfo.path));
+    ASSIGN_OR_RETURN(seg_options.fs, FileSystem::CreateSharedFromString(fileinfo.path));
     seg_options.stats = &stats;
     seg_options.is_primary_keys = true;
     seg_options.tablet_id = params.tablet->id();
@@ -245,27 +187,9 @@ Status ColumnModePartialUpdateHandler::_read_from_source_segment_and_update(
     seg_options.tablet_schema = params.tablet_schema;
     // not use delvec loader
     seg_options.dcg_loader = std::make_shared<LakeDeltaColumnGroupLoader>(params.metadata);
-    seg_options.chunk_size = config::vector_chunk_size;
     ASSIGN_OR_RETURN(auto seg_iter, segment->new_iterator(schema, seg_options));
-    auto source_chunk_ptr = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
-    auto tmp_chunk_ptr = ChunkFactory::new_chunk(schema, config::vector_chunk_size);
-    uint32_t start_rowid = 0;
-    // Accumulate the source bytes incrementally. bytes_usage() may walk every value for
-    // object-backed columns, while appending a batch adds exactly that batch's bytes.
-    int64_t source_chunk_bytes = 0;
-    auto emit_container = [&]() {
-        StreamChunkContainer container = {
-                .chunk_ptr = source_chunk_ptr.get(),
-                .start_rowid = start_rowid,
-                .end_rowid = start_rowid + static_cast<uint32_t>(source_chunk_ptr->num_rows())};
-        TEST_SYNC_POINT_CALLBACK("ColumnModePartialUpdateHandler::_read_from_source_segment_and_update:emit",
-                                 &container);
-        RETURN_IF_ERROR(update_func(container));
-        start_rowid += static_cast<uint32_t>(source_chunk_ptr->num_rows());
-        source_chunk_ptr->reset();
-        source_chunk_bytes = 0;
-        return Status::OK();
-    };
+    auto source_chunk_ptr = ChunkHelper::new_chunk(schema, segment->num_rows());
+    auto tmp_chunk_ptr = ChunkHelper::new_chunk(schema, 1024);
     while (true) {
         tmp_chunk_ptr->reset();
         auto st = seg_iter->get_next(tmp_chunk_ptr.get());
@@ -274,33 +198,10 @@ Status ColumnModePartialUpdateHandler::_read_from_source_segment_and_update(
         } else if (!st.ok()) {
             return st;
         } else {
-            // Check before appending from it: appending reads the source offsets, and reading
-            // offsets that have already wrapped is what throws or silently copies from the wrong
-            // address. Note this accumulator has no byte budget at all -- it is sized at the whole
-            // segment -- so the column limit is the only thing bounding it.
-            RETURN_IF_ERROR(ChunkHelper::reject_if_over_capacity(*tmp_chunk_ptr,
-                                                                 "column mode partial update source segment read batch",
-                                                                 params.tablet->id(), _txn_id));
-            const int64_t batch_bytes = static_cast<int64_t>(tmp_chunk_ptr->bytes_usage());
-            const int64_t rows_after = static_cast<int64_t>(source_chunk_ptr->num_rows()) +
-                                       static_cast<int64_t>(tmp_chunk_ptr->num_rows());
-            if (!source_chunk_ptr->is_empty() &&
-                (rows_after >= INT32_MAX || source_chunk_bytes + batch_bytes + rows_after * _upt_memory_usage_per_row >
-                                                    config::partial_update_memory_limit_per_worker)) {
-                RETURN_IF_ERROR(emit_container());
-            }
-            // Keep an oversized iterator batch intact. The capacity check below remains the hard
-            // safety bound, while the memory limit controls accumulation across batches.
             source_chunk_ptr->append(*tmp_chunk_ptr);
-            source_chunk_bytes += batch_bytes;
-            RETURN_IF_ERROR(ChunkHelper::reject_if_over_capacity(
-                    *source_chunk_ptr, "column mode partial update source chunk", params.tablet->id(), _txn_id));
         }
     }
-    if (!source_chunk_ptr->is_empty()) {
-        RETURN_IF_ERROR(emit_container());
-    }
-    return Status::OK();
+    return source_chunk_ptr;
 }
 
 static Status read_chunk_from_update_file(const ChunkIteratorPtr& iter, const ChunkUniquePtr& result_chunk) {
@@ -326,8 +227,7 @@ static Status read_chunk_from_update_file(const ChunkIteratorPtr& iter, const Ch
 // win, matching the existing upsert/row-mode condition-update semantics (see
 // UpdateManager::_process_single_chunk_update_with_condition).
 Status ColumnModePartialUpdateHandler::_update_source_chunk_by_upt(const UptidToRowidPairs& upt_id_to_rowid_pairs,
-                                                                   const Schema& partial_schema,
-                                                                   StreamChunkContainer container,
+                                                                   const Schema& partial_schema, ChunkPtr* source_chunk,
                                                                    int32_t condition_idx_in_partial_schema) {
     TRACE_COUNTER_SCOPE_LATENCY_US("pcu_update_source_by_upt_us");
     // build iterators
@@ -337,43 +237,29 @@ Status ColumnModePartialUpdateHandler::_update_source_chunk_by_upt(const UptidTo
     // handle upt files one by one
     for (const auto& each : upt_id_to_rowid_pairs) {
         const uint32_t upt_id = each.first;
-        // A nullptr iterator is a lost update-file segment ignored via
-        // experimental_lake_ignore_lost_segment. A lost upt segment produces no rowid pairs, so this
-        // upt_id should not appear here; guard anyway so read_chunk_from_update_file never dereferences
-        // a null iterator (mirrors the close() guard below).
-        if (segment_iters[upt_id] == nullptr) {
-            LOG(WARNING) << "column-mode partial update skips a null update-file segment iterator, tablet: "
-                         << _rowset_ptr->tablet_id() << ", upt_id: " << upt_id
-                         << " (a lost segment via experimental_lake_ignore_lost_segment, or an unexpected empty slot)";
-            continue;
-        }
         // 1. get chunk from upt file
-        ChunkUniquePtr upt_chunk = ChunkFactory::new_chunk(partial_schema, DEFAULT_CHUNK_SIZE);
+        ChunkUniquePtr upt_chunk = ChunkHelper::new_chunk(partial_schema, DEFAULT_CHUNK_SIZE);
         DeferOp iter_defer([&]() {
             if (segment_iters[upt_id] != nullptr) {
                 segment_iters[upt_id]->close();
             }
         });
         RETURN_IF_ERROR(read_chunk_from_update_file(segment_iters[upt_id], upt_chunk));
-        // A whole .upt file lands in one chunk, because the upt rowids below index into it. Check
-        // before append_selective() reads its offsets.
-        RETURN_IF_ERROR(ChunkHelper::reject_if_over_capacity(*upt_chunk, "column mode partial update upt file chunk",
-                                                             _rowset_ptr->tablet_id(), _txn_id));
         const size_t upt_chunk_size = upt_chunk->memory_usage();
         _tracker->consume(upt_chunk_size);
         DeferOp tracker_defer([&]() { _tracker->release(upt_chunk_size); });
         // 2. update source chunk
         std::vector<uint32_t> sorted_source_rowids;
         std::vector<uint32_t> unsorted_upt_rowids;
-        // Keep only source rowids in this streamed chunk and align them to the chunk's rowid base.
-        split_rowid_pairs(each.second, &sorted_source_rowids, &unsorted_upt_rowids, &container);
+        // Sort source rowid -> upt rowid pairs by source rowid.
+        split_rowid_pairs(each.second, &sorted_source_rowids, &unsorted_upt_rowids, nullptr);
         DCHECK(sorted_source_rowids.size() == unsorted_upt_rowids.size());
 
         // When condition update is enabled, compare the condition column value in
         // source chunk vs upt chunk and keep winners (old <= new); equal values let
         // the new row win, matching the upsert path.
         if (condition_idx_in_partial_schema >= 0) {
-            const auto& source_cond = container.chunk_ptr->get_column_by_index(condition_idx_in_partial_schema);
+            const auto& source_cond = (*source_chunk)->get_column_by_index(condition_idx_in_partial_schema);
             const auto& upt_cond = upt_chunk->get_column_by_index(condition_idx_in_partial_schema);
             const size_t original_size = sorted_source_rowids.size();
             std::vector<uint32_t> filtered_source_rowids;
@@ -396,16 +282,10 @@ Status ColumnModePartialUpdateHandler::_update_source_chunk_by_upt(const UptidTo
         if (sorted_source_rowids.empty()) {
             continue;
         }
-        auto tmp_chunk = ChunkFactory::new_chunk(partial_schema, unsorted_upt_rowids.size());
+        auto tmp_chunk = ChunkHelper::new_chunk(partial_schema, unsorted_upt_rowids.size());
         TRY_CATCH_BAD_ALLOC(
                 tmp_chunk->append_selective(*upt_chunk, unsorted_upt_rowids.data(), 0, unsorted_upt_rowids.size()));
-        RETURN_IF_EXCEPTION(container.chunk_ptr->update_rows(*tmp_chunk, sorted_source_rowids.data()));
-        // The merge writes values wider than the ones it replaces, so the result can be over the
-        // limit even though both inputs were under it, and the next .upt file in this loop reads
-        // these offsets again.
-        RETURN_IF_ERROR(ChunkHelper::reject_if_over_capacity(*container.chunk_ptr,
-                                                             "column mode partial update merged source chunk",
-                                                             _rowset_ptr->tablet_id(), _txn_id));
+        RETURN_IF_EXCEPTION((*source_chunk)->update_rows(*tmp_chunk, sorted_source_rowids.data()));
     }
     return Status::OK();
 }
@@ -420,7 +300,7 @@ static std::vector<T> append_fixed_batch(const std::vector<T>& base_array, size_
 }
 
 static void padding_char_columns(const Schema& schema, const TabletSchemaCSPtr& tschema, Chunk* chunk) {
-    auto char_field_indexes = ChunkSchemaHelper::get_char_field_indexes(schema);
+    auto char_field_indexes = ChunkHelper::get_char_field_indexes(schema);
     ChunkHelper::padding_char_columns(char_field_indexes, schema, tschema, chunk);
 }
 
@@ -558,14 +438,14 @@ Status ColumnModePartialUpdateHandler::execute(const RowsetUpdateStateParams& pa
         }
 
         // Create thread pool token for segment-level parallelism
-        auto token = RuntimeEnv::GetInstance()->lake_partial_update_thread_pool()->new_token(
-                ThreadPool::ExecutionMode::CONCURRENT);
+        std::unique_ptr<ThreadPoolToken> token;
+        if (config::enable_pk_index_parallel_execution) {
+            token = ExecEnv::GetInstance()->lake_partial_update_thread_pool()->new_token(
+                    ThreadPool::ExecutionMode::CONCURRENT);
+        }
 
-        // Declared before the runner so it outlives the join in ~ParallelTaskRunner: the tasks lock
-        // it, and reverse declaration order would otherwise destroy it first.
-        // Guards the shared dcg_* result maps only; the status is the runner's business now.
         std::mutex result_mutex;
-        ParallelTaskRunner runner(token.get());
+        Status shared_status;
 
         for (const auto& each : rss_upt_id_to_rowid_pairs) {
             uint32_t rssid = each.first;
@@ -577,53 +457,76 @@ Status ColumnModePartialUpdateHandler::execute(const RowsetUpdateStateParams& pa
 
             auto func = [this, &params, &partial_schema, &partial_tschema, &selective_unique_update_column_ids, rssid,
                          upt_pairs_ptr, condition_idx_in_partial_schema, &dcg_column_ids,
-                         &dcg_column_file_with_encryption_metas, &dcg_column_file_sizes, &result_mutex]() -> Status {
-                // 3.3 prepare one DCG writer, then stream source-segment chunks through update and append.
-                ASSIGN_OR_RETURN(auto delta_column_group_writer,
-                                 _prepare_delta_column_group_writer(params, partial_tschema));
-                auto st = _read_from_source_segment_and_update(
-                        params, partial_schema, rssid, [&](StreamChunkContainer container) {
-                            const size_t source_chunk_size = container.chunk_ptr->memory_usage();
-                            _tracker->consume(source_chunk_size);
-                            DeferOp tracker_defer([&]() { _tracker->release(source_chunk_size); });
+                         &dcg_column_file_with_encryption_metas, &dcg_column_file_sizes, &result_mutex,
+                         &shared_status]() {
+                // 3.3 read from source segment
+                auto source_chunk_or = _read_from_source_segment(params, partial_schema, rssid);
+                if (!source_chunk_or.ok()) {
+                    std::lock_guard<std::mutex> l(result_mutex);
+                    shared_status.update(source_chunk_or.status());
+                    return;
+                }
+                auto source_chunk_ptr = std::move(source_chunk_or.value());
+                const size_t source_chunk_size = source_chunk_ptr->memory_usage();
+                _tracker->consume(source_chunk_size);
+                DeferOp tracker_defer([&]() { _tracker->release(source_chunk_size); });
 
-                            // 3.4 read from update segments and apply rows in this source range.
-                            RETURN_IF_ERROR(_update_source_chunk_by_upt(*upt_pairs_ptr, partial_schema, container,
-                                                                        condition_idx_in_partial_schema));
-                            padding_char_columns(partial_schema, partial_tschema, container.chunk_ptr);
-                            RETURN_IF_ERROR(ChunkHelper::reject_if_over_capacity(
-                                    *container.chunk_ptr, "column mode partial update padded source chunk",
-                                    params.tablet->id(), _txn_id));
+                // 3.4 read from update segment and apply updates
+                auto st = _update_source_chunk_by_upt(*upt_pairs_ptr, partial_schema, &source_chunk_ptr,
+                                                      condition_idx_in_partial_schema);
+                if (!st.ok()) {
+                    std::lock_guard<std::mutex> l(result_mutex);
+                    shared_status.update(st);
+                    return;
+                }
 
-                            // 3.5 append this bounded source range to the same DCG file.
-                            RETURN_IF_ERROR(delta_column_group_writer->append_chunk(*container.chunk_ptr));
-                            return Status::OK();
-                        });
-                RETURN_IF_ERROR(st);
+                padding_char_columns(partial_schema, partial_tschema, source_chunk_ptr.get());
+
+                // 3.5 write delta column group (.col file with UUID name, no collision)
+                auto writer_or = _prepare_delta_column_group_writer(params, partial_tschema);
+                if (!writer_or.ok()) {
+                    std::lock_guard<std::mutex> l(result_mutex);
+                    shared_status.update(writer_or.status());
+                    return;
+                }
+                auto delta_column_group_writer = std::move(writer_or.value());
 
                 uint64_t segment_file_size = 0;
                 uint64_t index_size = 0;
                 uint64_t footer_position = 0;
-                RETURN_IF_ERROR(delta_column_group_writer->finalize(&segment_file_size, &index_size, &footer_position));
+                st = delta_column_group_writer->append_chunk(*source_chunk_ptr);
+                if (st.ok()) {
+                    st = delta_column_group_writer->finalize(&segment_file_size, &index_size, &footer_position);
+                }
 
                 // 3.6 collect results under lock
                 std::lock_guard<std::mutex> l(result_mutex);
-                dcg_column_ids[rssid].push_back(selective_unique_update_column_ids);
-                dcg_column_file_with_encryption_metas[rssid].emplace_back(
-                        file_name(delta_column_group_writer->segment_path()),
-                        delta_column_group_writer->encryption_meta());
-                dcg_column_file_sizes[rssid].push_back(static_cast<int64_t>(segment_file_size));
+                shared_status.update(st);
+                if (shared_status.ok()) {
+                    dcg_column_ids[rssid].push_back(selective_unique_update_column_ids);
+                    dcg_column_file_with_encryption_metas[rssid].emplace_back(
+                            file_name(delta_column_group_writer->segment_path()),
+                            delta_column_group_writer->encryption_meta());
+                    dcg_column_file_sizes[rssid].push_back(static_cast<int64_t>(segment_file_size));
+                }
                 TRACE_COUNTER_INCREMENT("pcu_handle_cnt", 1);
-                return Status::OK();
             };
 
-            runner.run(func);
+            if (token) {
+                auto submit_st = token->submit_func(func);
+                std::lock_guard<std::mutex> l(result_mutex);
+                shared_status.update(submit_st);
+            } else {
+                func();
+                RETURN_IF_ERROR(shared_status);
+            }
         }
 
-        {
+        if (token) {
             TRACE_COUNTER_SCOPE_LATENCY_US("pcu_parallel_dcg_wait_us");
-            RETURN_IF_ERROR(runner.join());
+            token->wait();
         }
+        RETURN_IF_ERROR(shared_status);
     }
     // 4 generate delta columngroup
     for (const auto& each : rss_upt_id_to_rowid_pairs) {
@@ -640,9 +543,7 @@ Status ColumnModePartialUpdateHandler::execute(const RowsetUpdateStateParams& pa
 
 bool CompactionUpdateConflictChecker::conflict_check(const TxnLogPB_OpCompaction& op_compaction, int64_t txn_id,
                                                      const TabletMetadata& metadata, MetaFileBuilder* builder) {
-    const bool has_dcg = !metadata.dcg_meta().dcgs().empty();
-    const bool has_idg = metadata.has_idg_meta() && !metadata.idg_meta().idgs().empty();
-    if (!has_dcg && !has_idg) {
+    if (metadata.dcg_meta().dcgs().empty()) {
         return false;
     }
     std::unordered_set<uint32_t> input_rowsets; // all rowsets that have been compacted
@@ -658,38 +559,19 @@ bool CompactionUpdateConflictChecker::conflict_check(const TxnLogPB_OpCompaction
             }
         }
     }
-    // 2. find out if these segments have been updated (DCG) or had indexes
-    //    added (IDG) since the compaction started. Either race forces the
-    //    compaction to land as an "with_conflict" no-op so the newer delta
-    //    is preserved.
+    // 2. find out if these segments have been updated
     for (uint32_t segment : input_segments) {
-        if (has_dcg) {
-            auto dcg_ver_iter = metadata.dcg_meta().dcgs().find(segment);
-            if (dcg_ver_iter != metadata.dcg_meta().dcgs().end()) {
-                for (int64_t ver : dcg_ver_iter->second.versions()) {
-                    if (ver > op_compaction.compact_version()) {
-                        builder->apply_opcompaction_with_conflict(op_compaction);
-                        LOG(INFO) << fmt::format(
-                                "PK compaction conflict with partial column update, tablet_id: {} txn_id: {} "
-                                "op_compaction: {}",
-                                metadata.id(), txn_id, op_compaction.ShortDebugString());
-                        return true;
-                    }
-                }
-            }
-        }
-        if (has_idg) {
-            auto idg_ver_iter = metadata.idg_meta().idgs().find(segment);
-            if (idg_ver_iter != metadata.idg_meta().idgs().end()) {
-                for (const auto& entry : idg_ver_iter->second.entries()) {
-                    if (entry.has_version() && entry.version() > op_compaction.compact_version()) {
-                        builder->apply_opcompaction_with_conflict(op_compaction);
-                        LOG(INFO) << fmt::format(
-                                "Compaction conflict with ADD INDEX fast path, tablet_id: {} txn_id: {} "
-                                "op_compaction: {}",
-                                metadata.id(), txn_id, op_compaction.ShortDebugString());
-                        return true;
-                    }
+        auto dcg_ver_iter = metadata.dcg_meta().dcgs().find(segment);
+        if (dcg_ver_iter != metadata.dcg_meta().dcgs().end()) {
+            for (int64_t ver : dcg_ver_iter->second.versions()) {
+                if (ver > op_compaction.compact_version()) {
+                    // conflict happens
+                    builder->apply_opcompaction_with_conflict(op_compaction);
+                    LOG(INFO) << fmt::format(
+                            "PK compaction conflict with partial column update, tablet_id: {} txn_id: {} "
+                            "op_compaction: {}",
+                            metadata.id(), txn_id, op_compaction.ShortDebugString());
+                    return true;
                 }
             }
         }

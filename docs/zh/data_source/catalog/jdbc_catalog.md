@@ -1,12 +1,10 @@
 ---
-sidebar_position: 70
 displayed_sidebar: docs
 description: "StarRocks 从 v3.0 起支持 JDBC catalog，无导入直接查询 JDBC 数据源及执行转换导入。"
 toc_max_heading_level: 4
 ---
 
 import Beta from '../../_assets/commonMarkdown/_beta.mdx'
-import JoinPushdown from '../../_assets/commonMarkdown/join_pushdown.mdx'
 
 # JDBC catalog
 
@@ -160,18 +158,6 @@ PROPERTIES
     "driver_url"="https://repo1.maven.org/maven2/com/clickhouse/clickhouse-jdbc/0.4.6/clickhouse-jdbc-0.4.6.jar",
     "driver_class"="com.clickhouse.jdbc.ClickHouseDriver"
 );
--- 使用 schema_resolver 处理非标准驱动
-CREATE EXTERNAL CATALOG jdbc5
-PROPERTIES
-(
-    "type"="jdbc",
-    "user"="postgres",
-    "password"="changeme",
-    "jdbc_uri"="jdbc:postgresql://127.0.0.1:5432/mydb",
-    "driver_url"="file:///path/to/custom-postgresql-driver.jar",
-    "driver_class"="com.custom.PostgresDriver",
-    "schema_resolver"="postgresql"
-);
 ```
 
 ## 查看 JDBC Catalog
@@ -229,16 +215,6 @@ DROP Catalog jdbc0;
    ```SQL
    SELECT * FROM <table_name>;
    ```
-
-<JoinPushdown />
-
-## 使用原生 SQL 查询 JDBC 数据
-
-自 v4.1 起，StarRocks 支持通过 [`native_query`](../../sql-reference/sql-functions/table-functions/native_query.md) 表函数，使用数据库原生 `SELECT` 语句查询 JDBC 数据。
-
-当源数据库需要执行无法通过单张外部表查询表达的 SQL 时，例如源端 Join、预先过滤的子查询或特定数据库方言的 SQL 语法，可以使用 `native_query`。StarRocks 会将透传查询结果作为普通关系暴露出来，您可以继续在 StarRocks 侧执行过滤、Join、聚合和投影。
-
-有关语法、限制和示例，参见 [`native_query`](../../sql-reference/sql-functions/table-functions/native_query.md)。
 
 ## 常见问题
 

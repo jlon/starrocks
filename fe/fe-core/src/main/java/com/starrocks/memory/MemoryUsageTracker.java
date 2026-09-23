@@ -100,7 +100,6 @@ public class MemoryUsageTracker extends FrontendDaemon {
         IDictManager dictManager = IDictManager.getInstance();
         if (dictManager instanceof CacheDictManager) {
             registerMemoryTracker("Dict", (CacheDictManager) dictManager);
-            ((CacheDictManager) dictManager).registerConfigRefreshListener();
         }
 
         LOG.info("Memory usage tracker init success");

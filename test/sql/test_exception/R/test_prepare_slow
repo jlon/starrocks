@@ -32,6 +32,3 @@ admin enable failpoint 'fragment_prepare_sleep';
 admin disable failpoint 'fragment_prepare_sleep';
 -- result:
 -- !result
-CLEANUP {
-  admin disable failpoint 'fragment_prepare_sleep';
-} END CLEANUP

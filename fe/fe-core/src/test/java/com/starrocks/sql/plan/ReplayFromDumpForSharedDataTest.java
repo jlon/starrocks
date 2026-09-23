@@ -46,7 +46,6 @@ public class ReplayFromDumpForSharedDataTest extends ReplayFromDumpTestBase {
         connectContext = UtFrameUtils.createDefaultCtx();
         starRocksAssert = new StarRocksAssert(connectContext);
         Config.show_execution_groups = false;
-        Config.enable_virtual_columns = false;
         // Should disable Dynamic Partition in replay dump test
         Config.dynamic_partition_enable = false;
         Config.tablet_sched_disable_colocate_overall_balance = true;

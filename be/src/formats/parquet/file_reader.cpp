@@ -18,20 +18,18 @@
 
 #include <cstring>
 #include <iterator>
-#include <limits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "cache/datacache.h"
-#include "cache/scan/shared_buffered_input_stream.h"
 #include "column/vectorized_fwd.h"
 #include "common/compiler_util.h"
-#include "common/config_scan_io_fwd.h"
+#include "common/config.h"
 #include "common/logging.h"
 #include "common/status.h"
-#include "compute_env/runtime_range_pruner.hpp"
-#include "exprs/chunk_predicate_evaluator.h"
+#include "exec/exec_node.h"
+#include "exec/hdfs_scanner/hdfs_scanner.h"
 #include "formats/parquet/metadata.h"
 #include "formats/parquet/predicate_filter_evaluator.h"
 #include "formats/parquet/utils.h"
@@ -39,11 +37,12 @@
 #include "gen_cpp/parquet_types.h"
 #include "gutil/casts.h"
 #include "gutil/strings/substitute.h"
+#include "io/shared_buffered_input_stream.h"
 
 namespace starrocks::parquet {
 
 FileReader::FileReader(int chunk_size, RandomAccessFile* file, size_t file_size,
-                       const DataCacheOptions& datacache_options, SharedBufferedInputStream* sb_stream,
+                       const DataCacheOptions& datacache_options, io::SharedBufferedInputStream* sb_stream,
                        SkipRowsContextPtr skip_rows_context)
         : _chunk_size(chunk_size),
           _file(file),
@@ -54,7 +53,7 @@ FileReader::FileReader(int chunk_size, RandomAccessFile* file, size_t file_size,
 
 FileReader::~FileReader() = default;
 
-Status FileReader::init(FormatScanContext* ctx) {
+Status FileReader::init(HdfsScannerContext* ctx) {
     _scanner_ctx = ctx;
     if (ctx->options.use_file_metacache) {
         _cache = DataCache::GetInstance()->page_cache();
@@ -80,22 +79,22 @@ Status FileReader::init(FormatScanContext* ctx) {
         return Status::OK();
     }
 
-    if (_scanner_ctx->runtime_filter_scan_range_pruner != nullptr) {
+    if (_scanner_ctx->predicates.runtime_filter_scan_range_pruner != nullptr) {
         _runtime_filter_scan_range_pruner =
-                std::make_shared<RuntimeScanRangePruner>(*_scanner_ctx->runtime_filter_scan_range_pruner);
+                std::make_shared<RuntimeScanRangePruner>(*_scanner_ctx->predicates.runtime_filter_scan_range_pruner);
     }
     RETURN_IF_ERROR(_init_group_readers());
     return Status::OK();
 }
 
 std::shared_ptr<MetaHelper> FileReader::_build_meta_helper() {
-    if (_scanner_ctx->lake_schema != nullptr && _file_metadata->schema().exist_filed_id()) {
+    if (_scanner_ctx->table_specific.iceberg_schema != nullptr && _file_metadata->schema().exist_filed_id()) {
         // Use LakeMetaHelper only when both an Iceberg/Paimon lake schema is present AND
         // the parquet file carries field ids.  Without field ids, the lake schema cannot
         // be matched reliably and we fall back to ParquetMetaHelper which handles
         // col_unique_id / col_physical_name / name lookup chains correctly.
         return std::make_shared<LakeMetaHelper>(_file_metadata.get(), _scanner_ctx->options.case_sensitive,
-                                                _scanner_ctx->lake_schema);
+                                                _scanner_ctx->table_specific.iceberg_schema);
     } else {
         return std::make_shared<ParquetMetaHelper>(_file_metadata.get(), _scanner_ctx->options.case_sensitive);
     }
@@ -105,7 +104,7 @@ const FileMetaData* FileReader::get_file_metadata() {
     return _file_metadata.get();
 }
 
-Status FileReader::collect_scan_io_ranges(std::vector<SharedBufferedInputStream::IORange>* io_ranges) {
+Status FileReader::collect_scan_io_ranges(std::vector<io::SharedBufferedInputStream::IORange>* io_ranges) {
     int64_t dummy_offset = 0;
     for (auto& r : _row_group_readers) {
         r->collect_io_ranges(io_ranges, &dummy_offset, ColumnIOType::PAGE_INDEX);
@@ -144,8 +143,8 @@ Status FileReader::_build_split_tasks() {
         }
 #endif
         auto split_ctx = std::make_unique<SplitContext>();
-        split_ctx->start_offset = start_offset;
-        split_ctx->end_offset = end_offset;
+        split_ctx->split_start = start_offset;
+        split_ctx->split_end = end_offset;
         split_ctx->file_metadata = _file_metadata;
         split_ctx->skip_rows_ctx = _skip_rows_ctx;
         _scanner_ctx->split.split_tasks.emplace_back(std::move(split_ctx));
@@ -158,8 +157,8 @@ Status FileReader::_build_split_tasks() {
 
     if (VLOG_OPERATOR_IS_ON) {
         std::stringstream ss;
-        for (const FileScanSplitContextPtr& ctx : _scanner_ctx->split.split_tasks) {
-            ss << "[" << ctx->start_offset << "," << ctx->end_offset << "]";
+        for (const HdfsSplitContextPtr& ctx : _scanner_ctx->split.split_tasks) {
+            ss << "[" << ctx->split_start << "," << ctx->split_end << "]";
         }
         VLOG_OPERATOR << "FileReader: do_open. split task for " << _file->filename()
                       << ", split_tasks.size = " << _scanner_ctx->split.split_tasks.size() << ", range = " << ss.str();
@@ -172,12 +171,10 @@ Status FileReader::_build_split_tasks() {
 bool FileReader::_filter_group(const GroupReaderPtr& group_reader) {
     bool& filtered = group_reader->get_is_group_filtered();
     filtered = false;
-    DCHECK(_scanner_ctx->predicate_tree != nullptr);
-    const PredicateTree& predicate_tree = *_scanner_ctx->predicate_tree;
-    auto visitor = PredicateFilterEvaluator{predicate_tree, group_reader.get(),
+    auto visitor = PredicateFilterEvaluator{_scanner_ctx->predicates.predicate_tree, group_reader.get(),
                                             _scanner_ctx->options.parquet_page_index_enable,
                                             _scanner_ctx->options.parquet_bloom_filter_enable};
-    auto sparse_range = predicate_tree.visit(visitor);
+    auto sparse_range = _scanner_ctx->predicates.predicate_tree.visit(visitor);
     _group_reader_param.stats->bloom_filter_tried_counter += visitor.counter.bloom_filter_tried_counter;
     _group_reader_param.stats->bloom_filter_success_counter += visitor.counter.bloom_filter_success_counter;
     _group_reader_param.stats->statistics_tried_counter += visitor.counter.statistics_tried_counter;
@@ -237,16 +234,17 @@ StatusOr<bool> FileReader::_update_rf_and_filter_group(const GroupReaderPtr& gro
 }
 
 void FileReader::_prepare_read_columns(std::unordered_set<std::string>& existed_column_names) {
-    _meta_helper->prepare_read_columns(_scanner_ctx->materialized_columns, &_scanner_ctx->column_access_paths,
-                                       _group_reader_param.read_cols, existed_column_names);
+    _meta_helper->prepare_read_columns(_scanner_ctx->materialized_columns, _group_reader_param.read_cols,
+                                       existed_column_names);
     _no_materialized_column_scan =
             (_group_reader_param.read_cols.empty() && _scanner_ctx->reserved_field_slots.empty());
 }
 
 bool FileReader::_select_row_group(const tparquet::RowGroup& row_group) {
     size_t row_group_start = ParquetUtils::get_row_group_start_offset(row_group);
-    size_t scan_start = _scanner_ctx->scan_range_offset;
-    size_t scan_end = _scanner_ctx->scan_range_length + scan_start;
+    const auto* scan_range = _scanner_ctx->scan_range;
+    size_t scan_start = scan_range->offset;
+    size_t scan_end = scan_range->length + scan_start;
     if (row_group_start >= scan_start && row_group_start < scan_end) {
         return true;
     }
@@ -256,7 +254,7 @@ bool FileReader::_select_row_group(const tparquet::RowGroup& row_group) {
 Status FileReader::_collect_row_group_io(std::shared_ptr<GroupReader>& group_reader) {
     // collect io ranges.
     if (config::parquet_coalesce_read_enable && _sb_stream != nullptr) { //should move to scanner_ctx
-        std::vector<SharedBufferedInputStream::IORange> ranges;
+        std::vector<io::SharedBufferedInputStream::IORange> ranges;
         int64_t end_offset = 0;
         ColumnIOTypeFlags flags = 0;
         if (_scanner_ctx->options.parquet_page_index_enable) {
@@ -272,23 +270,26 @@ Status FileReader::_collect_row_group_io(std::shared_ptr<GroupReader>& group_rea
 }
 
 Status FileReader::_init_group_readers() {
+    const HdfsScannerContext& fd_scanner_ctx = *_scanner_ctx;
+
     // _group_reader_param is used by all group readers.
     // scanner_ctx replaces 11 individual field copies; GroupReader accesses
     // context-derived data (timezone, options, partitions, slots, dicts, etc.)
     // through the pointer.  File-infrastructure fields (sb_stream, file, etc.)
     // and hot fields (stats, lazy_column_coalesce_counter) remain direct copies.
-    _group_reader_param.scan_ctx = _scanner_ctx;
-    _group_reader_param.conjunct_ctxs_by_slot = _scanner_ctx->conjunct_ctxs_by_slot;
-    _group_reader_param.stats = _scanner_ctx->stats;
+    _group_reader_param.scanner_ctx = _scanner_ctx;
+    _group_reader_param.conjunct_ctxs_by_slot = fd_scanner_ctx.conjunct_ctxs_by_slot;
+    _group_reader_param.stats = fd_scanner_ctx.stats;
     _group_reader_param.sb_stream = _sb_stream;
     _group_reader_param.chunk_size = _chunk_size;
     _group_reader_param.file = _file;
     _group_reader_param.file_metadata = _file_metadata.get();
-    _group_reader_param.lazy_column_coalesce_counter = _scanner_ctx->lazy_column_coalesce_counter;
+    _group_reader_param.lazy_column_coalesce_counter = fd_scanner_ctx.lazy_column_coalesce_counter;
     _group_reader_param.modification_time = _datacache_options.modification_time;
     _group_reader_param.file_size = _file_size;
     _group_reader_param.datacache_options = &_datacache_options;
-    _group_reader_param.scan_range_id = _scanner_ctx->scan_range_id;
+    _group_reader_param.scan_range_id = fd_scanner_ctx.scan_range_id;
+    _group_reader_param.scan_range = fd_scanner_ctx.scan_range;
 
     int64_t row_group_first_row = 0;
     // select and create row group readers.
@@ -421,8 +422,7 @@ Status FileReader::_exec_no_materialized_column_scan(ChunkPtr* chunk) {
         }
         _scan_row_count += read_size;
         if (!_scanner_ctx->conjuncts.scanner_ctxs.empty()) {
-            RETURN_IF_ERROR(
-                    ChunkPredicateEvaluator::eval_conjuncts(_scanner_ctx->conjuncts.scanner_ctxs, (*chunk).get()));
+            RETURN_IF_ERROR(ExecNode::eval_conjuncts(_scanner_ctx->conjuncts.scanner_ctxs, (*chunk).get()));
         }
         return Status::OK();
     }

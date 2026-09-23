@@ -22,42 +22,17 @@ public class FailPoint {
     private static boolean isEnabled = false;
 
     public static void setTriggerPolicy(String name, TriggerPolicy triggerPolicy) {
-        TriggerPolicy previous = POLICIES.put(name, triggerPolicy);
-        if (previous != null) {
-            // Re-arming must not strand threads parked on the policy being replaced.
-            previous.release();
-        }
+        POLICIES.put(name, triggerPolicy);
     }
 
     public static void removeTriggerPolicy(String name) {
-        TriggerPolicy removed = POLICIES.remove(name);
-        if (removed != null) {
-            // ADMIN DISABLE FAILPOINT is the release command for a PAUSE policy.
-            removed.release();
-        }
-    }
-
-    /**
-     * Remove {@code name} only if it is still mapped to {@code expected}, then release it. Used by a
-     * timed-out pause to disarm itself: an unconditional remove would delete a policy that another
-     * thread installed for the same name in the meantime, silently discarding the operator's new mode.
-     *
-     * @return true if this call removed the policy
-     */
-    public static boolean removeTriggerPolicyIf(String name, TriggerPolicy expected) {
-        // ConcurrentHashMap.remove(key, value) compares with equals(), which TriggerPolicy does not
-        // override, so this is an identity check -- exactly what is wanted here.
-        boolean removed = POLICIES.remove(name, expected);
-        if (removed) {
-            expected.release();
-        }
-        return removed;
+        POLICIES.remove(name);
     }
 
     public static boolean shouldTrigger(String name) {
         TriggerPolicy triggerPolicy = POLICIES.get(name);
         if (triggerPolicy != null) {
-            return triggerPolicy.shouldTrigger(name);
+            return triggerPolicy.shouldTrigger();
         } else {
             return false;
         }

@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "exprs/agg/aggregate.h"
 #include "exprs/agg/sum.h"
 #include "exprs/arithmetic_operation.h"
@@ -188,10 +188,8 @@ public:
         size_t old_size = bytes.size();
 
         size_t one_element_size = sizeof(ImmediateType) + sizeof(int64_t);
-        const size_t final_size = old_size + one_element_size * chunk_size;
-        bytes.resize(final_size);
-        auto& offsets = dst_column->get_offset();
-        offsets.resize(chunk_size + 1);
+        bytes.resize(one_element_size * chunk_size);
+        dst_column->get_offset().resize(chunk_size + 1);
 
         [[maybe_unused]] const auto* src_column = down_cast<const InputColumnType*>(src[0].get());
         int64_t count = 1;
@@ -213,7 +211,7 @@ public:
             memcpy(bytes.data() + old_size, &result, sizeof(ImmediateType));
             memcpy(bytes.data() + old_size + sizeof(ImmediateType), &count, sizeof(int64_t));
             old_size += one_element_size;
-            offsets.set(i + 1, old_size);
+            dst_column->get_offset()[i + 1] = old_size;
         }
     }
 

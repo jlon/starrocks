@@ -15,11 +15,10 @@
 #pragma once
 
 #include "column/vectorized_fwd.h"
-#include "common/runtime_profile.h"
-#include "compute_env/sorting/data_segment.h"
-#include "compute_env/sorting/merge.h"
 #include "exec/chunks_sorter.h"
+#include "exec/sorting/merge.h"
 #include "exprs/expr_context.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks {
 // Sort Chunks in memory with specified order by rules.
@@ -175,7 +174,7 @@ private:
     const size_t _max_buffered_chunks;
     size_t _init_buffered_chunks;
     RawChunks _raw_chunks;
-    bool _init_merged_segment{false};
+    bool _init_merged_segment;
     MergedRuns _merged_runs;
 
     const size_t _limit;

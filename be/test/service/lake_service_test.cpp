@@ -20,39 +20,18 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <atomic>
-#include <functional>
-#include <memory>
-#include <mutex>
-#include <string>
-#include <utility>
-#include <vector>
 
-#include "base/bthreads/util.h"
-#include "base/concurrency/await.h"
-#include "base/concurrency/countdown_latch.h"
-#include "base/testutil/assert.h"
-#include "base/testutil/id_generator.h"
-#include "base/testutil/sync_point.h"
-#include "base/utility/defer_op.h"
-#include "column/array_column.h"
 #include "column/chunk.h"
-#include "column/chunk_factory.h"
 #include "column/fixed_length_column.h"
-#include "column/nullable_column.h"
-#include "common/config_lake_fwd.h"
-#include "data_workflows/load/tablet_writer/load_channel_mgr.h"
-#include "exec/exec_env.h"
+#include "common/config.h"
 #include "fs/fs_util.h"
 #include "gutil/strings/util.h"
-#include "gutil/walltime.h"
-#include "platform/platform_env.h"
-#include "runtime/runtime_env.h"
+#include "runtime/exec_env.h"
+#include "runtime/load_channel_mgr.h"
 #include "service/brpc_service_test_util.h"
 #include "storage/chunk_helper.h"
 #include "storage/del_vector.h"
-#include "storage/lake/filenames.h"
 #include "storage/lake/fixed_location_provider.h"
 #include "storage/lake/join_path.h"
 #include "storage/lake/meta_file.h"
@@ -65,8 +44,14 @@
 #include "storage/lake/txn_log.h"
 #include "storage/protobuf_file.h"
 #include "storage/rowset/segment_writer.h"
-#include "storage/storage_env.h"
 #include "storage/variant_tuple.h"
+#include "testutil/assert.h"
+#include "testutil/id_generator.h"
+#include "testutil/sync_point.h"
+#include "util/await.h"
+#include "util/bthreads/util.h"
+#include "util/countdown_latch.h"
+#include "util/defer_op.h"
 
 namespace starrocks {
 
@@ -87,13 +72,8 @@ public:
             : _tablet_id(next_id()),
               _partition_id(next_id()),
               _location_provider(std::make_shared<lake::FixedLocationProvider>(kRootLocation)),
-              _tablet_mgr(StorageEnv::GetInstance()->lake_tablet_manager()),
-              _load_channel_mgr(std::make_unique<LoadChannelMgr>(_tablet_mgr,
-                                                                 RuntimeEnv::GetInstance()->diagnose_daemon(),
-                                                                 PlatformEnv::GetInstance()->brpc_stub_cache())),
-              _lake_service(ExecEnv::GetInstance(), StorageEnv::GetInstance()->lake_tablet_manager(),
-                            _load_channel_mgr.get()) {
-        CHECK_OK(_load_channel_mgr->init(RuntimeEnv::GetInstance()->load_mem_tracker()));
+              _tablet_mgr(ExecEnv::GetInstance()->lake_tablet_manager()),
+              _lake_service(ExecEnv::GetInstance(), ExecEnv::GetInstance()->lake_tablet_manager()) {
         _backup_location_provider = _tablet_mgr->TEST_set_location_provider(_location_provider);
         FileSystem::Default()->create_dir_recursive(lake::join_path(kRootLocation, lake::kSegmentDirectoryName));
         FileSystem::Default()->create_dir_recursive(lake::join_path(kRootLocation, lake::kMetadataDirectoryName));
@@ -101,7 +81,6 @@ public:
     }
 
     ~LakeServiceTest() override {
-        _load_channel_mgr->close();
         CHECK_OK(fs::remove_all(kRootLocation));
         (void)_tablet_mgr->TEST_set_location_provider(_backup_location_provider);
     }
@@ -109,7 +88,7 @@ public:
     void create_tablet() {
         auto metadata = lake::generate_simple_tablet_metadata(DUP_KEYS);
         _tablet_id = metadata->id();
-        auto* tablet_mgr = StorageEnv::GetInstance()->lake_tablet_manager();
+        auto* tablet_mgr = ExecEnv::GetInstance()->lake_tablet_manager();
         ASSERT_TRUE(tablet_mgr != nullptr);
         ASSERT_OK(tablet_mgr->put_tablet_metadata(metadata));
     }
@@ -167,7 +146,6 @@ protected:
         segment_meta->mutable_sort_key_min()->CopyFrom(generate_sort_key(lower_key));
         segment_meta->mutable_sort_key_max()->CopyFrom(generate_sort_key(upper_key - 1));
         segment_meta->set_num_rows(10);
-        segment_meta->set_segment_idx(0);
 
         auto* range = metadata->mutable_range();
         range->mutable_lower_bound()->CopyFrom(generate_sort_key(lower_key));
@@ -176,42 +154,6 @@ protected:
         range->set_upper_bound_included(false);
 
         ASSERT_OK(_tablet_mgr->put_tablet_metadata(metadata));
-    }
-
-    // Publishes one op_write onto a range tablet created by create_tablet_metadata_with_range.
-    // |shared| controls whether the written segment carries the shared flag. Mirrors the
-    // range-tablet branch of test_publish_returns_tablet_stats.
-    void publish_range_tablet_segment(int64_t range_tablet_id, bool shared, PublishVersionResponse* response) {
-        auto seg_name = lake::gen_segment_filename(next_id());
-        auto seg_path = _tablet_mgr->segment_location(range_tablet_id, seg_name);
-        {
-            ASSIGN_OR_ABORT(auto f, fs::new_writable_file(seg_path));
-            CHECK_OK(f->append("dummy"));
-            CHECK_OK(f->close());
-        }
-
-        auto txn_id = next_id();
-        TxnLog log;
-        log.set_tablet_id(range_tablet_id);
-        log.set_partition_id(_partition_id);
-        log.set_txn_id(txn_id);
-        auto* rowset = log.mutable_op_write()->mutable_rowset();
-        auto* segment_meta = rowset->add_segment_metas();
-        segment_meta->set_filename(seg_name);
-        segment_meta->set_size(512);
-        segment_meta->set_num_rows(10);
-        segment_meta->set_shared(shared);
-        rowset->set_data_size(512);
-        rowset->set_num_rows(10);
-        ASSERT_OK(_tablet_mgr->put_txn_log(log));
-
-        PublishVersionRequest request;
-        request.set_base_version(1);
-        request.set_new_version(2);
-        request.add_tablet_ids(range_tablet_id);
-        request.add_txn_ids(txn_id);
-
-        _lake_service.publish_version(nullptr, &request, response, nullptr);
     }
 
     void create_pk_tablet_with_delvec_range(int64_t tablet_id, int64_t version, int lower_key, int upper_key) {
@@ -225,7 +167,6 @@ protected:
         rowset->set_overlapped(false);
         rowset->set_num_rows(10);
         rowset->set_data_size(100);
-        rowset->set_num_dels(3);
         // Production rowset producers mint a uid; emulate that here so the
         // strict-uid invariant in tablet_merger holds when MERGE later runs.
         lake::tablet_reshard_helper::ensure_rowset_uid(rowset);
@@ -235,7 +176,6 @@ protected:
         segment_meta->mutable_sort_key_min()->CopyFrom(generate_sort_key(lower_key));
         segment_meta->mutable_sort_key_max()->CopyFrom(generate_sort_key(upper_key - 1));
         segment_meta->set_num_rows(10);
-        segment_meta->set_segment_idx(0);
 
         auto* range = metadata->mutable_range();
         range->mutable_lower_bound()->CopyFrom(generate_sort_key(lower_key));
@@ -276,13 +216,10 @@ protected:
             sort_key += 100;
             segment_meta->mutable_sort_key_max()->CopyFrom(generate_sort_key(sort_key));
             segment_meta->set_num_rows(100);
-            segment_meta->set_segment_idx(i);
         }
-        auto* rowset = log.mutable_op_write()->mutable_rowset();
-        rowset->set_data_size(data_size);
-        rowset->set_num_rows(num_rows);
-        rowset->set_overlapped(num_segments > 1);
-        lake::tablet_reshard_helper::ensure_rowset_uid(rowset);
+        log.mutable_op_write()->mutable_rowset()->set_data_size(data_size);
+        log.mutable_op_write()->mutable_rowset()->set_num_rows(num_rows);
+        log.mutable_op_write()->mutable_rowset()->set_overlapped(num_segments > 1);
         return log;
     }
 
@@ -308,15 +245,12 @@ protected:
             segment_meta->mutable_sort_key_min()->CopyFrom(generate_sort_key(min_keys[i]));
             segment_meta->mutable_sort_key_max()->CopyFrom(generate_sort_key(max_keys[i]));
             segment_meta->set_num_rows(segment_num_rows[i]);
-            segment_meta->set_segment_idx(i);
             total_rows += segment_num_rows[i];
             total_size += segment_sizes[i];
         }
-        auto* rowset = log.mutable_op_write()->mutable_rowset();
-        rowset->set_data_size(total_size);
-        rowset->set_num_rows(total_rows);
-        rowset->set_overlapped(min_keys.size() > 1);
-        lake::tablet_reshard_helper::ensure_rowset_uid(rowset);
+        log.mutable_op_write()->mutable_rowset()->set_data_size(total_size);
+        log.mutable_op_write()->mutable_rowset()->set_num_rows(total_rows);
+        log.mutable_op_write()->mutable_rowset()->set_overlapped(min_keys.size() > 1);
         return log;
     }
 
@@ -345,44 +279,6 @@ protected:
         auto* publish_req = request.add_publish_reqs();
         publish_req->set_timeout_ms(5000);
         return request;
-    }
-
-    void expect_invalid_split_count(bool is_reshard_txn, int split_count) {
-        std::atomic<int> submit_count = 0;
-        SyncPoint::GetInstance()->SetCallBack("ThreadPool::do_submit:1",
-                                              [&submit_count](void*) { submit_count.fetch_add(1); });
-        SyncPoint::GetInstance()->EnableProcessing();
-        DeferOp defer([]() {
-            SyncPoint::GetInstance()->ClearCallBack("ThreadPool::do_submit:1");
-            SyncPoint::GetInstance()->DisableProcessing();
-        });
-
-        brpc::Controller cntl;
-        PublishVersionRequest request;
-        PublishVersionResponse response;
-        request.set_base_version(1);
-        request.set_new_version(2);
-        if (is_reshard_txn) {
-            auto* txn_info = request.add_txn_infos();
-            txn_info->set_txn_id(next_id());
-            txn_info->set_txn_type(TXN_TABLET_RESHARD);
-        } else {
-            request.add_txn_ids(next_id());
-            request.add_tablet_ids(_tablet_id);
-        }
-        auto* splitting = request.add_resharding_tablet_infos()->mutable_splitting_tablet_info();
-        splitting->set_old_tablet_id(_tablet_id);
-        for (int i = 0; i < split_count; ++i) {
-            splitting->add_new_tablet_ids(next_id());
-        }
-
-        _lake_service.publish_version(&cntl, &request, &response, nullptr);
-
-        EXPECT_TRUE(cntl.Failed());
-        EXPECT_EQ(
-                fmt::format("splitting tablet {} requires at least 2 new tablet ids, got {}", _tablet_id, split_count),
-                cntl.ErrorText());
-        EXPECT_EQ(0, submit_count.load());
     }
 
     void build_schemas_and_metadata(TabletSchemaPB* schema_pb1, TabletSchemaPB* schema_pb2, TabletSchemaPB* schema_pb3,
@@ -455,25 +351,8 @@ protected:
     std::shared_ptr<lake::LocationProvider> _location_provider;
     lake::TabletManager* _tablet_mgr;
     std::shared_ptr<lake::LocationProvider> _backup_location_provider;
-    std::unique_ptr<LoadChannelMgr> _load_channel_mgr;
     LakeServiceImpl _lake_service;
 };
-
-TEST_F(LakeServiceTest, test_publish_version_rejects_normal_split_count_zero) {
-    expect_invalid_split_count(false, 0);
-}
-
-TEST_F(LakeServiceTest, test_publish_version_rejects_reshard_split_count_zero) {
-    expect_invalid_split_count(true, 0);
-}
-
-TEST_F(LakeServiceTest, test_publish_version_rejects_reshard_split_count_one) {
-    expect_invalid_split_count(true, 1);
-}
-
-TEST_F(LakeServiceTest, test_publish_version_rejects_normal_split_count_one) {
-    expect_invalid_split_count(false, 1);
-}
 
 TEST_F(LakeServiceTest, test_publish_version_missing_tablet_ids) {
     brpc::Controller cntl;
@@ -661,7 +540,7 @@ TEST_F(LakeServiceTest, test_publish_version_for_write) {
                   metadata->rowsets(0).segment_metas(1).filename());
         EXPECT_EQ(987654321, metadata->commit_time());
     }
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
     // TxnLog`s should have been deleted
     ASSERT_TRUE(tablet.get_txn_log(logs[0].txn_id()).status().is_not_found());
     ASSERT_TRUE(tablet.get_txn_log(logs[1].txn_id()).status().is_not_found());
@@ -746,224 +625,6 @@ TEST_F(LakeServiceTest, test_publish_version_for_write) {
     }
 }
 
-// Shadow-rewrite publish through the RPC path: shadow tablets now travel in the request's ordinary
-// tablet_ids, and the publish is keyed on a single TxnInfoPB whose txn_type == TXN_SHADOW_REWRITE and
-// whose shadow_rewrite_alter_version carries the watershed W. This exercises the TXN_SHADOW_REWRITE
-// branch in publish_version that anchors the historical rewrite as an op_schema_change@W during the
-// flip publish, including the W == 1 skip-load (empty partition) path.
-TEST_F(LakeServiceTest, test_publish_version_shadow_rewrite) {
-    // Each shadow tablet is freshly created at version 1; W (alter_version) is the base partition's
-    // watershed, independent of the shadow tablet's base_version and always < new_version.
-    auto fresh_tablet = [&]() {
-        auto meta = lake::generate_simple_tablet_metadata(DUP_KEYS);
-        CHECK_OK(_tablet_mgr->put_tablet_metadata(meta));
-        return meta->id();
-    };
-    auto shadow_request = [&](int64_t tablet_id, int64_t new_version, int64_t alter_version) {
-        PublishVersionRequest req;
-        req.set_base_version(1);
-        req.set_new_version(new_version);
-        req.add_tablet_ids(tablet_id);
-        auto* txn = req.add_txn_infos();
-        txn->set_txn_id(next_id());
-        txn->set_txn_type(TXN_SHADOW_REWRITE);
-        txn->set_shadow_rewrite_alter_version(alter_version);
-        return req;
-    };
-
-    // (a) W == 1: empty base at watershed -> BE skips the source load (no 404) and synthesizes an empty
-    //     op_schema_change@1; the tablet advances 1 -> 2 with no rowsets.
-    {
-        int64_t t = fresh_tablet();
-        auto request = shadow_request(t, /*new=*/2, /*alter_version=*/1);
-        PublishVersionResponse response;
-        _lake_service.publish_version(nullptr, &request, &response, nullptr);
-        ASSERT_EQ(0, response.failed_tablets_size());
-        EXPECT_EQ(0, response.status().status_code()) << response.status().error_msgs(0);
-        ASSIGN_OR_ABORT(auto metadata, _tablet_mgr->get_tablet_metadata(t, 2));
-        EXPECT_EQ(2, metadata->version());
-        EXPECT_EQ(0, metadata->rowsets_size());
-    }
-    // (b) W > 1, source load fails with a non-not-found error -> the tablet fails to publish.
-    {
-        int64_t t = fresh_tablet();
-        auto request = shadow_request(t, /*new=*/3, /*alter_version=*/2);
-        TEST_ENABLE_ERROR_POINT("TabletManager::load_txn_log", Status::IOError("injected shadow source load error"));
-        SyncPoint::GetInstance()->EnableProcessing();
-        DeferOp defer([]() {
-            TEST_DISABLE_ERROR_POINT("TabletManager::load_txn_log");
-            SyncPoint::GetInstance()->DisableProcessing();
-        });
-        PublishVersionResponse response;
-        _lake_service.publish_version(nullptr, &request, &response, nullptr);
-        ASSERT_EQ(1, response.failed_tablets_size());
-        ASSERT_EQ(t, response.failed_tablets(0));
-        EXPECT_TRUE(MatchPattern(response.status().error_msgs(0), "injected shadow source load error"))
-                << response.status().error_msgs(0);
-    }
-    // (c) W > 1, no source op_write present and the target version unpublished -> a non-empty partition's
-    //     shadow tablet always has an op_write, so a missing one means the source was lost. The load's
-    //     not-found propagates and the publish FAILS (so it retries) rather than synthesizing an empty
-    //     op_schema_change@W -- which would silently drop the partition's data by advancing the version.
-    {
-        int64_t t = fresh_tablet();
-        auto request = shadow_request(t, /*new=*/3, /*alter_version=*/2);
-        PublishVersionResponse response;
-        _lake_service.publish_version(nullptr, &request, &response, nullptr);
-        ASSERT_EQ(1, response.failed_tablets_size());
-        ASSERT_EQ(t, response.failed_tablets(0));
-        EXPECT_NE(0, response.status().status_code()) << "lost source must fail the publish";
-        // Crucially, the version did NOT advance with an empty log (no silent data drop).
-        EXPECT_TRUE(_tablet_mgr->get_tablet_metadata(t, 3).status().is_not_found());
-    }
-    // (d) Invalid request: missing alter_version (defaults to 0) -> InvalidArgument (failed tablet).
-    {
-        int64_t t = fresh_tablet();
-        PublishVersionRequest request;
-        request.set_base_version(1);
-        request.set_new_version(2);
-        request.add_tablet_ids(t);
-        auto* txn = request.add_txn_infos();
-        txn->set_txn_id(next_id());
-        txn->set_txn_type(TXN_SHADOW_REWRITE); // shadow_rewrite_alter_version intentionally unset (=> 0)
-        PublishVersionResponse response;
-        _lake_service.publish_version(nullptr, &request, &response, nullptr);
-        ASSERT_EQ(1, response.failed_tablets_size());
-        ASSERT_EQ(t, response.failed_tablets(0));
-    }
-}
-
-// Verifies the publish-time async VI dispatch gate: only async-mode tables
-// (index_build_mode = "async") generate vector_index_build_infos in the publish
-// response. Sync-mode tables build VI inline during write/compaction, so the FE
-// scheduler should not be involved.
-TEST_F(LakeServiceTest, test_publish_version_vector_index_dispatch_gate) {
-    auto make_vi_metadata = [&](bool async_mode) {
-        auto metadata = lake::generate_simple_tablet_metadata(DUP_KEYS);
-        auto* schema = metadata->mutable_schema();
-        auto* idx = schema->add_table_indices();
-        idx->set_index_id(next_id());
-        idx->set_index_type(VECTOR);
-        idx->add_col_unique_id(schema->column(1).unique_id());
-        std::string props_json = R"({"common_properties": {"index_type": "hnsw")";
-        if (async_mode) {
-            props_json += R"(, "index_build_mode": "async")";
-        }
-        props_json += "}}";
-        idx->set_index_properties(props_json);
-        return metadata;
-    };
-
-    auto sync_metadata = make_vi_metadata(false);
-    auto async_metadata = make_vi_metadata(true);
-    auto sync_tablet_id = sync_metadata->id();
-    auto async_tablet_id = async_metadata->id();
-    auto sync_index_id = sync_metadata->schema().table_indices(0).index_id();
-    auto async_index_id = async_metadata->schema().table_indices(0).index_id();
-    ASSERT_OK(_tablet_mgr->put_tablet_metadata(sync_metadata));
-    ASSERT_OK(_tablet_mgr->put_tablet_metadata(async_metadata));
-
-    auto build_vi_txn_log = [&](int64_t tablet_id, int64_t index_id) {
-        auto txn_id = next_id();
-        TxnLog log;
-        log.set_tablet_id(tablet_id);
-        log.set_partition_id(_partition_id);
-        log.set_txn_id(txn_id);
-        auto* segment_meta = log.mutable_op_write()->mutable_rowset()->add_segment_metas();
-        segment_meta->set_filename(generate_segment_file_for_tablet(tablet_id, txn_id));
-        segment_meta->set_size(1024);
-        segment_meta->set_num_rows(100);
-        segment_meta->add_vector_index_ids(index_id);
-        log.mutable_op_write()->mutable_rowset()->set_data_size(1024);
-        log.mutable_op_write()->mutable_rowset()->set_num_rows(100);
-        log.mutable_op_write()->mutable_rowset()->set_overlapped(false);
-        return log;
-    };
-
-    auto sync_log = build_vi_txn_log(sync_tablet_id, sync_index_id);
-    auto async_log = build_vi_txn_log(async_tablet_id, async_index_id);
-    ASSERT_OK(_tablet_mgr->put_txn_log(sync_log));
-    ASSERT_OK(_tablet_mgr->put_txn_log(async_log));
-
-    // Sync-mode table: response should NOT contain vector_index_build_infos.
-    {
-        PublishVersionRequest request;
-        request.set_base_version(1);
-        request.set_new_version(2);
-        request.add_tablet_ids(sync_tablet_id);
-        request.add_txn_ids(sync_log.txn_id());
-        PublishVersionResponse response;
-        _lake_service.publish_version(nullptr, &request, &response, nullptr);
-        ASSERT_EQ(0, response.failed_tablets_size());
-        EXPECT_EQ(0, response.vector_index_build_infos_size())
-                << "sync-mode tablet must not appear in vector_index_build_infos";
-    }
-
-    // Async-mode table: response should contain one vector_index_build_infos entry
-    // pointing at this tablet/version.
-    {
-        PublishVersionRequest request;
-        request.set_base_version(1);
-        request.set_new_version(2);
-        request.add_tablet_ids(async_tablet_id);
-        request.add_txn_ids(async_log.txn_id());
-        PublishVersionResponse response;
-        _lake_service.publish_version(nullptr, &request, &response, nullptr);
-        ASSERT_EQ(0, response.failed_tablets_size());
-        ASSERT_EQ(1, response.vector_index_build_infos_size())
-                << "async-mode tablet with new vector_index_ids must be reported";
-        EXPECT_EQ(async_tablet_id, response.vector_index_build_infos(0).tablet_id());
-        EXPECT_EQ(2, response.vector_index_build_infos(0).version());
-        EXPECT_TRUE(response.vector_index_build_infos(0).build_needed())
-                << "a new rowset carrying vector_index_ids needs a real .vi build";
-    }
-}
-
-// Async-mode table whose new rowset has no vector_index_ids (segment under threshold, or a
-// bundle segment) is still reported on every version-advancing publish, tagged
-// build_needed=false so the FE advances built_version directly without dispatching a CN build.
-TEST_F(LakeServiceTest, test_publish_version_async_table_no_vi_ids_reports_no_build) {
-    auto metadata = lake::generate_simple_tablet_metadata(DUP_KEYS);
-    auto* schema = metadata->mutable_schema();
-    auto* idx = schema->add_table_indices();
-    idx->set_index_id(next_id());
-    idx->set_index_type(VECTOR);
-    idx->add_col_unique_id(schema->column(1).unique_id());
-    idx->set_index_properties(R"({"common_properties": {"index_type": "hnsw", "index_build_mode": "async"}})");
-    auto tablet_id = metadata->id();
-    ASSERT_OK(_tablet_mgr->put_tablet_metadata(metadata));
-
-    auto txn_id = next_id();
-    TxnLog log;
-    log.set_tablet_id(tablet_id);
-    log.set_partition_id(_partition_id);
-    log.set_txn_id(txn_id);
-    auto* segment_meta = log.mutable_op_write()->mutable_rowset()->add_segment_metas();
-    segment_meta->set_filename(generate_segment_file_for_tablet(tablet_id, txn_id));
-    segment_meta->set_size(1024);
-    segment_meta->set_num_rows(100);
-    // intentionally do NOT add vector_index_ids: simulates async + below-threshold
-    log.mutable_op_write()->mutable_rowset()->set_data_size(1024);
-    log.mutable_op_write()->mutable_rowset()->set_num_rows(100);
-    log.mutable_op_write()->mutable_rowset()->set_overlapped(false);
-    ASSERT_OK(_tablet_mgr->put_txn_log(log));
-
-    PublishVersionRequest request;
-    request.set_base_version(1);
-    request.set_new_version(2);
-    request.add_tablet_ids(tablet_id);
-    request.add_txn_ids(txn_id);
-    PublishVersionResponse response;
-    _lake_service.publish_version(nullptr, &request, &response, nullptr);
-    ASSERT_EQ(0, response.failed_tablets_size());
-    ASSERT_EQ(1, response.vector_index_build_infos_size())
-            << "async-mode tablet must be reported on every version advance for frontier tracking";
-    EXPECT_EQ(tablet_id, response.vector_index_build_infos(0).tablet_id());
-    EXPECT_EQ(2, response.vector_index_build_infos(0).version());
-    EXPECT_FALSE(response.vector_index_build_infos(0).build_needed())
-            << "no vector_index_ids -> nothing to build this version -> build_needed=false";
-}
-
 TEST_F(LakeServiceTest, test_publish_version_for_write_batch) {
     // Empty TxnLog
     {
@@ -1015,7 +676,7 @@ TEST_F(LakeServiceTest, test_publish_version_for_write_batch) {
     ASSERT_EQ("1.dat", metadata->rowsets(0).segment_metas(0).filename());
     ASSERT_EQ("2.dat", metadata->rowsets(0).segment_metas(1).filename());
 
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
     // TxnLog should't have been deleted
     ASSERT_TRUE(tablet.get_txn_log(1002).status().ok());
     ASSERT_TRUE(tablet.get_txn_log(1003).status().ok());
@@ -1105,7 +766,7 @@ TEST_F(LakeServiceTest, test_publish_version_transform_single_to_batch) {
         _lake_service.publish_version(nullptr, &publish_request_1000, &response, nullptr);
         ASSERT_EQ(0, response.failed_tablets_size());
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         // TxnLog should have been deleted
         ASSERT_TRUE(tablet.get_txn_log(logs[0].txn_id()).status().is_not_found());
     }
@@ -1125,7 +786,7 @@ TEST_F(LakeServiceTest, test_publish_version_transform_single_to_batch) {
         _lake_service.publish_version(nullptr, &publish_request_1001, &response, nullptr);
         ASSERT_EQ(0, response.failed_tablets_size());
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         // TxnLog of logs[0] should have been deleted
         ASSERT_TRUE(tablet.get_txn_log(logs[0].txn_id()).status().is_not_found());
         // the other txn_logs should't have been deleted
@@ -1174,7 +835,7 @@ TEST_F(LakeServiceTest, test_publish_version_transform_batch_to_single) {
         _lake_service.publish_version(nullptr, &publish_request_1000, &response, nullptr);
         ASSERT_EQ(0, response.failed_tablets_size());
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         // TxnLog should't have been deleted
         ASSERT_TRUE(tablet.get_txn_log(logs[0].txn_id()).status().ok());
         ASSERT_TRUE(tablet.get_txn_log(logs[1].txn_id()).status().ok());
@@ -1199,7 +860,7 @@ TEST_F(LakeServiceTest, test_publish_version_transform_batch_to_single) {
         _lake_service.publish_version(nullptr, &publish_request_1001, &response, nullptr);
         ASSERT_EQ(0, response.failed_tablets_size());
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         // TxnLog of logs[0] should have been deleted
         ASSERT_TRUE(tablet.get_txn_log(logs[0].txn_id()).status().is_not_found());
         // TxnLog of logs[1] should't have been deleted
@@ -1226,7 +887,7 @@ TEST_F(LakeServiceTest, test_publish_version_transform_batch_to_single) {
         _lake_service.publish_version(nullptr, &publish_request_1002, &response, nullptr);
         ASSERT_EQ(0, response.failed_tablets_size());
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         // TxnLog of logs[1] should have been deleted
         ASSERT_TRUE(tablet.get_txn_log(logs[1].txn_id()).status().is_not_found());
 
@@ -1553,8 +1214,6 @@ TEST_F(LakeServiceTest, test_splitting_tablet_pk_with_delvec_stats) {
     rowset->set_overlapped(false);
     rowset->set_num_rows(150);
     rowset->set_data_size(1500);
-    rowset->set_num_dels(50);
-    lake::tablet_reshard_helper::ensure_rowset_uid(rowset);
 
     auto* segment_meta0 = rowset->add_segment_metas();
     segment_meta0->set_filename("seg_0");
@@ -1562,7 +1221,6 @@ TEST_F(LakeServiceTest, test_splitting_tablet_pk_with_delvec_stats) {
     segment_meta0->mutable_sort_key_min()->CopyFrom(generate_sort_key(0));
     segment_meta0->mutable_sort_key_max()->CopyFrom(generate_sort_key(50));
     segment_meta0->set_num_rows(100);
-    segment_meta0->set_segment_idx(0);
 
     auto* segment_meta1 = rowset->add_segment_metas();
     segment_meta1->set_filename("seg_1");
@@ -1570,7 +1228,6 @@ TEST_F(LakeServiceTest, test_splitting_tablet_pk_with_delvec_stats) {
     segment_meta1->mutable_sort_key_min()->CopyFrom(generate_sort_key(100));
     segment_meta1->mutable_sort_key_max()->CopyFrom(generate_sort_key(150));
     segment_meta1->set_num_rows(50);
-    segment_meta1->set_segment_idx(1);
 
     _tablet_id = metadata->id();
     auto tablet = std::make_shared<lake::Tablet>(_tablet_mgr, _tablet_id);
@@ -1599,9 +1256,6 @@ TEST_F(LakeServiceTest, test_splitting_tablet_pk_with_delvec_stats) {
     builder.append_delvec(ndv1, rowset->id() + 1);
 
     ASSERT_OK(builder.finalize(next_id()));
-    ASSIGN_OR_ABORT(auto persisted_metadata, _tablet_mgr->get_tablet_metadata(_tablet_id, metadata->version()));
-    ASSERT_TRUE(persisted_metadata->rowsets(0).has_num_dels());
-    ASSERT_EQ(50, persisted_metadata->rowsets(0).num_dels());
 
     ReshardingTabletInfoPB resharding_tablet_info;
     auto* splitting_tablet_info = resharding_tablet_info.mutable_splitting_tablet_info();
@@ -1644,8 +1298,9 @@ TEST_F(LakeServiceTest, test_splitting_tablet_pk_with_delvec_stats) {
     }
     EXPECT_EQ(150, total_rows);
     EXPECT_EQ(1500, total_size);
-    // Parent had 40 deletes on seg_0 and 10 on seg_1 = 50 total. Current publish materializes
-    // that rowset-level anchor, and the largest-remainder allocator must conserve the sum.
+    // Parent had 40 deletes on seg_0 and 10 on seg_1 = 50 total. The split reads those
+    // through UpdateManager::get_rowset_num_deletes (num_dels unset on the parent rowset)
+    // and the largest-remainder allocator must conserve the sum.
     EXPECT_EQ(50, total_num_dels);
 }
 
@@ -1805,13 +1460,10 @@ TEST_F(LakeServiceTest, test_publish_merging_tablet) {
                       generate_sort_key(100).SerializeAsString());
             ASSERT_TRUE(new_metadata->rowsets(0).has_range());
             ASSERT_TRUE(new_metadata->rowsets(1).has_range());
-            std::set<std::string> actual_ranges;
-            for (const auto& rowset : new_metadata->rowsets()) {
-                actual_ranges.insert(rowset.range().SerializeAsString());
-            }
-            EXPECT_EQ((std::set<std::string>{old_metadata_1->range().SerializeAsString(),
-                                             old_metadata_2->range().SerializeAsString()}),
-                      actual_ranges);
+            EXPECT_EQ(new_metadata->rowsets(0).range().SerializeAsString(),
+                      old_metadata_1->range().SerializeAsString());
+            EXPECT_EQ(new_metadata->rowsets(1).range().SerializeAsString(),
+                      old_metadata_2->range().SerializeAsString());
         }
 
         {
@@ -1842,12 +1494,9 @@ TEST_F(LakeServiceTest, test_publish_merging_tablet) {
         seg_meta1->mutable_sort_key_min()->CopyFrom(generate_sort_key(0));
         seg_meta1->mutable_sort_key_max()->CopyFrom(generate_sort_key(10));
         seg_meta1->set_num_rows(10);
-        seg_meta1->set_segment_idx(0);
-        auto* rowset1 = log1.mutable_op_write()->mutable_rowset();
-        rowset1->set_data_size(100);
-        rowset1->set_num_rows(10);
-        rowset1->set_overlapped(false);
-        lake::tablet_reshard_helper::ensure_rowset_uid(rowset1);
+        log1.mutable_op_write()->mutable_rowset()->set_data_size(100);
+        log1.mutable_op_write()->mutable_rowset()->set_num_rows(10);
+        log1.mutable_op_write()->mutable_rowset()->set_overlapped(false);
         ASSERT_OK(_tablet_mgr->put_txn_log(log1));
 
         TxnLog log2;
@@ -1860,12 +1509,9 @@ TEST_F(LakeServiceTest, test_publish_merging_tablet) {
         seg_meta2->mutable_sort_key_min()->CopyFrom(generate_sort_key(50));
         seg_meta2->mutable_sort_key_max()->CopyFrom(generate_sort_key(60));
         seg_meta2->set_num_rows(10);
-        seg_meta2->set_segment_idx(0);
-        auto* rowset2 = log2.mutable_op_write()->mutable_rowset();
-        rowset2->set_data_size(100);
-        rowset2->set_num_rows(10);
-        rowset2->set_overlapped(false);
-        lake::tablet_reshard_helper::ensure_rowset_uid(rowset2);
+        log2.mutable_op_write()->mutable_rowset()->set_data_size(100);
+        log2.mutable_op_write()->mutable_rowset()->set_num_rows(10);
+        log2.mutable_op_write()->mutable_rowset()->set_overlapped(false);
         ASSERT_OK(_tablet_mgr->put_txn_log(log2));
 
         publish_request.add_txn_ids(txn_id);
@@ -1896,7 +1542,7 @@ TEST_F(LakeServiceTest, test_publish_merging_tablet) {
             ASSERT_EQ(1, inspected_txn_size.load(std::memory_order_relaxed));
             EXPECT_TRUE(saw_rebuild_pindex.load(std::memory_order_relaxed));
 
-            StorageEngine::instance()->wait_storage_cleanup_tasks();
+            ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
             EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_log_location(old_tablet_id_1, txn_id)));
             EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_log_location(old_tablet_id_2, txn_id)));
         }
@@ -2094,7 +1740,7 @@ TEST_F(LakeServiceTest, test_publish_identical_tablet) {
             ASSERT_EQ(0, response.tablet_metas_size());
             ASSERT_EQ(0, response.tablet_ranges_size());
 
-            StorageEngine::instance()->wait_storage_cleanup_tasks();
+            ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
             EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_log_location(_tablet_id, txn_log.txn_id())));
         }
 
@@ -2246,7 +1892,7 @@ TEST_F(LakeServiceTest, test_abort) {
         _lake_service.abort_txn(nullptr, &request, &response, nullptr);
     }
 
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
 
     // TxnLog`s and segments should have been deleted
     for (auto&& log : logs) {
@@ -2381,7 +2027,7 @@ TEST_F(LakeServiceTest, test_delete_txn_log) {
         request.add_txn_ids(logs.back().txn_id());
         _lake_service.delete_txn_log(&cntl, &request, &response, nullptr);
         ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         auto path = _tablet_mgr->txn_log_location(_tablet_id, logs.back().txn_id());
         ASSERT_EQ(TStatusCode::NOT_FOUND, FileSystem::Default()->path_exists(path).code());
     }
@@ -2401,7 +2047,7 @@ TEST_F(LakeServiceTest, test_delete_txn_log) {
         info->set_combined_txn_log(false);
         _lake_service.delete_txn_log(&cntl, &request, &response, nullptr);
         ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         auto path = _tablet_mgr->txn_log_location(_tablet_id, logs.back().txn_id());
         ASSERT_EQ(TStatusCode::NOT_FOUND, FileSystem::Default()->path_exists(path).code());
     }
@@ -2421,7 +2067,7 @@ TEST_F(LakeServiceTest, test_delete_txn_log) {
         info->set_combined_txn_log(true);
         _lake_service.delete_txn_log(&cntl, &request, &response, nullptr);
         ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         auto log_path = _tablet_mgr->combined_txn_log_location(_tablet_id, txn_id);
         ASSERT_TRUE(FileSystem::Default()->path_exists(log_path).is_not_found());
     }
@@ -3012,7 +2658,7 @@ TEST_F(LakeServiceTest, test_publish_log_version) {
         ASSERT_EQ(1, response.failed_tablets_size());
         ASSERT_EQ(_tablet_id, response.failed_tablets(0));
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         EXPECT_TRUE(fs::path_exist(_tablet_mgr->txn_log_location(_tablet_id, txn_id)));
         EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_vlog_location(_tablet_id, 10)));
     }
@@ -3027,7 +2673,7 @@ TEST_F(LakeServiceTest, test_publish_log_version) {
         ASSERT_FALSE(cntl.Failed());
         ASSERT_EQ(0, response.failed_tablets_size());
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_log_location(_tablet_id, txn_id)));
         EXPECT_TRUE(fs::path_exist(_tablet_mgr->txn_vlog_location(_tablet_id, 10)));
     }
@@ -3043,7 +2689,7 @@ TEST_F(LakeServiceTest, test_publish_log_version) {
         ASSERT_FALSE(cntl.Failed());
         ASSERT_EQ(0, response.failed_tablets_size());
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         EXPECT_TRUE(fs::path_exist(_tablet_mgr->txn_vlog_location(_tablet_id, 10)));
     }
     // Publish combined txn log
@@ -3080,7 +2726,7 @@ TEST_F(LakeServiceTest, test_publish_log_version) {
         ASSERT_FALSE(cntl.Failed());
         ASSERT_EQ(0, response.failed_tablets_size());
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         for (auto tablet_id : tablet_ids) {
             EXPECT_TRUE(fs::path_exist(_tablet_mgr->combined_txn_log_location(tablet_id, txn_id)));
             EXPECT_TRUE(fs::path_exist(_tablet_mgr->txn_vlog_location(tablet_id, version)));
@@ -3155,7 +2801,7 @@ TEST_F(LakeServiceTest, test_publish_log_version_with_load_ids) {
         ASSERT_EQ(0, response.failed_tablets_size());
     }
 
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
 
     // The materialized .vlog must exist and contain the merged segments and
     // accumulated counters across both statements.
@@ -3275,7 +2921,7 @@ TEST_F(LakeServiceTest, test_publish_log_version_with_load_ids_partial) {
         ASSERT_FALSE(cntl.Failed());
         ASSERT_EQ(1, response.failed_tablets_size());
         ASSERT_EQ(_tablet_id, response.failed_tablets(0));
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_vlog_location(_tablet_id, version)));
         // The single source .log must remain so the operator can recover.
         EXPECT_TRUE(fs::path_exist(_tablet_mgr->txn_log_location(_tablet_id, txn_id, load_id_1)));
@@ -3312,7 +2958,7 @@ TEST_F(LakeServiceTest, test_publish_log_version_with_load_ids_partial) {
         ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
         ASSERT_EQ(0, response.failed_tablets_size());
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         // The pre-existing .vlog stays intact and the stale .log is cleaned.
         EXPECT_TRUE(fs::path_exist(_tablet_mgr->txn_vlog_location(_tablet_id, version)));
         EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_log_location(_tablet_id, txn_id, load_id_1)));
@@ -3412,7 +3058,7 @@ TEST_F(LakeServiceTest, test_publish_log_version_merge_repeated_fields) {
         ASSERT_EQ(0, response.failed_tablets_size());
     }
 
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
     _tablet_mgr->prune_metacache();
 
     ASSIGN_OR_ABORT(auto vlog, _tablet_mgr->get_txn_vlog(_tablet_id, version));
@@ -3510,7 +3156,7 @@ TEST_F(LakeServiceTest, test_abort_with_load_ids) {
     AbortTxnResponse response;
     _lake_service.abort_txn(nullptr, &request, &response, nullptr);
 
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
 
     // Every per-load_id .log file and every segment they referenced must be
     // gone -- nothing should be left in shared storage from this txn.
@@ -3582,7 +3228,7 @@ TEST_F(LakeServiceTest, test_publish_log_version_batch) {
         _lake_service.publish_log_version_batch(&cntl, &request, &response, nullptr);
         ASSERT_FALSE(cntl.Failed());
         ASSERT_EQ(0, response.failed_tablets_size());
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
 
         _tablet_mgr->prune_metacache();
         ASSERT_TRUE(_tablet_mgr->get_txn_log(_tablet_id, 1001).status().is_not_found())
@@ -3611,7 +3257,7 @@ TEST_F(LakeServiceTest, test_publish_log_version_batch) {
         _lake_service.publish_log_version_batch(&cntl, &request, &response, nullptr);
         ASSERT_FALSE(cntl.Failed());
         ASSERT_EQ(0, response.failed_tablets_size());
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
 
         _tablet_mgr->prune_metacache();
         ASSERT_TRUE(_tablet_mgr->get_txn_log(_tablet_id, 1001).status().is_not_found())
@@ -3680,7 +3326,7 @@ TEST_F(LakeServiceTest, test_publish_log_version_batch) {
         ASSERT_FALSE(cntl.Failed());
         ASSERT_EQ(0, response.failed_tablets_size());
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
         for (auto txn_id : txn_ids) {
             for (auto tablet_id : tablet_ids) {
                 EXPECT_TRUE(fs::path_exist(_tablet_mgr->combined_txn_log_location(tablet_id, txn_id)));
@@ -3773,7 +3419,7 @@ TEST_F(LakeServiceTest, test_publish_log_version_batch_with_load_ids) {
         ASSERT_EQ(0, response.failed_tablets_size());
     }
 
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
 
     // Both .vlogs land; every source .log -- 4-segment for the multi-statement
     // txn, 2-segment for the single one -- is cleaned up by its own branch.
@@ -3982,7 +3628,7 @@ TEST_F(LakeServiceTest, test_publish_version_for_schema_change) {
     ASSERT_EQ(14, rowset2.data_size());
     ASSERT_EQ(3, rowset2.segment_metas_size());
 
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
     EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_log_location(_tablet_id, 1000)));
     EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_log_location(_tablet_id, 1001)));
     EXPECT_FALSE(fs::path_exist(_tablet_mgr->txn_vlog_location(_tablet_id, 4)));
@@ -4070,7 +3716,7 @@ TEST_F(LakeServiceTest, test_publish_version_issue28244) {
         ASSERT_EQ(0, response.failed_tablets_size());
     }
 
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
     ASSERT_TRUE(_tablet_mgr->get_txn_log(_tablet_id, 102301).status().is_not_found());
 }
 
@@ -4147,65 +3793,6 @@ TEST_F(LakeServiceTest, test_get_tablet_stats) {
 
     _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
     ASSERT_EQ(0, response.tablet_stats_size());
-}
-
-TEST_F(LakeServiceTest, test_get_tablet_stats_reports_shared_files) {
-    // Publish a version whose single rowset carries one shared segment.
-    ASSERT_OK(_tablet_mgr->put_tablet_metadata([&] {
-        auto metadata = std::make_shared<TabletMetadataPB>();
-        metadata->set_id(_tablet_id);
-        metadata->set_version(3);
-        auto* rowset = metadata->add_rowsets();
-        rowset->set_id(1);
-        rowset->set_num_rows(10);
-        rowset->set_data_size(100);
-        auto* segment = rowset->add_segment_metas();
-        segment->set_filename("shared_seg.dat");
-        segment->set_shared(true);
-        return metadata;
-    }()));
-
-    TabletStatRequest request;
-    TabletStatResponse response;
-    auto* info = request.add_tablet_infos();
-    info->set_tablet_id(_tablet_id);
-    info->set_version(3);
-
-    _tablet_mgr->metacache()->prune();
-    _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
-
-    ASSERT_EQ(1, response.tablet_stats_size());
-    ASSERT_TRUE(response.tablet_stats(0).has_has_shared_files());
-    EXPECT_TRUE(response.tablet_stats(0).has_shared_files());
-}
-
-TEST_F(LakeServiceTest, test_get_tablet_stats_reports_no_shared_files) {
-    ASSERT_OK(_tablet_mgr->put_tablet_metadata([&] {
-        auto metadata = std::make_shared<TabletMetadataPB>();
-        metadata->set_id(_tablet_id);
-        metadata->set_version(4);
-        auto* rowset = metadata->add_rowsets();
-        rowset->set_id(1);
-        rowset->set_num_rows(10);
-        rowset->set_data_size(100);
-        auto* segment = rowset->add_segment_metas();
-        segment->set_filename("private_seg.dat");
-        segment->set_shared(false);
-        return metadata;
-    }()));
-
-    TabletStatRequest request;
-    TabletStatResponse response;
-    auto* info = request.add_tablet_infos();
-    info->set_tablet_id(_tablet_id);
-    info->set_version(4);
-
-    _tablet_mgr->metacache()->prune();
-    _lake_service.get_tablet_stats(nullptr, &request, &response, nullptr);
-
-    ASSERT_EQ(1, response.tablet_stats_size());
-    ASSERT_TRUE(response.tablet_stats(0).has_has_shared_files());
-    EXPECT_FALSE(response.tablet_stats(0).has_shared_files());
 }
 
 TEST_F(LakeServiceTest, test_get_tablet_stats_null_thread_pool) {
@@ -4683,7 +4270,7 @@ TEST_F(LakeServiceTest, test_abort_txn2) {
     ASSIGN_OR_ABORT(auto tablet, _tablet_mgr->get_tablet(_tablet_id));
     ASSIGN_OR_ABORT(auto metadata, tablet.get_metadata(1));
 
-    auto load_mgr = _load_channel_mgr.get();
+    auto load_mgr = ExecEnv::GetInstance()->load_channel_mgr();
     auto db_id = next_id();
     auto table_id = next_id();
     auto partition_id = next_id();
@@ -4823,7 +4410,7 @@ TEST_F(LakeServiceTest, test_abort3) {
 
     _lake_service.abort_txn(nullptr, &request, &response, nullptr);
 
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
 
     EXPECT_TRUE(fs::path_exist(_tablet_mgr->txn_log_location(_tablet_id, log.txn_id())));
 }
@@ -4991,7 +4578,7 @@ TEST_F(LakeServiceTest, test_publish_version_with_combined_log) {
         ASSERT_OK(_tablet_mgr->put_combined_txn_log(combined_log));
 
         do_test(txn_id, TStatusCode::OK);
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
 
         // CombinedTxnLogPB should still exist
         auto path = _tablet_mgr->combined_txn_log_location(_tablet_id, txn_id);
@@ -5049,7 +4636,7 @@ TEST_F(LakeServiceTest, test_publish_version_with_txn_info) {
                   metadata->rowsets(0).segment_metas(1).filename());
         EXPECT_EQ(987654321, metadata->commit_time());
     }
-    StorageEngine::instance()->wait_storage_cleanup_tasks();
+    ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
     // TxnLog`s should have been deleted
     ASSERT_TRUE(tablet.get_txn_log(logs[0].txn_id()).status().is_not_found());
 }
@@ -5089,7 +4676,7 @@ TEST_F(LakeServiceTest, test_abort_with_combined_txn_log) {
 
         AbortTxnResponse response;
         _lake_service.abort_txn(nullptr, &request, &response, nullptr);
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
 
         for (auto&& log : combined_log->txn_logs()) {
             for (auto&& s : log.op_write().rowset().segment_metas()) {
@@ -5102,7 +4689,7 @@ TEST_F(LakeServiceTest, test_abort_with_combined_txn_log) {
         AbortTxnResponse response;
         _lake_service.abort_txn(nullptr, &request, &response, nullptr);
 
-        StorageEngine::instance()->wait_storage_cleanup_tasks();
+        ExecEnv::GetInstance()->delete_file_thread_pool()->wait();
 
         // TxnLog`s and segments should have been deleted
         for (auto&& log : combined_log->txn_logs()) {
@@ -6395,278 +5982,6 @@ TEST_F(LakeServiceTest, test_get_txn_ids_string_priority) {
     }
 }
 
-// ==================== build_vector_index RPC ====================
-
-class LakeServiceVectorIndexBuildTest : public lake::TestBase {
-public:
-    LakeServiceVectorIndexBuildTest()
-            : lake::TestBase("lake_service_vector_index_build_test_" + std::to_string(GetCurrentTimeMicros())) {
-        clear_and_init_test_dir();
-    }
-
-protected:
-    static constexpr int64_t kTabletId = 10001;
-    static constexpr int64_t kIndexId = 100;
-    static constexpr int32_t kVectorColUniqueId = 2;
-    uint32_t _next_rowset_id = 1;
-
-    TabletSchemaPB create_schema_pb() {
-        TabletSchemaPB schema_pb;
-        schema_pb.set_keys_type(DUP_KEYS);
-        schema_pb.set_num_short_key_columns(1);
-
-        auto c0 = schema_pb.add_column();
-        c0->set_unique_id(1);
-        c0->set_name("pk");
-        c0->set_type("INT");
-        c0->set_is_key(true);
-        c0->set_is_nullable(false);
-
-        auto c1 = schema_pb.add_column();
-        c1->set_unique_id(kVectorColUniqueId);
-        c1->set_name("vector");
-        c1->set_type("ARRAY");
-        c1->set_is_key(false);
-        c1->set_is_nullable(false);
-
-        auto* child = c1->add_children_columns();
-        child->set_unique_id(3);
-        child->set_name("element");
-        child->set_type("FLOAT");
-        child->set_is_nullable(true);
-
-        auto* idx = schema_pb.add_table_indices();
-        idx->set_index_id(kIndexId);
-        idx->set_index_name("vec_idx");
-        idx->set_index_type(IndexType::VECTOR);
-        idx->add_col_unique_id(kVectorColUniqueId);
-        idx->set_index_properties(R"({
-            "common_properties": {
-                "index_type": "hnsw",
-                "dim": "3",
-                "is_vector_normed": "false",
-                "metric_type": "l2_distance",
-                "index_build_mode": "async"
-            },
-            "index_properties": {
-                "efconstruction": "40",
-                "m": "16"
-            }
-        })");
-
-        return schema_pb;
-    }
-
-    StatusOr<std::string> write_segment(const TabletSchemaCSPtr& tablet_schema, int64_t txn_id, int num_rows) {
-        auto seg_name = lake::gen_segment_filename(txn_id);
-        auto seg_path = _tablet_mgr->segment_location(kTabletId, seg_name);
-
-        SegmentWriterOptions opts;
-        opts.is_compaction = false;
-        opts.defer_vector_index_build = true;
-
-        auto vi_name = lake::gen_vector_index_filename(seg_name, kTabletId, kIndexId);
-        opts.vector_index_file_paths[kIndexId] = _tablet_mgr->segment_location(kTabletId, vi_name);
-
-        ASSIGN_OR_RETURN(auto wfile, fs::new_writable_file(seg_path));
-        auto writer = std::make_unique<SegmentWriter>(std::move(wfile), 0, tablet_schema, opts);
-        RETURN_IF_ERROR(writer->init());
-
-        auto schema = ChunkHelper::convert_schema(tablet_schema);
-        auto chunk = ChunkFactory::new_chunk(schema, num_rows);
-        for (int i = 0; i < num_rows; ++i) {
-            chunk->get_column_raw_ptr_by_index(0)->append_datum(Datum(static_cast<int32_t>(i)));
-            DatumArray arr;
-            arr.emplace_back(static_cast<float>(i) + 0.1f);
-            arr.emplace_back(static_cast<float>(i) + 0.2f);
-            arr.emplace_back(static_cast<float>(i) + 0.3f);
-            chunk->get_column_raw_ptr_by_index(1)->append_datum(Datum(arr));
-        }
-
-        uint64_t seg_size = 0;
-        uint64_t idx_size = 0;
-        uint64_t footer_pos = 0;
-        RETURN_IF_ERROR(writer->append_chunk(*chunk));
-        RETURN_IF_ERROR(writer->finalize(&seg_size, &idx_size, &footer_pos));
-        return seg_name;
-    }
-
-    void create_metadata(const TabletSchemaPB& schema_pb, int64_t version,
-                         const std::vector<std::pair<int64_t, std::string>>& rowset_infos) {
-        auto metadata = std::make_shared<TabletMetadataPB>();
-        metadata->set_id(kTabletId);
-        metadata->set_version(version);
-        *metadata->mutable_schema() = schema_pb;
-
-        for (const auto& [rv, seg_name] : rowset_infos) {
-            auto* rowset = metadata->add_rowsets();
-            rowset->set_id(_next_rowset_id++);
-            rowset->set_num_rows(10);
-            rowset->set_data_size(1024);
-            rowset->set_overlapped(false);
-            rowset->set_version(rv);
-            auto* segment_meta = rowset->add_segment_metas();
-            segment_meta->set_filename(seg_name);
-            segment_meta->add_vector_index_ids(kIndexId);
-            // Record the .vi owner as the write path does; it names the built .vi file.
-            segment_meta->set_segment_vector_index_uid(kTabletId);
-        }
-
-        CHECK_OK(_tablet_mgr->put_tablet_metadata(metadata));
-    }
-};
-
-// Drives the end-to-end LakeServiceImpl::build_vector_index RPC: schema with vector
-// index -> segment written in defer mode -> metadata records vector_index_ids -> call
-// the RPC and verify the .vi file lands on disk with the watermark advanced. This
-// exercises the parallel latch.wait() / thread_pool->submit path in lake_service.cpp
-// that the task-level tests cannot reach.
-TEST_F(LakeServiceVectorIndexBuildTest, test_build_vector_index_full_path) {
-    auto schema_pb = create_schema_pb();
-    auto tablet_schema = TabletSchema::create(schema_pb);
-    ASSIGN_OR_ABORT(auto seg_name, write_segment(tablet_schema, 1001, 10));
-    create_metadata(schema_pb, 2, {{2, seg_name}});
-
-    LakeServiceImpl service(ExecEnv::GetInstance(), _tablet_mgr.get(), nullptr);
-
-    BuildVectorIndexRequest request;
-    request.set_tablet_id(kTabletId);
-    request.set_version(2);
-    BuildVectorIndexResponse response;
-    brpc::Controller cntl;
-    service.build_vector_index(&cntl, &request, &response, nullptr);
-
-    ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
-    ASSERT_TRUE(response.has_status());
-    EXPECT_EQ(0, response.status().status_code());
-    ASSERT_TRUE(response.has_new_built_version());
-    EXPECT_EQ(2, response.new_built_version());
-
-    auto vi_path =
-            _tablet_mgr->segment_location(kTabletId, lake::gen_vector_index_filename(seg_name, kTabletId, kIndexId));
-    EXPECT_TRUE(fs::path_exist(vi_path)) << "deferred .vi should have been built by the RPC";
-}
-
-// Same RPC end-to-end path but with one good rowset (v=2) and one whose segment is
-// broken (v=3). Watermark must advance to v=2 and pause at v=3, exercising the
-// parallel worker error reporting + compute_built_version partial-progress path.
-TEST_F(LakeServiceVectorIndexBuildTest, test_build_vector_index_partial_failure) {
-    auto schema_pb = create_schema_pb();
-    auto tablet_schema = TabletSchema::create(schema_pb);
-
-    ASSIGN_OR_ABORT(auto seg_ok, write_segment(tablet_schema, 1001, 10));
-    auto seg_bad = lake::gen_segment_filename(2002);
-
-    create_metadata(schema_pb, 3, {{2, seg_ok}, {3, seg_bad}});
-
-    LakeServiceImpl service(ExecEnv::GetInstance(), _tablet_mgr.get(), nullptr);
-    BuildVectorIndexRequest request;
-    request.set_tablet_id(kTabletId);
-    request.set_version(3);
-    BuildVectorIndexResponse response;
-    brpc::Controller cntl;
-    service.build_vector_index(&cntl, &request, &response, nullptr);
-
-    ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
-    EXPECT_EQ(0, response.status().status_code());
-    ASSERT_TRUE(response.has_new_built_version());
-    EXPECT_EQ(2, response.new_built_version());
-
-    EXPECT_TRUE(fs::path_exist(
-            _tablet_mgr->segment_location(kTabletId, lake::gen_vector_index_filename(seg_ok, kTabletId, kIndexId))));
-    EXPECT_FALSE(fs::path_exist(
-            _tablet_mgr->segment_location(kTabletId, lake::gen_vector_index_filename(seg_bad, kTabletId, kIndexId))));
-}
-
-TEST_F(LakeServiceTest, test_build_vector_index_missing_tablet_id) {
-    BuildVectorIndexRequest request;
-    BuildVectorIndexResponse response;
-    brpc::Controller cntl;
-    _lake_service.build_vector_index(&cntl, &request, &response, nullptr);
-    ASSERT_TRUE(cntl.Failed());
-    ASSERT_EQ("missing tablet_id", cntl.ErrorText());
-}
-
-TEST_F(LakeServiceTest, test_build_vector_index_missing_version) {
-    BuildVectorIndexRequest request;
-    request.set_tablet_id(_tablet_id);
-    BuildVectorIndexResponse response;
-    brpc::Controller cntl;
-    _lake_service.build_vector_index(&cntl, &request, &response, nullptr);
-    ASSERT_TRUE(cntl.Failed());
-    ASSERT_EQ("missing version", cntl.ErrorText());
-}
-
-// Tablet metadata exists at version 1 (created in SetUp) but has no rowsets and
-// no vector_index_built_version. Calling with target version=1 should advance
-// the watermark via the _target_version fallback (no work needed).
-TEST_F(LakeServiceTest, test_build_vector_index_no_work_advances_watermark) {
-    BuildVectorIndexRequest request;
-    request.set_tablet_id(_tablet_id);
-    request.set_version(1);
-    BuildVectorIndexResponse response;
-    brpc::Controller cntl;
-    _lake_service.build_vector_index(&cntl, &request, &response, nullptr);
-    ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
-    ASSERT_TRUE(response.has_status());
-    ASSERT_EQ(0, response.status().status_code());
-    // No rowsets above _built_version (=0), so compute_built_version walks an empty
-    // _rowset_versions and falls back to the request's target version.
-    ASSERT_TRUE(response.has_new_built_version());
-    EXPECT_EQ(1, response.new_built_version());
-}
-
-// Tablet metadata is missing at the requested version → RPC reports a NotFound
-// (or similar) status without advancing the watermark.
-TEST_F(LakeServiceTest, test_build_vector_index_metadata_not_found) {
-    BuildVectorIndexRequest request;
-    request.set_tablet_id(_tablet_id);
-    request.set_version(99999); // version that has no metadata
-    BuildVectorIndexResponse response;
-    brpc::Controller cntl;
-    _lake_service.build_vector_index(&cntl, &request, &response, nullptr);
-    // RPC always returns OK at the controller level (status only conveys orchestration);
-    // build_task.prepare() fails to load the metadata and the failure is reflected in
-    // response.status.
-    ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
-    ASSERT_TRUE(response.has_status());
-    EXPECT_NE(0, response.status().status_code());
-    EXPECT_FALSE(response.has_new_built_version());
-}
-
-// Honors a non-default max_rowsets_per_batch by passing it through to the build task.
-// With no rowsets to build, the watermark should still advance to the request's target
-// version regardless of batch size.
-TEST_F(LakeServiceTest, test_build_vector_index_custom_batch_limit) {
-    BuildVectorIndexRequest request;
-    request.set_tablet_id(_tablet_id);
-    request.set_version(1);
-    request.set_max_rowsets_per_batch(3);
-    BuildVectorIndexResponse response;
-    brpc::Controller cntl;
-    _lake_service.build_vector_index(&cntl, &request, &response, nullptr);
-    ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
-    ASSERT_TRUE(response.has_status());
-    EXPECT_EQ(0, response.status().status_code());
-    ASSERT_TRUE(response.has_new_built_version());
-    EXPECT_EQ(1, response.new_built_version());
-}
-
-// FE-supplied built_version above metadata's vector_index_built_version is honored as
-// the floor; with no new rowsets above it, the watermark advances to target version.
-TEST_F(LakeServiceTest, test_build_vector_index_request_built_version_floor) {
-    BuildVectorIndexRequest request;
-    request.set_tablet_id(_tablet_id);
-    request.set_version(1);
-    request.set_built_version(0); // explicit zero, same as default
-    BuildVectorIndexResponse response;
-    brpc::Controller cntl;
-    _lake_service.build_vector_index(&cntl, &request, &response, nullptr);
-    ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
-    ASSERT_EQ(0, response.status().status_code());
-    EXPECT_EQ(1, response.new_built_version());
-}
-
 TEST_F(LakeServiceTest, test_compute_tablet_stats) {
     TabletMetadataPB meta;
     meta.mutable_schema()->set_keys_type(PRIMARY_KEYS);
@@ -6784,160 +6099,6 @@ TEST_F(LakeServiceTest, test_publish_returns_tablet_stats) {
         ASSERT_NE(it, response.tablet_stats().end()) << "range tablet must have a tablet_stats entry";
         EXPECT_GT(it->second.data_size(), 0) << "data_size must be positive for range tablet";
     }
-}
-
-TEST_F(LakeServiceTest, test_publish_version_reports_shared_files) {
-    int64_t range_tablet_id = next_id();
-    create_tablet_metadata_with_range(range_tablet_id, /*version=*/1, /*lower=*/0, /*upper=*/100);
-
-    PublishVersionResponse response;
-    publish_range_tablet_segment(range_tablet_id, /*shared=*/true, &response);
-
-    ASSERT_EQ(0, response.failed_tablets_size()) << response.status().error_msgs(0);
-    auto it = response.tablet_stats().find(range_tablet_id);
-    ASSERT_NE(it, response.tablet_stats().end());
-    ASSERT_TRUE(it->second.has_has_shared_files());
-    EXPECT_TRUE(it->second.has_shared_files());
-}
-
-TEST_F(LakeServiceTest, test_publish_version_reports_no_shared_files) {
-    int64_t range_tablet_id = next_id();
-    create_tablet_metadata_with_range(range_tablet_id, /*version=*/1, /*lower=*/0, /*upper=*/100);
-
-    PublishVersionResponse response;
-    publish_range_tablet_segment(range_tablet_id, /*shared=*/false, &response);
-
-    ASSERT_EQ(0, response.failed_tablets_size()) << response.status().error_msgs(0);
-    auto it = response.tablet_stats().find(range_tablet_id);
-    ASSERT_NE(it, response.tablet_stats().end());
-    ASSERT_TRUE(it->second.has_has_shared_files());
-    EXPECT_FALSE(it->second.has_shared_files());
-}
-
-// Compaction is what clears the shared flags, so its publish must carry the new answer back in the
-// same round trip -- otherwise a tablet stays un-mergeable until the next periodic stats collection.
-TEST_F(LakeServiceTest, test_publish_version_compaction_clears_shared_files) {
-    int64_t range_tablet_id = next_id();
-    create_tablet_metadata_with_range(range_tablet_id, /*version=*/1, /*lower=*/0, /*upper=*/100);
-
-    PublishVersionResponse first;
-    publish_range_tablet_segment(range_tablet_id, /*shared=*/true, &first);
-    ASSERT_TRUE(first.tablet_stats().at(range_tablet_id).has_shared_files());
-
-    // Publish a compaction whose output rowset replaces the shared input with a private segment.
-    auto compact_txn_id = next_id();
-    {
-        TxnLog log;
-        log.set_tablet_id(range_tablet_id);
-        log.set_partition_id(_partition_id);
-        log.set_txn_id(compact_txn_id);
-        auto* op = log.mutable_op_compaction();
-        op->add_input_rowsets(2); // the rowset written by publish_range_tablet_segment
-        auto* out = op->mutable_output_rowset();
-        out->set_overlapped(false);
-        out->set_num_rows(10);
-        out->set_data_size(512);
-        auto* out_seg = out->add_segment_metas();
-        out_seg->set_filename(generate_segment_file(compact_txn_id));
-        out_seg->set_shared(false);
-        op->set_new_segment_offset(0);
-        op->set_new_segment_count(1);
-        ASSERT_OK(_tablet_mgr->put_txn_log(log));
-    }
-
-    PublishVersionRequest compact_request;
-    compact_request.set_base_version(2);
-    compact_request.set_new_version(3);
-    compact_request.add_tablet_ids(range_tablet_id);
-    compact_request.add_txn_ids(compact_txn_id);
-
-    PublishVersionResponse second;
-    _lake_service.publish_version(nullptr, &compact_request, &second, nullptr);
-    ASSERT_EQ(0, second.failed_tablets_size()) << second.status().error_msgs(0);
-
-    auto it = second.tablet_stats().find(range_tablet_id);
-    ASSERT_NE(it, second.tablet_stats().end());
-    ASSERT_TRUE(it->second.has_has_shared_files());
-    EXPECT_FALSE(it->second.has_shared_files());
-}
-
-// FE's prefer_shared_initial_metadata hint, end to end through the RPC handler and the production
-// base-version read in lake::publish_version(). Every tablet of a `file_bundling` partition resolves
-// version 1 from the single partition-shared object: the per-tablet version-1 key, which such a
-// partition never writes, is not probed, and the shared object is fetched once for the whole request
-// rather than once per tablet -- publish reads with fill_meta_cache off, so this relies on the shared
-// object being cached and single-flighted regardless.
-TEST_F(LakeServiceTest, test_publish_version_prefer_shared_initial_metadata) {
-    // Two fresh tablets under one metadata root, i.e. one physical partition.
-    auto tablet_a = next_id();
-    auto tablet_b = next_id();
-    auto txn_id = next_id();
-
-    // Only the shared object exists, as DDL leaves a file_bundling partition.
-    auto shared = lake::generate_simple_tablet_metadata(DUP_KEYS);
-    shared->set_id(tablet_a);
-    shared->set_version(1);
-    const auto shared_location = _tablet_mgr->tablet_initial_metadata_location(tablet_a);
-    ASSERT_OK(_tablet_mgr->put_tablet_metadata(shared, shared_location));
-    // put_tablet_metadata() caches what it wrote; a cold CN has nothing.
-    _tablet_mgr->metacache()->erase(shared_location);
-
-    for (auto tablet_id : {tablet_a, tablet_b}) {
-        TxnLog log;
-        log.set_tablet_id(tablet_id);
-        log.set_partition_id(_partition_id);
-        log.set_txn_id(txn_id);
-        auto* rowset = log.mutable_op_write()->mutable_rowset();
-        rowset->set_num_rows(0);
-        rowset->set_data_size(0);
-        rowset->set_overlapped(false);
-        ASSERT_OK(_tablet_mgr->put_txn_log(log));
-    }
-
-    // Publish tasks run on a thread pool, so the recorder must be thread-safe.
-    std::mutex read_paths_mtx;
-    std::vector<std::string> read_paths;
-    SyncPoint::GetInstance()->SetCallBack("TabletManager::load_tablet_metadata:path", [&](void* arg) {
-        std::lock_guard l(read_paths_mtx);
-        read_paths.emplace_back(*static_cast<std::string*>(arg));
-    });
-    SyncPoint::GetInstance()->EnableProcessing();
-    DeferOp cleanup([]() {
-        SyncPoint::GetInstance()->ClearCallBack("TabletManager::load_tablet_metadata:path");
-        SyncPoint::GetInstance()->DisableProcessing();
-    });
-
-    PublishVersionRequest request;
-    request.set_base_version(1);
-    request.set_new_version(2);
-    request.add_tablet_ids(tablet_a);
-    request.add_tablet_ids(tablet_b);
-    request.add_txn_ids(txn_id);
-    request.set_prefer_shared_initial_metadata(true);
-
-    PublishVersionResponse response;
-    _lake_service.publish_version(nullptr, &request, &response, nullptr);
-    ASSERT_EQ(0, response.failed_tablets_size()) << response.status().DebugString();
-    EXPECT_EQ(0, response.status().status_code()) << response.status().DebugString();
-
-    auto count_ending_with = [&](const std::string& suffix) {
-        std::lock_guard l(read_paths_mtx);
-        return std::count_if(read_paths.begin(), read_paths.end(), [&](const std::string& path) {
-            return path.size() >= suffix.size() &&
-                   path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0;
-        });
-    };
-    // Neither tablet probed its own version-1 key ...
-    EXPECT_EQ(0, count_ending_with(lake::tablet_metadata_filename(tablet_a, 1)));
-    EXPECT_EQ(0, count_ending_with(lake::tablet_metadata_filename(tablet_b, 1)));
-    // ... and the shared object was read from remote storage exactly once for both.
-    EXPECT_EQ(1, count_ending_with(lake::tablet_initial_metadata_filename()));
-
-    // Both tablets published under their own ids, not the id stored in the shared object.
-    ASSIGN_OR_ABORT(auto meta_a, _tablet_mgr->get_tablet_metadata(tablet_a, 2));
-    EXPECT_EQ(tablet_a, meta_a->id());
-    ASSIGN_OR_ABORT(auto meta_b, _tablet_mgr->get_tablet_metadata(tablet_b, 2));
-    EXPECT_EQ(tablet_b, meta_b->id());
 }
 
 } // namespace starrocks

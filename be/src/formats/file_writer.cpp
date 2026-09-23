@@ -18,9 +18,19 @@
 
 #include <utility>
 
-#include "formats/io/async_flush_output_stream.h"
+#include "io/async_flush_output_stream.h"
 
 namespace starrocks::formats {
+
+FileWriter::CommitResult& FileWriter::CommitResult::set_extra_data(std::string extra_data) {
+    this->extra_data = std::move(extra_data);
+    return *this;
+}
+
+FileWriter::CommitResult& FileWriter::CommitResult::set_referenced_data_file(std::string referenced_data_file) {
+    this->referenced_data_file = std::move(referenced_data_file);
+    return *this;
+}
 
 UnknownFileWriterFactory::UnknownFileWriterFactory(std::string format) : _format(std::move(format)) {}
 

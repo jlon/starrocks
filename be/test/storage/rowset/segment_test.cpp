@@ -39,19 +39,15 @@
 #include <functional>
 #include <iostream>
 
-#include "base/failpoint/fail_point.h"
-#include "base/testutil/assert.h"
-#include "base/utility/defer_op.h"
-#include "column/chunk_factory.h"
 #include "column/datum_tuple.h"
-#include "common/config_exec_fwd.h"
 #include "common/logging.h"
 #include "fs/fs_memory.h"
+#include "fs/key_cache.h"
 #include "gutil/strings/substitute.h"
-#include "platform/key_cache.h"
 #include "runtime/mem_pool.h"
 #include "runtime/mem_tracker.h"
 #include "storage/chunk_helper.h"
+#include "storage/chunk_iterator.h"
 #include "storage/olap_common.h"
 #include "storage/rowset/column_iterator.h"
 #include "storage/rowset/column_reader.h"
@@ -59,7 +55,8 @@
 #include "storage/rowset/segment_writer.h"
 #include "storage/tablet_schema.h"
 #include "storage/tablet_schema_helper.h"
-#include "storage_primitive/chunk_iterator.h"
+#include "testutil/assert.h"
+#include "util/failpoint/fail_point.h"
 
 namespace starrocks {
 
@@ -98,7 +95,7 @@ protected:
         ASSERT_OK(writer.init());
 
         auto schema = ChunkHelper::convert_schema(build_schema);
-        auto chunk = ChunkFactory::new_chunk(schema, nrows);
+        auto chunk = ChunkHelper::new_chunk(schema, nrows);
         for (size_t rid = 0; rid < nrows; ++rid) {
             auto cols = chunk->columns();
             for (int cid = 0; cid < build_schema->num_columns(); ++cid) {
@@ -120,91 +117,6 @@ protected:
     std::shared_ptr<MemoryFileSystem> _fs = nullptr;
     std::unique_ptr<MemTracker> _page_cache_mem_tracker = nullptr;
 };
-
-// The per-column page size has to survive the whole way from the table property to the
-// column writer: the page is what a point lookup decompresses, and a schema that loses
-// the size on the way silently writes the column at the BE default instead. Assert on
-// what the segment actually contains rather than on the schema that produced it.
-TEST_F(SegmentReaderWriterTest, per_column_zstd_page_size_changes_the_pages_written) {
-    constexpr size_t kRows = 2000;
-    constexpr size_t kValueBytes = 1024;
-
-    auto make_schema = [](uint32_t page_size) {
-        TabletSchemaPB pb;
-        pb.set_keys_type(DUP_KEYS);
-        pb.set_num_short_key_columns(1);
-        auto* k = pb.add_column();
-        k->set_unique_id(1);
-        k->set_name("k");
-        k->set_type("INT");
-        k->set_is_key(true);
-        k->set_is_nullable(false);
-        k->set_length(4);
-        k->set_index_length(4);
-        k->set_aggregation("NONE");
-        auto* v = pb.add_column();
-        v->set_unique_id(2);
-        v->set_name("v");
-        v->set_type("VARCHAR");
-        v->set_is_key(false);
-        v->set_is_nullable(false);
-        v->set_length(65535);
-        v->set_aggregation("NONE");
-        v->set_use_zstd_compression(true);
-        v->set_zstd_compression_page_size(page_size);
-        return TabletSchema::create(pb);
-    };
-
-    // values are unique and incompressible enough not to be dictionary-encoded, so the
-    // page size is what decides how many pages the column takes.
-    auto write = [&](const TabletSchemaCSPtr& schema, int32_t* value_pages) {
-        static int seg_id = 0;
-        std::string filename = strings::Substitute("$0/page_size_$1.dat", kSegmentDir, seg_id++);
-        ASSIGN_OR_ABORT(auto wfile, _fs->new_writable_file(filename));
-        SegmentWriterOptions opts;
-        SegmentWriter writer(std::move(wfile), 0, schema, opts);
-        ASSERT_OK(writer.init());
-
-        auto chunk_schema = ChunkHelper::convert_schema(schema);
-        auto chunk = ChunkFactory::new_chunk(chunk_schema, kRows);
-        for (size_t rid = 0; rid < kRows; ++rid) {
-            // every value must be distinct, or the writer speculates DICT encoding and the
-            // column collapses into a single data page whatever the page size is.
-            std::string value(kValueBytes, ' ');
-            uint64_t state = rid * 6364136223846793005ULL + 1442695040888963407ULL;
-            for (size_t i = 0; i < kValueBytes; ++i) {
-                state = state * 6364136223846793005ULL + 1442695040888963407ULL;
-                value[i] = static_cast<char>('a' + ((state >> 33) % 26));
-            }
-            auto cols = chunk->columns();
-            cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(rid)));
-            cols[1]->as_mutable_ptr()->append_datum(Datum(Slice(value)));
-        }
-        ASSERT_OK(writer.append_chunk(*chunk));
-        uint64_t file_size, index_size, footer_position;
-        ASSERT_OK(writer.finalize(&file_size, &index_size, &footer_position));
-
-        ASSIGN_OR_ABORT(auto segment, Segment::open(_fs, FileInfo{filename}, 0, schema));
-        ASSERT_EQ(kRows, segment->num_rows());
-        ASSIGN_OR_ABORT(auto iter, segment->new_column_iterator(schema->column(1), nullptr));
-        ColumnIteratorOptions iter_opts;
-        ASSIGN_OR_ABORT(auto rfile, _fs->new_random_access_file(filename));
-        OlapReaderStatistics stats;
-        iter_opts.stats = &stats;
-        iter_opts.read_file = rfile.get();
-        ASSERT_OK(iter->init(iter_opts));
-        *value_pages = segment->column(1)->num_data_pages();
-    };
-
-    int32_t default_pages = 0;
-    int32_t big_page_pages = 0;
-    write(make_schema(0), &default_pages);
-    write(make_schema(1024 * 1024), &big_page_pages);
-
-    // ~2 MB of values: roughly 32 pages at the 64 KB default, a couple at 1 MB.
-    ASSERT_GT(default_pages, 8);
-    ASSERT_LT(big_page_pages, default_pages / 4);
-}
 
 TEST_F(SegmentReaderWriterTest, estimate_segment_size) {
     size_t num_rows_per_block = 10;
@@ -230,7 +142,7 @@ TEST_F(SegmentReaderWriterTest, estimate_segment_size) {
     // 20, 21, 22, 23
     size_t nrows = 1048576;
     auto schema = ChunkHelper::convert_schema(tablet_schema);
-    auto chunk = ChunkFactory::new_chunk(schema, nrows);
+    auto chunk = ChunkHelper::new_chunk(schema, nrows);
     for (size_t rid = 0; rid < nrows; ++rid) {
         auto cols = chunk->columns();
         for (int cid = 0; cid < tablet_schema->num_columns(); ++cid) {
@@ -287,7 +199,7 @@ TEST_F(SegmentReaderWriterTest, TestHorizontalWrite) {
     int32_t chunk_size = config::vector_chunk_size;
     size_t num_rows = 10000;
     auto schema = ChunkHelper::convert_schema(tablet_schema);
-    auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+    auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
     for (auto i = 0; i < num_rows % chunk_size; ++i) {
         chunk->reset();
         auto cols = chunk->columns();
@@ -396,7 +308,7 @@ TEST_F(SegmentReaderWriterTest, TestVerticalWrite) {
         std::vector<uint32_t> column_indexes{0, 1};
         ASSERT_OK(writer.init(column_indexes, true));
         auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows % chunk_size; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -414,7 +326,7 @@ TEST_F(SegmentReaderWriterTest, TestVerticalWrite) {
         std::vector<uint32_t> column_indexes{2};
         ASSERT_OK(writer.init(column_indexes, false));
         auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows % chunk_size; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -431,7 +343,7 @@ TEST_F(SegmentReaderWriterTest, TestVerticalWrite) {
         std::vector<uint32_t> column_indexes{3};
         ASSERT_OK(writer.init(column_indexes, false));
         auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows % chunk_size; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -458,7 +370,7 @@ TEST_F(SegmentReaderWriterTest, TestVerticalWrite) {
     const auto& seg_iterator = res.value();
 
     size_t count = 0;
-    auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+    auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
     while (true) {
         chunk->reset();
         auto st = seg_iterator->get_next(chunk.get());
@@ -513,7 +425,7 @@ TEST_F(SegmentReaderWriterTest, TestReadMultipleTypesColumn) {
         std::vector<uint32_t> column_indexes{0, 1};
         ASSERT_OK(writer.init(column_indexes, true));
         auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows % chunk_size; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -531,7 +443,7 @@ TEST_F(SegmentReaderWriterTest, TestReadMultipleTypesColumn) {
         std::vector<uint32_t> column_indexes{2};
         ASSERT_OK(writer.init(column_indexes, false));
         auto schema = ChunkHelper::convert_schema(tablet_schema, column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
         for (auto i = 0; i < num_rows % chunk_size; ++i) {
             chunk->reset();
             auto cols = chunk->columns();
@@ -557,7 +469,7 @@ TEST_F(SegmentReaderWriterTest, TestReadMultipleTypesColumn) {
     const auto& seg_iterator = res.value();
 
     size_t count = 0;
-    auto chunk = ChunkFactory::new_chunk(schema, chunk_size);
+    auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
     while (true) {
         chunk->reset();
         auto st = seg_iterator->get_next(chunk.get());
@@ -589,7 +501,7 @@ TEST_F(SegmentReaderWriterTest, TestTypeConversion) {
     auto chunk_size = std::max<int32_t>(10, config::vector_chunk_size);
     auto num_rows = chunk_size * 2;
     auto write_schema = ChunkHelper::convert_schema(tablet_schema);
-    auto chunk = ChunkFactory::new_chunk(write_schema, chunk_size);
+    auto chunk = ChunkHelper::new_chunk(write_schema, chunk_size);
     for (auto i = 0; i < num_rows / chunk_size; ++i) {
         chunk->reset();
         auto cols = chunk->columns();
@@ -617,7 +529,7 @@ TEST_F(SegmentReaderWriterTest, TestTypeConversion) {
         auto c1_type_info = get_type_info(LogicalType::TYPE_BIGINT);
         auto stats = OlapReaderStatistics{};
         auto seg_options = SegmentReadOptions{};
-        auto read_chunk = ChunkFactory::new_chunk(read_schema, chunk_size);
+        auto read_chunk = ChunkHelper::new_chunk(read_schema, chunk_size);
         seg_options.fs = _fs;
         seg_options.stats = &stats;
         seg_options.tablet_schema = tablet_schema_for_read;
@@ -646,7 +558,7 @@ TEST_F(SegmentReaderWriterTest, TestTypeConversion) {
         pred_root.add_child(PredicateColumnNode{predicate});
         auto stats = OlapReaderStatistics{};
         auto seg_options = SegmentReadOptions{};
-        auto read_chunk = ChunkFactory::new_chunk(read_schema, chunk_size);
+        auto read_chunk = ChunkHelper::new_chunk(read_schema, chunk_size);
         seg_options.fs = _fs;
         seg_options.stats = &stats;
         seg_options.tablet_schema = tablet_schema_for_read;
@@ -668,16 +580,9 @@ TEST_F(SegmentReaderWriterTest, TestCheckColumnUniqueIdUniqueness) {
 
     PFailPointTriggerMode trigger_mode;
     trigger_mode.set_mode(FailPointTriggerModeType::ENABLE);
+    // enable hook_publish_primary_key_tablet
     auto fp = starrocks::failpoint::FailPointRegistry::GetInstance()->get("ingest_duplicate_column_unique_id");
     fp->setMode(trigger_mode);
-    // The failpoint is process-global, so turn it back off on every exit path: left enabled, it makes
-    // every later Segment::open() in the test binary fail with "Duplicate column id found in tablet
-    // schema".
-    DeferOp disable_fp([&]() {
-        PFailPointTriggerMode disable_mode;
-        disable_mode.set_mode(FailPointTriggerModeType::DISABLE);
-        fp->setMode(disable_mode);
-    });
 
     static int seg_id = 0;
     std::string filename = strings::Substitute("$0/seg_$1.dat", kSegmentDir, seg_id++);
@@ -686,7 +591,7 @@ TEST_F(SegmentReaderWriterTest, TestCheckColumnUniqueIdUniqueness) {
     ASSERT_OK(writer.init());
 
     auto schema = ChunkHelper::convert_schema(tablet_schema);
-    auto chunk = ChunkFactory::new_chunk(schema, 100);
+    auto chunk = ChunkHelper::new_chunk(schema, 100);
     for (size_t rid = 0; rid < 100; ++rid) {
         auto cols = chunk->columns();
         for (int cid = 0; cid < tablet_schema->num_columns(); ++cid) {

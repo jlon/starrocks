@@ -22,50 +22,35 @@ import com.starrocks.catalog.MaterializedIndex.IndexExtState;
 import com.starrocks.catalog.MaterializedIndexMeta;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
-import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.SchemaInfo;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
-import com.starrocks.common.ErrorCode;
-import com.starrocks.common.ErrorReportException;
+import com.starrocks.common.util.concurrent.MarkedCountDownLatch;
 import com.starrocks.common.util.concurrent.lock.AutoCloseableLock;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.lake.LakeTable;
 import com.starrocks.lake.LakeTablet;
 import com.starrocks.lake.Utils;
-import com.starrocks.proto.TxnInfoPB;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.ast.AlterTableStmt;
-import com.starrocks.sql.ast.CancelAlterTableStmt;
 import com.starrocks.sql.ast.CreateDbStmt;
 import com.starrocks.sql.ast.CreateTableStmt;
-import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.sql.ast.expression.Expr;
-import com.starrocks.sql.parser.SqlParser;
 import com.starrocks.sql.plan.ExecPlan;
-import com.starrocks.system.ComputeNode;
-import com.starrocks.system.SystemInfoService;
 import com.starrocks.task.AgentBatchTask;
-import com.starrocks.task.AgentTask;
-import com.starrocks.task.AgentTaskExecutor;
-import com.starrocks.task.AgentTaskQueue;
 import com.starrocks.task.AlterReplicaTask;
 import com.starrocks.thrift.TAlterTabletReqV2;
 import com.starrocks.thrift.TTabletSchema;
-import com.starrocks.thrift.TTaskType;
 import com.starrocks.transaction.TransactionState;
 import com.starrocks.utframe.MockedWarehouseManager;
 import com.starrocks.utframe.UtFrameUtils;
-import com.starrocks.warehouse.cngroup.CRAcquireContext;
-import com.starrocks.warehouse.cngroup.ComputeResource;
 import mockit.Mock;
 import mockit.MockUp;
 import org.junit.jupiter.api.AfterEach;
@@ -86,7 +71,6 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 public class LakeTableSchemaChangeJobTest {
     private static final int NUM_BUCKETS = 4;
@@ -133,40 +117,6 @@ public class LakeTableSchemaChangeJobTest {
         return getAlterJob(table);
     }
 
-    /**
-     * Drive the PENDING phase the way the schema change daemon does. The phase spans several
-     * scheduler rounds: one dispatches the CreateReplicaTasks and the later ones poll their latch,
-     * so a single runPendingJob() no longer reaches WAITING_TXN.
-     */
-    private static void drivePendingJob(LakeTableSchemaChangeJob job) throws Exception {
-        long deadlineMs = System.currentTimeMillis() + 60000;
-        while (true) {
-            job.runPendingJob();
-            if (job.getJobState() != AlterJobV2.JobState.PENDING) {
-                return;
-            }
-            Assertions.assertTrue(System.currentTimeMillis() < deadlineMs,
-                    "schema change job " + job.getJobId() + " never left PENDING");
-            Thread.sleep(10);
-        }
-    }
-
-    /**
-     * Same as {@link #drivePendingJob} but through run(), the entry point the scheduler uses.
-     */
-    private static void driveJobPastPending(LakeTableSchemaChangeJob job) throws Exception {
-        long deadlineMs = System.currentTimeMillis() + 60000;
-        while (job.getJobState() == AlterJobV2.JobState.PENDING) {
-            job.run();
-            if (job.getJobState() != AlterJobV2.JobState.PENDING) {
-                return;
-            }
-            Assertions.assertTrue(System.currentTimeMillis() < deadlineMs,
-                    "schema change job " + job.getJobId() + " never left PENDING");
-            Thread.sleep(10);
-        }
-    }
-
     @BeforeEach
     public void before() throws Exception {
         String createDbStmtStr = "create database " + DB_NAME;
@@ -186,6 +136,7 @@ public class LakeTableSchemaChangeJobTest {
     @Test
     public void testCancelPendingJob() throws Exception {
         LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
+        TabletInvertedIndex invertedIndex = GlobalStateMgr.getCurrentState().getTabletInvertedIndex();
         schemaChangeJob.cancel("test");
         Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
         // test cancel again
@@ -316,219 +267,31 @@ public class LakeTableSchemaChangeJobTest {
         Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
     }
 
-    // Drop the CreateReplicaTasks on the floor so nothing ever reports back, and give tablet
-    // creation a zero-second budget: the very next poll must give up instead of waiting.
     @Test
     public void testCreateTabletFailed() throws Exception {
         LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
         new MockUp<LakeTableSchemaChangeJob>() {
             @Mock
-            public void sendCreateReplicaTasks(AgentBatchTask batchTask) {
-                // never dispatched, so the latch is never counted down
+            public void sendAgentTaskAndWait(AgentBatchTask batchTask, MarkedCountDownLatch<Long, Long> countDownLatch,
+                                             long timeoutSeconds, AtomicBoolean waitingCreatingReplica,
+                                             AtomicBoolean isCancelling) throws AlterCancelException {
+                throw new AlterCancelException("Create tablet failed");
             }
         };
 
-        int savedTimeout = Config.tablet_create_timeout_second;
-        Config.tablet_create_timeout_second = 0;
-        try {
-            Exception exception = Assertions.assertThrows(AlterCancelException.class,
-                    () -> drivePendingJob(schemaChangeJob));
-            Assertions.assertTrue(exception.getMessage().contains("Create tablet failed"),
-                    exception.getMessage());
-            Assertions.assertEquals(AlterJobV2.JobState.PENDING, schemaChangeJob.getJobState());
-            Assertions.assertEquals(-1, schemaChangeJob.getWatershedTxnId());
-        } finally {
-            Config.tablet_create_timeout_second = savedTimeout;
-        }
+        Exception exception = Assertions.assertThrows(AlterCancelException.class, () -> schemaChangeJob.runPendingJob());
+        Assertions.assertTrue(exception.getMessage().contains("Create tablet failed"));
+        Assertions.assertEquals(AlterJobV2.JobState.PENDING, schemaChangeJob.getJobState());
+        Assertions.assertEquals(-1, schemaChangeJob.getWatershedTxnId());
 
         schemaChangeJob.cancel("test");
         Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-    }
-
-    // A node that restarts after its CreateReplicaTask was dispatched never reports it back, so the
-    // job must fail as soon as the restart is visible rather than sit out the whole timeout. This is
-    // the trigger from StarRocksTest#12202.
-    @Test
-    public void testRestartedNodeFailsTabletCreationImmediately() throws Exception {
-        LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendCreateReplicaTasks(AgentBatchTask batchTask) {
-                // record the epochs as the real dispatch does, then drop the batch: nothing will
-                // ever report these tasks back
-                schemaChangeJob.recordDispatchEpochs(batchTask);
-            }
-        };
-
-        SystemInfoService clusterInfo = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo();
-        List<ComputeNode> nodes = clusterInfo.getComputeNodes();
-        nodes.addAll(clusterInfo.getBackends());
-        Assertions.assertFalse(nodes.isEmpty());
-        Map<ComputeNode, Long> savedStartTime = new HashMap<>();
-        nodes.forEach(node -> savedStartTime.put(node, node.getLastStartTime()));
-        try {
-            nodes.forEach(node -> node.setLastStartTime(1000L));
-
-            // Dispatch round.
-            schemaChangeJob.runPendingJob();
-            Assertions.assertEquals(AlterJobV2.JobState.PENDING, schemaChangeJob.getJobState());
-
-            // Every node reboots after the dispatch. tablet_create_timeout_second keeps its value,
-            // so a job that only honoured the deadline would still be PENDING here.
-            nodes.forEach(node -> node.setLastStartTime(2000L));
-
-            Exception exception = Assertions.assertThrows(AlterCancelException.class,
-                    () -> schemaChangeJob.runPendingJob());
-            Assertions.assertTrue(exception.getMessage().contains("its create tablet tasks are lost"),
-                    exception.getMessage());
-            Assertions.assertEquals(AlterJobV2.JobState.PENDING, schemaChangeJob.getJobState());
-        } finally {
-            savedStartTime.forEach(ComputeNode::setLastStartTime);
-        }
-
-        schemaChangeJob.cancel("test");
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-    }
-
-    // AlterJobV2.run() returns before the state machine when no compute resource can be acquired, so
-    // a job left waiting on already-dispatched CreateReplicaTasks would never reach its poll. Its
-    // creation deadline must still be honoured, or the only remaining bound is the day-long
-    // alter_table_timeout_second.
-    @Test
-    public void testCreationDeadlineHonouredWithoutComputeResource() throws Exception {
-        LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendCreateReplicaTasks(AgentBatchTask batchTask) {
-                // never dispatched, so the latch is never counted down
-            }
-        };
-
-        int savedTimeout = Config.tablet_create_timeout_second;
-        Config.tablet_create_timeout_second = 0;
-        try {
-            schemaChangeJob.runPendingJob(); // dispatch round
-            Assertions.assertEquals(AlterJobV2.JobState.PENDING, schemaChangeJob.getJobState());
-
-            new MockUp<WarehouseManager>() {
-                @Mock
-                public ComputeResource acquireComputeResource(CRAcquireContext acquireContext) {
-                    throw ErrorReportException.report(ErrorCode.ERR_WAREHOUSE_UNAVAILABLE, "test_wh");
-                }
-            };
-            // Neutralise the state machine so the assertion below can only be satisfied through
-            // onComputeResourceUnavailable(). Without this the test passes either way: run() reaching
-            // runPendingJob() would cancel on the same expired deadline, and a MockUp that silently
-            // failed to intercept would go unnoticed.
-            AtomicBoolean stateMachineRan = new AtomicBoolean(false);
-            new MockUp<LakeTableSchemaChangeJob>() {
-                @Mock
-                protected void runPendingJob() {
-                    stateMachineRan.set(true);
-                }
-            };
-
-            schemaChangeJob.run();
-            Assertions.assertFalse(stateMachineRan.get(),
-                    "run() must not reach the state machine when no compute resource can be acquired");
-            Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState(),
-                    "the creation deadline must be enforced even when no compute resource is available");
-        } finally {
-            Config.tablet_create_timeout_second = savedTimeout;
-        }
-    }
-
-    // A node that restarts before its tasks actually go out still receives them in its new process,
-    // so that restart must not be read as a loss. The epoch is therefore captured at dispatch, not
-    // while the batch is being built.
-    @Test
-    public void testRestartBeforeDispatchIsNotTreatedAsLoss() throws Exception {
-        LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        SystemInfoService clusterInfo = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo();
-        List<ComputeNode> nodes = clusterInfo.getComputeNodes();
-        nodes.addAll(clusterInfo.getBackends());
-        Assertions.assertFalse(nodes.isEmpty());
-        Map<ComputeNode, Long> savedStartTime = new HashMap<>();
-        nodes.forEach(node -> savedStartTime.put(node, node.getLastStartTime()));
-
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendCreateReplicaTasks(AgentBatchTask batchTask) {
-                // the restart lands after the batch was built but before it leaves FE
-                nodes.forEach(node -> node.setLastStartTime(2000L));
-                schemaChangeJob.recordDispatchEpochs(batchTask);
-            }
-        };
-
-        try {
-            nodes.forEach(node -> node.setLastStartTime(1000L));
-            schemaChangeJob.runPendingJob(); // dispatch round
-            Assertions.assertEquals(AlterJobV2.JobState.PENDING, schemaChangeJob.getJobState());
-
-            // The epoch seen by the poll matches the one recorded at dispatch, so nothing is lost and
-            // the job keeps waiting for its deadline instead of being cancelled.
-            schemaChangeJob.runPendingJob();
-            Assertions.assertEquals(AlterJobV2.JobState.PENDING, schemaChangeJob.getJobState(),
-                    "a restart that predates the send must not cancel the job");
-        } finally {
-            savedStartTime.forEach(ComputeNode::setLastStartTime);
-        }
-
-        schemaChangeJob.cancel("test");
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-    }
-
-    // StarRocksTest#12202: the schema change scheduler is one LeaderDaemon thread that runs every
-    // alter job of the cluster in turn. A job whose shadow tablets never get created must not keep
-    // the jobs of other tables from making progress.
-    @Test
-    public void testStuckTabletCreationDoesNotBlockSiblingJobs() throws Exception {
-        LakeTable sibling = createTable(connectContext,
-                "CREATE TABLE t_sibling(c0 INT) duplicate key(c0) distributed by hash(c0) buckets " + NUM_BUCKETS);
-
-        AtomicBoolean swallowTasks = new AtomicBoolean(true);
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendCreateReplicaTasks(AgentBatchTask batchTask) {
-                if (swallowTasks.get()) {
-                    return; // the stuck job: nothing will ever report these tasks back
-                }
-                AgentTaskQueue.addBatchTask(batchTask);
-                AgentTaskExecutor.submit(batchTask);
-            }
-        };
-
-        LakeTableSchemaChangeJob stuckJob = alterTableAddColumn();
-        stuckJob.runPendingJob(); // dispatch round; its tasks go nowhere
-        Assertions.assertEquals(AlterJobV2.JobState.PENDING, stuckJob.getJobState());
-
-        swallowTasks.set(false);
-        alterTable(connectContext, "ALTER TABLE t_sibling ADD COLUMN c1 BIGINT key NOT NULL default \"0\"");
-        LakeTableSchemaChangeJob siblingJob = getAlterJob(sibling);
-
-        // Stay well inside the stuck job's own tablet creation deadline so that it is still PENDING
-        // at the end, which is what proves the sibling overtook it rather than outlived it.
-        SchemaChangeHandler handler = GlobalStateMgr.getCurrentState().getAlterJobMgr().getSchemaChangeHandler();
-        long deadlineMs = System.currentTimeMillis() + 20000;
-        while (siblingJob.getJobState() == AlterJobV2.JobState.PENDING
-                && System.currentTimeMillis() < deadlineMs) {
-            // stuckJob comes first, exactly as the daemon would iterate it.
-            handler.runAlterJobV2(List.of(stuckJob, siblingJob));
-            Thread.sleep(10);
-        }
-
-        Assertions.assertNotEquals(AlterJobV2.JobState.PENDING, siblingJob.getJobState(),
-                "a job stuck creating tablets must not block the alter jobs behind it");
-        Assertions.assertEquals(AlterJobV2.JobState.PENDING, stuckJob.getJobState());
-
-        stuckJob.cancel("test");
-        siblingJob.cancel("test");
     }
 
     @Test
     public void testCreateTabletSuccess() throws Exception {
         LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        drivePendingJob(schemaChangeJob);
+        schemaChangeJob.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
 
         schemaChangeJob.cancel("test");
@@ -542,140 +305,6 @@ public class LakeTableSchemaChangeJobTest {
     }
 
     @Test
-    public void testLightWeightTabletCreationSkipsSendTask() throws Exception {
-        // Flip the table to light-weight tablet creation; the schema-change PENDING phase
-        // must skip CreateReplicaTask building and dispatch while still
-        // advancing the job to WAITING_TXN.
-        alterTable(connectContext,
-                "ALTER TABLE t0 SET ('light_weight_tablet_creation' = 'true')");
-        Assertions.assertTrue(table.isLightWeightTabletCreation());
-
-        AtomicBoolean sendCalled = new AtomicBoolean(false);
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendCreateReplicaTasks(AgentBatchTask batchTask) {
-                sendCalled.set(true);
-            }
-        };
-
-        LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        drivePendingJob(schemaChangeJob);
-        Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
-        Assertions.assertFalse(sendCalled.get(),
-                "sendCreateReplicaTasks must not be invoked when light_weight_tablet_creation is enabled");
-
-        schemaChangeJob.cancel("test");
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-    }
-
-    // ADD INDEX ... USING GIN carries a table-level index change, so light-weight tablet creation must be
-    // disabled: the shadow tablet's on-demand schema would otherwise be built from the table's pre-alter
-    // index set (only written back at job finish) and the rewritten segments would silently lack the index.
-    @Test
-    public void testIndexChangeDisablesLightWeightTabletCreation() throws Exception {
-        boolean savedEnableGin = Config.enable_experimental_gin;
-        Config.enable_experimental_gin = true;
-        try {
-            LakeTable ginTable = createTable(connectContext,
-                        "CREATE TABLE t_gin(c0 INT, c1 VARCHAR(64)) duplicate key(c0) distributed by hash(c0) buckets "
-                                    + NUM_BUCKETS);
-            alterTable(connectContext, "ALTER TABLE t_gin SET ('light_weight_tablet_creation' = 'true')");
-            Assertions.assertTrue(ginTable.isLightWeightTabletCreation());
-
-            AtomicBoolean sendCalled = new AtomicBoolean(false);
-            new MockUp<LakeTableSchemaChangeJob>() {
-                @Mock
-                public void sendCreateReplicaTasks(AgentBatchTask batchTask) {
-                    sendCalled.set(true);
-                    AgentTaskQueue.addBatchTask(batchTask);
-                    AgentTaskExecutor.submit(batchTask);
-                }
-            };
-
-            alterTable(connectContext,
-                        "ALTER TABLE t_gin ADD INDEX idx_c1 (c1) USING GIN ('parser' = 'english')");
-            LakeTableSchemaChangeJob schemaChangeJob = getAlterJob(ginTable);
-            drivePendingJob(schemaChangeJob);
-            Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
-            Assertions.assertTrue(sendCalled.get(),
-                        "an index change must fall back to normal tablet creation even when "
-                                    + "light_weight_tablet_creation is enabled");
-
-            schemaChangeJob.cancel("test");
-            Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-        } finally {
-            Config.enable_experimental_gin = savedEnableGin;
-        }
-    }
-
-    // And for a change to the per-column ZSTD set, which reaches the shadow tablets only through
-    // CreateReplicaTask: light-weight creation skips that task, so the CN would build the shadow
-    // tablet's schema from the table's pre-alter set and rewrite every segment without the setting.
-    @Test
-    public void testZstdCompressionChangeDisablesLightWeightTabletCreation() throws Exception {
-        LakeTable zstdTable = createTable(connectContext,
-                    "CREATE TABLE t_zstd(c0 INT, c1 VARCHAR(64), c2 VARCHAR(64)) duplicate key(c0) "
-                                + "distributed by hash(c0) buckets " + NUM_BUCKETS
-                                + " properties('zstd_compression_columns' = 'c1')");
-        alterTable(connectContext, "ALTER TABLE t_zstd SET ('light_weight_tablet_creation' = 'true')");
-        Assertions.assertTrue(zstdTable.isLightWeightTabletCreation());
-
-        AtomicBoolean sendCalled = new AtomicBoolean(false);
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendCreateReplicaTasks(AgentBatchTask batchTask) {
-                sendCalled.set(true);
-                AgentTaskQueue.addBatchTask(batchTask);
-                AgentTaskExecutor.submit(batchTask);
-            }
-        };
-
-        alterTable(connectContext, "ALTER TABLE t_zstd SET ('zstd_compression_columns' = 'c2:256k')");
-        LakeTableSchemaChangeJob schemaChangeJob = getAlterJob(zstdTable);
-        drivePendingJob(schemaChangeJob);
-        Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
-        Assertions.assertTrue(sendCalled.get(),
-                    "a zstd compression column change must fall back to normal tablet creation even when "
-                                + "light_weight_tablet_creation is enabled");
-
-        schemaChangeJob.cancel("test");
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-    }
-
-    // Same contract for a bloom filter change; a mixed add+drop is used because a pure add or drop takes the
-    // lake IDG fast path (no shadow tablet) and would not produce a LakeTableSchemaChangeJob at all.
-    @Test
-    public void testBloomFilterChangeDisablesLightWeightTabletCreation() throws Exception {
-        LakeTable bfTable = createTable(connectContext,
-                    "CREATE TABLE t_bf(c0 INT, c1 VARCHAR(64), c2 VARCHAR(64)) duplicate key(c0) "
-                                + "distributed by hash(c0) buckets " + NUM_BUCKETS
-                                + " properties('bloom_filter_columns' = 'c1')");
-        alterTable(connectContext, "ALTER TABLE t_bf SET ('light_weight_tablet_creation' = 'true')");
-        Assertions.assertTrue(bfTable.isLightWeightTabletCreation());
-
-        AtomicBoolean sendCalled = new AtomicBoolean(false);
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendCreateReplicaTasks(AgentBatchTask batchTask) {
-                sendCalled.set(true);
-                AgentTaskQueue.addBatchTask(batchTask);
-                AgentTaskExecutor.submit(batchTask);
-            }
-        };
-
-        alterTable(connectContext, "ALTER TABLE t_bf SET ('bloom_filter_columns' = 'c2')");
-        LakeTableSchemaChangeJob schemaChangeJob = getAlterJob(bfTable);
-        drivePendingJob(schemaChangeJob);
-        Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
-        Assertions.assertTrue(sendCalled.get(),
-                    "a bloom filter change must fall back to normal tablet creation even when "
-                                + "light_weight_tablet_creation is enabled");
-
-        schemaChangeJob.cancel("test");
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-    }
-
-    @Test
     public void testPreviousTxnNotFinished() throws Exception {
         LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
         new MockUp<LakeTableSchemaChangeJob>() {
@@ -685,7 +314,7 @@ public class LakeTableSchemaChangeJobTest {
             }
         };
 
-        drivePendingJob(schemaChangeJob);
+        schemaChangeJob.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
 
         schemaChangeJob.runWaitingTxnJob();
@@ -711,7 +340,7 @@ public class LakeTableSchemaChangeJobTest {
             }
         };
 
-        drivePendingJob(schemaChangeJob);
+        schemaChangeJob.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
 
         Exception exception = Assertions.assertThrows(AlterCancelException.class, () -> schemaChangeJob.runWaitingTxnJob());
@@ -731,7 +360,7 @@ public class LakeTableSchemaChangeJobTest {
     @Test
     public void testTableNotExistWhileWaitingTxn() throws Exception {
         LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        drivePendingJob(schemaChangeJob);
+        schemaChangeJob.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
 
         db.dropTable(table.getName());
@@ -760,7 +389,7 @@ public class LakeTableSchemaChangeJobTest {
     @Test
     public void testTableDroppedBeforeRewriting() throws Exception {
         LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        drivePendingJob(schemaChangeJob);
+        schemaChangeJob.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
 
         schemaChangeJob.runWaitingTxnJob();
@@ -801,7 +430,7 @@ public class LakeTableSchemaChangeJobTest {
             }
         };
 
-        drivePendingJob(schemaChangeJob);
+        schemaChangeJob.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
 
         schemaChangeJob.runWaitingTxnJob();
@@ -830,7 +459,7 @@ public class LakeTableSchemaChangeJobTest {
             }
         };
 
-        drivePendingJob(schemaChangeJob);
+        schemaChangeJob.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
 
         schemaChangeJob.runWaitingTxnJob();
@@ -844,8 +473,8 @@ public class LakeTableSchemaChangeJobTest {
         Partition partition = partitions.stream().findFirst().orElse(null);
         Assertions.assertNotNull(partition);
         Assertions.assertEquals(3, partition.getDefaultPhysicalPartition().getNextVersion());
-        List<MaterializedIndex> shadowIndexes = partition.getDefaultPhysicalPartition()
-                .getLatestMaterializedIndices(MaterializedIndex.IndexExtState.SHADOW);
+        List<MaterializedIndex> shadowIndexes =
+                    partition.getDefaultPhysicalPartition().getLatestMaterializedIndices(MaterializedIndex.IndexExtState.SHADOW);
         Assertions.assertEquals(1, shadowIndexes.size());
 
         // Does not support cancel job in FINISHED_REWRITING state.
@@ -859,244 +488,6 @@ public class LakeTableSchemaChangeJobTest {
         db.dropTable(table.getName());
         schemaChangeJob.cancel("table does not exist anymore");
         Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-    }
-
-    @Test
-    public void testForceCancelBeforeFinishedRewritingDoesNotMark() throws Exception {
-        // Regression: force-cancelling a job that has NOT reached
-        // FINISHED_REWRITING must behave like a normal cancel — no no-op
-        // publish happens (no version was reserved on BE), so the
-        // forceSkippedAtCommitted marker must stay false. Otherwise replay
-        // would later advance VisibleVersion to a version that was never
-        // published.
-        LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        // Job is still PENDING here (runPendingJob not called).
-        Assertions.assertEquals(AlterJobV2.JobState.PENDING, schemaChangeJob.getJobState());
-
-        Assertions.assertTrue(schemaChangeJob.cancel("force-cancel-pending", /*force=*/ true));
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-        Assertions.assertFalse(schemaChangeJob.isForceSkippedAtCommitted(),
-                "force-cancel before FINISHED_REWRITING must NOT set the audit marker");
-        Assertions.assertFalse(schemaChangeJob.copyForPersist().isForceSkippedAtCommitted(),
-                "persisted copy must also carry marker=false so replay skips the version bump");
-    }
-
-    @Test
-    public void testForceCancelAtFinishedRewriting() throws Exception {
-        // Phase 2: CANCEL ALTER TABLE ... FORCE must bypass the FINISHED_REWRITING
-        // guard so operators can unblock heavy lake schema-change jobs whose
-        // publish RPC is permanently stuck. removeShadowIndex() inside the
-        // existing persistStateChange callback handles the shadow-tablet cleanup.
-        LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendAgentTask(AgentBatchTask batchTask) {
-                batchTask.getAllTasks().forEach(t -> t.setFinished(true));
-            }
-            // Stub the no-op publish RPC so this unit test does not need a
-            // live BE. Production force-cancel sends publish_version(no_op=true)
-            // to advance the partition version chain; the BE-side behaviour
-            // is exercised by integration tests, not here.
-            @Mock
-            public boolean lakePublishVersionWithSkip(String reason) {
-                return true;
-            }
-        };
-
-        drivePendingJob(schemaChangeJob);
-        schemaChangeJob.runWaitingTxnJob();
-        schemaChangeJob.runRunningJob();
-        Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, schemaChangeJob.getJobState());
-
-        Partition partition = table.getPartitions().stream().findFirst().orElse(null);
-        Assertions.assertNotNull(partition);
-        Assertions.assertEquals(1, partition.getDefaultPhysicalPartition()
-                .getLatestMaterializedIndices(MaterializedIndex.IndexExtState.SHADOW).size());
-
-        // Non-force cancel is a no-op in FINISHED_REWRITING (existing behavior).
-        Assertions.assertFalse(schemaChangeJob.cancel("non-force-cancel"));
-        Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, schemaChangeJob.getJobState());
-        Assertions.assertFalse(schemaChangeJob.isForceSkippedAtCommitted());
-
-        // Force cancel must succeed and clean up the shadow index.
-        Assertions.assertTrue(schemaChangeJob.cancel("force-cancel-from-stuck-publish", /*force=*/ true));
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-        Assertions.assertTrue(schemaChangeJob.isForceSkippedAtCommitted(),
-                "forceSkippedAtCommitted must record the force-cancel for audit");
-        Assertions.assertEquals(OlapTable.OlapTableState.NORMAL, table.getState());
-        Assertions.assertEquals(0, partition.getDefaultPhysicalPartition()
-                .getLatestMaterializedIndices(MaterializedIndex.IndexExtState.SHADOW).size(),
-                "shadow tablets must be cleaned up by removeShadowIndex on force-cancel");
-    }
-
-    @Test
-    public void testForceCancelAuditFlagPersisted() throws Exception {
-        // forceSkippedAtCommitted is the post-mortem audit marker for a FORCE
-        // cancel. It is set on the live job during cancel(force=true), but the
-        // edit log records a copyForPersist() copy. Regression guard: ensure
-        // the copy carries the flag, so an FE replay or fresh load sees the
-        // flag instead of silently dropping it to false.
-        LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendAgentTask(AgentBatchTask batchTask) {
-                batchTask.getAllTasks().forEach(t -> t.setFinished(true));
-            }
-            // See testForceCancelAtFinishedRewriting for why we stub this.
-            @Mock
-            public boolean lakePublishVersionWithSkip(String reason) {
-                return true;
-            }
-        };
-        drivePendingJob(schemaChangeJob);
-        schemaChangeJob.runWaitingTxnJob();
-        schemaChangeJob.runRunningJob();
-        Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, schemaChangeJob.getJobState());
-
-        Assertions.assertTrue(schemaChangeJob.cancel("force-cancel-persist-test", /*force=*/ true));
-        Assertions.assertTrue(schemaChangeJob.isForceSkippedAtCommitted());
-
-        // The same copyForPersist() path used by EditLog.logAlterJob must carry the flag.
-        AlterJobV2 persistCopy = schemaChangeJob.copyForPersist();
-        Assertions.assertTrue(persistCopy.isForceSkippedAtCommitted(),
-                "copyForPersist must propagate forceSkippedAtCommitted so the edit log records it");
-    }
-
-    @Test
-    public void testLakePublishVersionWithSkipBuildsNoOpTxnInfo() throws Exception {
-        // Cover lakePublishVersionWithSkip's body by intercepting the
-        // underlying Utils.publishVersion call. The helper must build a
-        // TxnInfoPB whose noOpPublish=true so BE's transactions.cpp
-        // short-circuit kicks in and writes V-1 content as V.
-        LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendAgentTask(AgentBatchTask batchTask) {
-                batchTask.getAllTasks().forEach(t -> t.setFinished(true));
-            }
-        };
-        java.util.concurrent.atomic.AtomicInteger publishCalls = new java.util.concurrent.atomic.AtomicInteger();
-        java.util.concurrent.atomic.AtomicBoolean lastNoOp = new java.util.concurrent.atomic.AtomicBoolean();
-        new MockUp<Utils>() {
-            @Mock
-            public void publishVersion(List<Tablet> tablets, TxnInfoPB txnInfo, long baseVersion,
-                                       long newVersion, com.starrocks.warehouse.cngroup.ComputeResource computeResource,
-                                       boolean useAggregatePublish) {
-                publishCalls.incrementAndGet();
-                lastNoOp.set(txnInfo.noOpPublish);
-            }
-        };
-
-        drivePendingJob(schemaChangeJob);
-        schemaChangeJob.runWaitingTxnJob();
-        schemaChangeJob.runRunningJob();
-        Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, schemaChangeJob.getJobState());
-
-        Assertions.assertTrue(schemaChangeJob.cancel("force-cancel-publish-body", /*force=*/ true));
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-        Assertions.assertTrue(publishCalls.get() > 0,
-                "lakePublishVersionWithSkip must invoke Utils.publishVersion at least once");
-        Assertions.assertTrue(lastNoOp.get(),
-                "TxnInfoPB.noOpPublish must be set so BE short-circuits the txn-log apply");
-    }
-
-    @Test
-    public void testForceCancelReplayBumpsVisibleVersion() throws Exception {
-        // Simulate FE replaying a force-cancel edit log entry onto an
-        // in-memory job loaded from a pre-cancel image. The replayed job
-        // carries forceSkippedAtCommitted=true; the in-memory `this` was
-        // loaded from an older image where the flag is false. Before the
-        // copy-marker fix the replay branch silently skipped the version
-        // bump (the if-block read this.forceSkippedAtCommitted=false), so
-        // FE would resume with VisibleVersion=commitVersion-1 against BE
-        // metadata already advanced by the no-op publish — the exact
-        // stuck-state this PR repairs.
-        LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendAgentTask(AgentBatchTask batchTask) {
-                batchTask.getAllTasks().forEach(t -> t.setFinished(true));
-            }
-            @Mock
-            public boolean lakePublishVersionWithSkip(String reason) {
-                return true;
-            }
-        };
-        drivePendingJob(schemaChangeJob);
-        schemaChangeJob.runWaitingTxnJob();
-        schemaChangeJob.runRunningJob();
-        Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, schemaChangeJob.getJobState());
-
-        // Capture each partition's commitVersion as (current VisibleVersion + 1):
-        // alter is at FINISHED_REWRITING, no other commits in flight, so the
-        // reserved commit version is exactly the slot right above VisibleVersion.
-        Map<Long, Long> expectedCommitVersion = new HashMap<>();
-        for (PhysicalPartition pp : table.getPhysicalPartitions()) {
-            expectedCommitVersion.put(pp.getId(), pp.getVisibleVersion() + 1);
-        }
-
-        // Run the live force-cancel; the persisted copy must carry the marker.
-        Assertions.assertTrue(schemaChangeJob.cancel("force-cancel-replay-test", /*force=*/ true));
-        AlterJobV2 persistCopy = schemaChangeJob.copyForPersist();
-        Assertions.assertTrue(persistCopy.isForceSkippedAtCommitted());
-
-        // Now simulate the image: a freshly-built in-memory job WITHOUT the
-        // marker, and with each partition's VisibleVersion reset back to
-        // commitVersion-1 (no bump applied yet). Reset both sides to mimic
-        // FE recovery from a pre-cancel image.
-        LakeTableSchemaChangeJob staleInMemory = new LakeTableSchemaChangeJob(schemaChangeJob);
-        staleInMemory.forceSkippedAtCommitted = false;
-        staleInMemory.setJobState(AlterJobV2.JobState.FINISHED_REWRITING);
-        for (PhysicalPartition pp : table.getPhysicalPartitions()) {
-            pp.setVisibleVersion(expectedCommitVersion.get(pp.getId()) - 1, 0);
-        }
-
-        // Replay: the persisted entry (`persistCopy`) carries the marker; the
-        // copy-block inside replay() must propagate it onto `this` so the
-        // CANCELLED branch below applies the version bump.
-        staleInMemory.replay(persistCopy);
-        Assertions.assertTrue(staleInMemory.isForceSkippedAtCommitted(),
-                "replay must copy forceSkippedAtCommitted from the persisted entry");
-        for (PhysicalPartition pp : table.getPhysicalPartitions()) {
-            Assertions.assertEquals(expectedCommitVersion.get(pp.getId()).longValue(), pp.getVisibleVersion(),
-                    "replay must bump VisibleVersion to commitVersion when forceSkippedAtCommitted=true");
-        }
-    }
-
-    @Test
-    public void testParseCancelAlterTableForce() {
-        // The new FORCE keyword on CANCEL ALTER TABLE must surface as
-        // CancelAlterTableStmt.isForce() = true so the handler can route to
-        // cancel(force=true). Without FORCE, isForce() stays false (backward
-        // compatible with existing call sites).
-        StatementBase withForce = SqlParser.parseSingleStatement(
-                "CANCEL ALTER TABLE COLUMN FROM mydb.t1 (12345) FORCE",
-                connectContext.getSessionVariable().getSqlMode());
-        Assertions.assertTrue(withForce instanceof CancelAlterTableStmt);
-        Assertions.assertTrue(((CancelAlterTableStmt) withForce).isForce());
-
-        StatementBase noForce = SqlParser.parseSingleStatement(
-                "CANCEL ALTER TABLE COLUMN FROM mydb.t1 (12345)",
-                connectContext.getSessionVariable().getSqlMode());
-        Assertions.assertTrue(noForce instanceof CancelAlterTableStmt);
-        Assertions.assertFalse(((CancelAlterTableStmt) noForce).isForce());
-    }
-
-    @Test
-    public void testCancelAlterForceRejectedForUnsupportedTypes() throws Exception {
-        // FORCE (the publish-stuck escape hatch) is only implemented for COLUMN
-        // alters on lake tables. ROLLUP -> MaterializedViewHandler and OPTIMIZE
-        // -> OptimizeJobV2/OnlineOptimizeJobV2 do not honor isForce(), so the
-        // analyzer must reject `... FORCE` for them up front instead of letting
-        // the grammar accept a request that would silently no-op.
-        for (String type : new String[] {"ROLLUP", "OPTIMIZE"}) {
-            Throwable t = Assertions.assertThrows(Throwable.class, () ->
-                    UtFrameUtils.parseStmtWithNewParser(
-                            "CANCEL ALTER TABLE " + type + " FROM mydb.t1 (12345) FORCE", connectContext));
-            Assertions.assertNotNull(t.getMessage());
-            Assertions.assertTrue(t.getMessage().contains("FORCE is only supported for COLUMN"),
-                    "expected FORCE-unsupported rejection for " + type + ", got: " + t.getMessage());
-        }
     }
 
     @Test
@@ -1117,7 +508,7 @@ public class LakeTableSchemaChangeJobTest {
         alterTable(connectContext, "ALTER TABLE t1 ADD COLUMN c1 BIGINT AS c0 + 2");
         LakeTableSchemaChangeJob schemaChangeJob1 = getAlterJob(table1);
         
-        drivePendingJob(schemaChangeJob1);
+        schemaChangeJob1.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob1.getJobState());
 
         schemaChangeJob1.runWaitingTxnJob();
@@ -1131,8 +522,8 @@ public class LakeTableSchemaChangeJobTest {
         Partition partition = partitions.stream().findFirst().orElse(null);
         Assertions.assertNotNull(partition);
         Assertions.assertEquals(3, partition.getDefaultPhysicalPartition().getNextVersion());
-        List<MaterializedIndex> shadowIndexes = partition.getDefaultPhysicalPartition()
-                .getLatestMaterializedIndices(MaterializedIndex.IndexExtState.SHADOW);
+        List<MaterializedIndex> shadowIndexes =
+                    partition.getDefaultPhysicalPartition().getLatestMaterializedIndices(MaterializedIndex.IndexExtState.SHADOW);
         Assertions.assertEquals(1, shadowIndexes.size());
 
         // Does not support cancel job in FINISHED_REWRITING state.
@@ -1163,7 +554,7 @@ public class LakeTableSchemaChangeJobTest {
         alterTable(connectContext, "ALTER TABLE t1 ADD COLUMN c1 BIGINT AS c0 + 2");
         LakeTableSchemaChangeJob schemaChangeJob1 = getAlterJob(table1);
         
-        drivePendingJob(schemaChangeJob1);
+        schemaChangeJob1.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob1.getJobState());
 
         schemaChangeJob1.runWaitingTxnJob();
@@ -1177,8 +568,8 @@ public class LakeTableSchemaChangeJobTest {
         Partition partition = partitions.stream().findFirst().orElse(null);
         Assertions.assertNotNull(partition);
         Assertions.assertEquals(3, partition.getDefaultPhysicalPartition().getNextVersion());
-        List<MaterializedIndex> shadowIndexes = partition.getDefaultPhysicalPartition()
-                .getLatestMaterializedIndices(MaterializedIndex.IndexExtState.SHADOW);
+        List<MaterializedIndex> shadowIndexes =
+                    partition.getDefaultPhysicalPartition().getLatestMaterializedIndices(MaterializedIndex.IndexExtState.SHADOW);
         Assertions.assertEquals(1, shadowIndexes.size());
 
         // Does not support cancel job in FINISHED_REWRITING state.
@@ -1201,7 +592,7 @@ public class LakeTableSchemaChangeJobTest {
             }
         };
 
-        drivePendingJob(schemaChangeJob);
+        schemaChangeJob.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
 
         schemaChangeJob.runWaitingTxnJob();
@@ -1220,8 +611,8 @@ public class LakeTableSchemaChangeJobTest {
         schemaChangeJob.runRunningJob();
         Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, schemaChangeJob.getJobState());
 
-        List<MaterializedIndex> shadowIndexes = partition.getDefaultPhysicalPartition()
-                .getLatestMaterializedIndices(MaterializedIndex.IndexExtState.SHADOW);
+        List<MaterializedIndex> shadowIndexes =
+                    partition.getDefaultPhysicalPartition().getLatestMaterializedIndices(MaterializedIndex.IndexExtState.SHADOW);
         Assertions.assertEquals(1, shadowIndexes.size());
 
         // The partition's visible version has not catch up with the commit version of this schema change job now.
@@ -1271,6 +662,7 @@ public class LakeTableSchemaChangeJobTest {
         List<MaterializedIndex> normalIndexes =
                     partition.getDefaultPhysicalPartition().getLatestMaterializedIndices(IndexExtState.VISIBLE);
         Assertions.assertEquals(1, normalIndexes.size());
+        MaterializedIndex normalIndex = normalIndexes.get(0);
 
         // Does not support cancel job in FINISHED state.
         schemaChangeJob.cancel("test");
@@ -1296,7 +688,7 @@ public class LakeTableSchemaChangeJobTest {
             }
         };
 
-        driveJobPastPending(schemaChangeJob);
+        schemaChangeJob.run();
         Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, schemaChangeJob.getJobState());
         long timeoutMs = 10 * 60 * 1000L;
         long deadline = System.currentTimeMillis() + timeoutMs;
@@ -1354,7 +746,7 @@ public class LakeTableSchemaChangeJobTest {
         };
 
         Exception exception = Assertions.assertThrows(AlterCancelException.class, () ->
-                drivePendingJob(schemaChangeJob));
+                schemaChangeJob.runPendingJob());
         Assertions.assertTrue(exception.getMessage().contains(
                 "concurrent transaction detected while adding shadow index, please re-run the alter table command"),
                 () -> {
@@ -1390,37 +782,16 @@ public class LakeTableSchemaChangeJobTest {
         System.out.println(schemaChangeHandler2.getAlterJobInfosByDb(db));
     }
 
-    // Cancelling a job whose shadow tablets are still being created must drop its CreateReplicaTasks
-    // from the queue. This used to be done from inside the blocking wait, which cancel() reached by
-    // force-releasing the latch from outside the job monitor.
     @Test
-    public void testCancelWhileCreatingTablets() throws Exception {
+    public void testCancelPendingJobWithFlag() throws Exception {
         LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
-        AtomicReference<AgentBatchTask> dispatched = new AtomicReference<>();
-        new MockUp<LakeTableSchemaChangeJob>() {
-            @Mock
-            public void sendCreateReplicaTasks(AgentBatchTask batchTask) {
-                dispatched.set(batchTask);
-                AgentTaskQueue.addBatchTask(batchTask);
-            }
-        };
-
-        // Dispatch round only: the tasks stay outstanding because nothing reports them back.
+        schemaChangeJob.setIsCancelling(true);
         schemaChangeJob.runPendingJob();
-        Assertions.assertEquals(AlterJobV2.JobState.PENDING, schemaChangeJob.getJobState());
-        Assertions.assertNotNull(dispatched.get());
-        Assertions.assertTrue(dispatched.get().getTaskNum() > 0);
-        for (AgentTask task : dispatched.get().getAllTasks()) {
-            Assertions.assertNotNull(AgentTaskQueue.getTask(task.getBackendId(), TTaskType.CREATE,
-                    task.getSignature()));
-        }
+        schemaChangeJob.setIsCancelling(false);
 
-        schemaChangeJob.cancel("test");
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, schemaChangeJob.getJobState());
-        for (AgentTask task : dispatched.get().getAllTasks()) {
-            Assertions.assertNull(AgentTaskQueue.getTask(task.getBackendId(), TTaskType.CREATE,
-                    task.getSignature()));
-        }
+        schemaChangeJob.setWaitingCreatingReplica(true);
+        schemaChangeJob.cancel("");
+        schemaChangeJob.setWaitingCreatingReplica(false);
     }
 
     @Test
@@ -1433,7 +804,7 @@ public class LakeTableSchemaChangeJobTest {
                 TransactionState.LoadJobSourceType.BACKEND_STREAMING, 60000L);
         LakeTableSchemaChangeJob schemaChangeJob = alterTableAddColumn();
         Assertions.assertEquals(AlterJobV2.JobState.PENDING, schemaChangeJob.getJobState());
-        driveJobPastPending(schemaChangeJob);
+        schemaChangeJob.run();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
         ExecPlan execPlan = UtFrameUtils.getPlanAndFragment(connectContext, "insert into t0 values (1)").second;
         List<Column> fullSchema = table.getFullSchema();
@@ -1475,7 +846,7 @@ public class LakeTableSchemaChangeJobTest {
             }
         };
 
-        drivePendingJob(schemaChangeJob);
+        schemaChangeJob.runPendingJob();
         Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, schemaChangeJob.getJobState());
 
         schemaChangeJob.runWaitingTxnJob();
@@ -1621,7 +992,7 @@ public class LakeTableSchemaChangeJobTest {
                 batchTask.getAllTasks().forEach(t -> t.setFinished(true));
             }
         };
-        drivePendingJob(job);
+        job.runPendingJob();
         job.runWaitingTxnJob();
         job.runRunningJob();
 

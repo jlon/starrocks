@@ -14,13 +14,11 @@
 
 #pragma once
 
-#include <queue>
-
-#include "base/concurrency/moodycamel/concurrentqueue.h"
 #include "column/vectorized_fwd.h"
 #include "exec/pipeline/adaptive/adaptive_fwd.h"
 #include "exec/pipeline/context_with_dependency.h"
-#include "runtime/chunk_accumulator.h"
+#include "storage/chunk_helper.h"
+#include "util/moodycamel/concurrentqueue.h"
 
 namespace starrocks {
 

@@ -181,7 +181,7 @@ public interface AstVisitorExtendInterface<R, C> extends AstVisitor<R, C> {
         return visitDDLStatement(statement, context);
     }
 
-    default R visitCreateSyncMVStmt(CreateSyncMVStmt statement, C context) {
+    default R visitCreateMaterializedViewStmt(CreateMaterializedViewStmt statement, C context) {
         return visitDDLStatement(statement, context);
     }
 
@@ -216,10 +216,6 @@ public interface AstVisitorExtendInterface<R, C> extends AstVisitor<R, C> {
     }
 
     default R visitDeleteStatement(DeleteStmt statement, C context) {
-        return visitStatement(statement, context);
-    }
-
-    default R visitMergeIntoStatement(MergeIntoStmt statement, C context) {
         return visitStatement(statement, context);
     }
 

@@ -34,26 +34,24 @@
 
 #pragma once
 
-#include <fmt/format.h>
-
 #include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "base/uid_util.h"
 #include "common/logging.h"
 #include "common/status.h"
-#include "common/storage_define.h"
 #include "gen_cpp/olap_file.pb.h"
 #include "storage/binlog_manager.h"
 #include "storage/delete_handler.h"
+#include "storage/flat_json_config.h"
 #include "storage/olap_common.h"
+#include "storage/olap_define.h"
 #include "storage/rowset/rowset.h"
 #include "storage/rowset/rowset_meta.h"
 #include "storage/tablet_schema.h"
-#include "storage_primitive/flat_json_config.h"
+#include "util/uid_util.h"
 
 namespace starrocks {
 
@@ -387,7 +385,7 @@ inline size_t TabletMeta::version_count() const {
 
 inline size_t TabletMeta::segment_count() const {
     size_t num_segments = 0;
-    for (const auto& rowset_meta : _rs_metas) {
+    for (auto rowset_meta : _rs_metas) {
         num_segments += rowset_meta->num_segments();
     }
     return num_segments;
@@ -426,8 +424,3 @@ bool operator==(const TabletMeta& a, const TabletMeta& b);
 bool operator!=(const TabletMeta& a, const TabletMeta& b);
 
 } // namespace starrocks
-
-template <>
-struct fmt::formatter<starrocks::TabletState> : formatter<std::underlying_type_t<starrocks::TabletState>> {
-    auto format(starrocks::TabletState value, format_context& ctx) const -> format_context::iterator;
-};

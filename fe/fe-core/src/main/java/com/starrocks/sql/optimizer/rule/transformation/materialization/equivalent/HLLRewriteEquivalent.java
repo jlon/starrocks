@@ -117,6 +117,7 @@ public class HLLRewriteEquivalent extends IAggregateRewriteEquivalent {
         ScalarOperator eqChild = eqContext.getEquivalent();
         CallOperator aggFunc = (CallOperator) newInput;
         String aggFuncName = aggFunc.getFnName();
+        boolean isRollup = shuttleContext.isRollup();
 
         if (aggFuncName.equals(APPROX_COUNT_DISTINCT) || aggFuncName.equals(NDV)) {
             ScalarOperator arg0 = aggFunc.getChild(0);

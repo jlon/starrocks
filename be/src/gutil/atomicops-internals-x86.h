@@ -26,9 +26,9 @@
 
 #pragma once
 
-#include <cstdint>
+#include <common/logging.h>
 
-#include "gutil/logging.h"
+#include <cstdint>
 
 #define BASE_HAS_ATOMIC64 1 // Use only in tests and base/atomic*
 

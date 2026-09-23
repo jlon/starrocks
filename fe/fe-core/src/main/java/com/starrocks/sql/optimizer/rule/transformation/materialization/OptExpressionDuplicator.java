@@ -54,7 +54,6 @@ import com.starrocks.sql.optimizer.operator.logical.LogicalCTEConsumeOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalCTEProduceOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalFilterOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalJoinOperator;
-import com.starrocks.sql.optimizer.operator.logical.LogicalLimitOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalOlapScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalProjectOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalRepeatOperator;
@@ -530,10 +529,6 @@ public class OptExpressionDuplicator {
             }
             opBuilder.setWindowCall(newWindowCalls);
 
-            if (windowOperator.getSkewColumn() != null) {
-                opBuilder.setSkewColumn(getNewScalarOp(windowOperator.getSkewColumn()));
-            }
-
             processCommon(opBuilder);
 
             return OptExpression.create(opBuilder.build(), inputs);
@@ -573,14 +568,10 @@ public class OptExpressionDuplicator {
         @Override
         public OptExpression visitLogicalLimit(OptExpression optExpression, Void context) {
             List<OptExpression> inputs = processChildren(optExpression);
-            // A limit carries only its offset and row count -- it has no output column list to
-            // remap, so copying the operator and letting processCommon rewrite the projection
-            // and predicate is the whole job. This body used to be a copy of visitLogicalUnion,
-            // which cast the operator to LogicalSetOperator and could therefore never succeed:
-            // any limit reaching the duplicator threw ClassCastException.
-            LogicalLimitOperator limitOperator = (LogicalLimitOperator) optExpression.getOp();
-            LogicalLimitOperator.Builder opBuilder = OperatorBuilderFactory.build(optExpression.getOp());
-            opBuilder.withOperator(limitOperator);
+            LogicalSetOperator setOperator = (LogicalSetOperator) optExpression.getOp();
+            LogicalSetOperator.Builder opBuilder = OperatorBuilderFactory.build(optExpression.getOp());
+            opBuilder.withOperator(setOperator);
+            processSetOperator(setOperator, opBuilder);
             processCommon(opBuilder);
             return OptExpression.create(opBuilder.build(), inputs);
         }
@@ -702,22 +693,12 @@ public class OptExpressionDuplicator {
             LogicalCTEConsumeOperator cteConsumeOperator = (LogicalCTEConsumeOperator) optExpression.getOp();
             LogicalCTEConsumeOperator.Builder opBuilder = OperatorBuilderFactory.build(optExpression.getOp());
             opBuilder.withOperator(cteConsumeOperator);
-
-            // If the CTE anchor/produce for this consumer was also duplicated, remap the CTE ID
-            // and both sides of the output column map. Otherwise, keep the original CTE ID and
-            // only remap the consumer-side columns, preserving the producer-side
-            // column refs so the consumer still references the original producer.
-            boolean hasMatchingProducer = cteIdMapping.containsKey(cteConsumeOperator.getCteId());
-            if (hasMatchingProducer) {
-                opBuilder.setCteId(getOrCreateCteId(cteConsumeOperator.getCteId()));
-            }
+            opBuilder.setCteId(getOrCreateCteId(cteConsumeOperator.getCteId()));
 
             // cteOutputColumnRefMap
             Map<ColumnRefOperator, ColumnRefOperator> newCteOutputColumnRefMap = Maps.newHashMap();
             for (Map.Entry<ColumnRefOperator, ColumnRefOperator> e : cteConsumeOperator.getCteOutputColumnRefMap().entrySet()) {
-                ColumnRefOperator newKey = getOrCreateColRef(e.getKey());
-                ColumnRefOperator newValue = hasMatchingProducer ? getOrCreateColRef(e.getValue()) : e.getValue();
-                newCteOutputColumnRefMap.put(newKey, newValue);
+                newCteOutputColumnRefMap.put(getOrCreateColRef(e.getKey()), getOrCreateColRef(e.getValue()));
             }
             opBuilder.setCteOutputColumnRefMap(newCteOutputColumnRefMap);
 

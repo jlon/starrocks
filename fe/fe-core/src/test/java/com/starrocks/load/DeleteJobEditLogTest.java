@@ -124,7 +124,7 @@ public class DeleteJobEditLogTest {
         when(txnState.getTransactionStatus()).thenReturn(TransactionStatus.VISIBLE);
 
         // 5. Execute afterVisible
-        deleteJob.afterVisible(txnState);
+        deleteJob.afterVisible(txnState, true);
 
         // 6. Verify master state
         Assertions.assertEquals(DeleteJob.DeleteState.FINISHED, deleteJob.getState());
@@ -186,7 +186,7 @@ public class DeleteJobEditLogTest {
 
         // 6. Execute afterVisible and expect exception
         RuntimeException exception = Assertions.assertThrows(RuntimeException.class, () -> {
-            deleteJob.afterVisible(txnState);
+            deleteJob.afterVisible(txnState, true);
         });
         Assertions.assertTrue(exception.getMessage().contains("EditLog write failed") || 
                             exception.getCause() != null && 
@@ -197,7 +197,7 @@ public class DeleteJobEditLogTest {
     }
 
     @Test
-    public void testAfterVisibleDirectCallShouldOperate() throws Exception {
+    public void testAfterVisibleNotOperated() throws Exception {
         // 1. Create database and table
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(DB_NAME);
         OlapTable table = createOlapTable(TABLE_ID, TABLE_NAME);
@@ -220,10 +220,11 @@ public class DeleteJobEditLogTest {
         // 4. Create mock TransactionState
         TransactionState txnState = mock(TransactionState.class);
 
-        // 5. Execute afterVisible directly
-        deleteJob.afterVisible(txnState);
+        // 5. Execute afterVisible with txnOperated = false (should return early)
+        deleteJob.afterVisible(txnState, false);
 
-        // 6. Verify callback execution updates state
-        Assertions.assertEquals(DeleteJob.DeleteState.FINISHED, deleteJob.getState());
+        // 6. Verify job state remains unchanged (no EditLog should be written)
+        Assertions.assertEquals(DeleteJob.DeleteState.DELETING, deleteJob.getState());
     }
 }
+

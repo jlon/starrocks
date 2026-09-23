@@ -17,36 +17,32 @@
 #include <fmt/format.h>
 
 #include "agent/agent_common.h"
-#include "agent/agent_metrics.h"
 #include "agent/finish_task.h"
 #include "agent/task_signatures_manager.h"
-#include "base/testutil/sync_point.h"
 #include "boost/lexical_cast.hpp"
-#include "common/config_agent_fwd.h"
 #include "common/status.h"
-#include "common/system/backend_options.h"
-#include "data_workflows/clone/engine_clone_task.h"
-#include "data_workflows/compaction/engine_compaction_control_task.h"
-#include "data_workflows/compaction/engine_manual_compaction_task.h"
-#include "data_workflows/consistency/engine_checksum_task.h"
-#include "data_workflows/migration/engine_storage_migration_task.h"
-#include "data_workflows/schema_change/engine_alter_tablet_task.h"
-#include "data_workflows/snapshot/snapshot_loader.h"
-#include "exec/exec_env.h"
 #include "gutil/strings/join.h"
 #include "io/io_profiler.h"
 #include "runtime/current_thread.h"
+#include "runtime/snapshot_loader.h"
+#include "service/backend_options.h"
+#include "storage/flat_json_config.h"
 #include "storage/lake/replication_txn_manager.h"
 #include "storage/lake/schema_change.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/metadata_util.h"
 #include "storage/replication_txn_manager.h"
 #include "storage/snapshot_manager.h"
-#include "storage/storage_env.h"
 #include "storage/tablet_manager.h"
+#include "storage/task/engine_alter_tablet_task.h"
+#include "storage/task/engine_checksum_task.h"
+#include "storage/task/engine_clone_task.h"
+#include "storage/task/engine_compaction_control_task.h"
+#include "storage/task/engine_manual_compaction_task.h"
+#include "storage/task/engine_storage_migration_task.h"
 #include "storage/txn_manager.h"
 #include "storage/update_manager.h"
-#include "storage_primitive/flat_json_config.h"
+#include "testutil/sync_point.h"
 
 namespace starrocks {
 
@@ -66,7 +62,7 @@ static AgentStatus get_tablet_info(TTabletId tablet_id, TSchemaHash schema_hash,
     return status;
 }
 
-static void alter_tablet(const TAlterTabletReqV2& agent_task_req, int64_t signature, ExecEnv* exec_env,
+static void alter_tablet(const TAlterTabletReqV2& agent_task_req, int64_t signature,
                          TFinishTaskRequest* finish_task_request) {
     TStatus task_status;
     std::vector<std::string> error_msgs;
@@ -78,7 +74,7 @@ static void alter_tablet(const TAlterTabletReqV2& agent_task_req, int64_t signat
     TSchemaHash new_schema_hash = 0;
     new_tablet_id = agent_task_req.new_tablet_id;
     new_schema_hash = agent_task_req.new_schema_hash;
-    EngineAlterTabletTask engine_task(RuntimeEnv::GetInstance()->schema_change_mem_tracker(), agent_task_req, exec_env);
+    EngineAlterTabletTask engine_task(GlobalEnv::GetInstance()->schema_change_mem_tracker(), agent_task_req);
     Status sc_status = StorageEngine::instance()->execute_task(&engine_task);
     AgentStatus status;
     if (!sc_status.ok()) {
@@ -252,7 +248,7 @@ void run_create_tablet_task(const std::shared_ptr<CreateTabletAgentTaskRequest>&
     if (create_status.ok()) {
         if (tablet_type == TTabletType::TABLET_TYPE_LAKE) {
 #ifndef __APPLE__
-            create_status = StorageEnv::GetInstance()->lake_tablet_manager()->create_tablet(create_tablet_req);
+            create_status = exec_env->lake_tablet_manager()->create_tablet(create_tablet_req);
 #endif
         } else {
             create_status = StorageEngine::instance()->create_tablet(create_tablet_req);
@@ -315,7 +311,7 @@ void run_alter_tablet_task(const std::shared_ptr<AlterTabletAgentTaskRequest>& a
         TFinishTaskRequest finish_task_request;
         TTaskType::type task_type = agent_task_req->task_type;
         if (task_type == TTaskType::ALTER) {
-            alter_tablet(agent_task_req->task_req, signatrue, exec_env, &finish_task_request);
+            alter_tablet(agent_task_req->task_req, signatrue, &finish_task_request);
         }
         finish_task(finish_task_request);
     }
@@ -360,8 +356,9 @@ void run_clear_transaction_task(const std::shared_ptr<ClearTransactionAgentTaskR
 
 void run_clone_task(const std::shared_ptr<CloneAgentTaskRequest>& agent_task_req, ExecEnv* exec_env) {
     SCOPED_SET_MODULE_TYPE(ThreadModuleType::CLONE);
-    AgentMetrics::instance()->clone_requests_total.increment(1);
+    StarRocksMetrics::instance()->clone_requests_total.increment(1);
     const TCloneReq& clone_req = agent_task_req->task_req;
+    AgentStatus status = STARROCKS_SUCCESS;
 
     auto scope = IOProfiler::scope(IOProfiler::TAG_CLONE, clone_req.tablet_id);
 
@@ -378,7 +375,7 @@ void run_clone_task(const std::shared_ptr<CloneAgentTaskRequest>& agent_task_req
     if (clone_req.__isset.is_local && clone_req.is_local) {
         DataDir* dest_store = StorageEngine::instance()->get_store(clone_req.dest_path_hash);
         if (dest_store == nullptr) {
-            AgentMetrics::instance()->clone_requests_failed.increment(1);
+            StarRocksMetrics::instance()->clone_requests_failed.increment(1);
             LOG(WARNING) << "fail to get dest store. path_hash:" << clone_req.dest_path_hash;
             status_code = TStatusCode::RUNTIME_ERROR;
         } else {
@@ -387,7 +384,7 @@ void run_clone_task(const std::shared_ptr<CloneAgentTaskRequest>& agent_task_req
                                                    need_rebuild_pk_index);
             Status res = StorageEngine::instance()->execute_task(&engine_task);
             if (!res.ok()) {
-                AgentMetrics::instance()->clone_requests_failed.increment(1);
+                StarRocksMetrics::instance()->clone_requests_failed.increment(1);
                 status_code = TStatusCode::RUNTIME_ERROR;
                 LOG(WARNING) << "local tablet migration failed. status: " << res
                              << ", signature: " << agent_task_req->signature;
@@ -409,41 +406,40 @@ void run_clone_task(const std::shared_ptr<CloneAgentTaskRequest>& agent_task_req
 
                 int64_t copy_size = engine_task.get_copy_size();
                 finish_task_request.__set_copy_size(copy_size);
-                AgentMetrics::instance()->clone_task_intra_node_copy_bytes.increment(copy_size);
+                StarRocksMetrics::instance()->clone_task_intra_node_copy_bytes.increment(copy_size);
 
                 int64_t copy_time_ms = engine_task.get_copy_time_ms();
                 finish_task_request.__set_copy_time_ms(copy_time_ms);
-                AgentMetrics::instance()->clone_task_intra_node_copy_duration_ms.increment(copy_time_ms);
+                StarRocksMetrics::instance()->clone_task_intra_node_copy_duration_ms.increment(copy_time_ms);
             }
         }
     } else {
-        Status clone_status;
-        EngineCloneTask engine_task(RuntimeEnv::GetInstance()->clone_mem_tracker(), clone_req,
-                                    agent_task_req->signature, &error_msgs, &tablet_infos, &clone_status);
+        EngineCloneTask engine_task(GlobalEnv::GetInstance()->clone_mem_tracker(), clone_req, agent_task_req->signature,
+                                    &error_msgs, &tablet_infos, &status);
         Status res = StorageEngine::instance()->execute_task(&engine_task);
         if (!res.ok()) {
-            AgentMetrics::instance()->clone_requests_failed.increment(1);
+            StarRocksMetrics::instance()->clone_requests_failed.increment(1);
             status_code = TStatusCode::RUNTIME_ERROR;
             LOG(WARNING) << "clone failed. status:" << res << ", signature:" << agent_task_req->signature;
             error_msgs.emplace_back("clone failed.");
         } else {
-            if (!clone_status.ok()) {
-                AgentMetrics::instance()->clone_requests_failed.increment(1);
+            if (status != STARROCKS_SUCCESS && status != STARROCKS_CREATE_TABLE_EXIST) {
+                StarRocksMetrics::instance()->clone_requests_failed.increment(1);
                 status_code = TStatusCode::RUNTIME_ERROR;
-                LOG(WARNING) << "clone failed. status:" << clone_status << ", signature:" << agent_task_req->signature;
+                LOG(WARNING) << "clone failed. signature: " << agent_task_req->signature;
                 error_msgs.emplace_back("clone failed.");
             } else {
-                LOG(INFO) << "clone success, set tablet infos. status:" << clone_status
+                LOG(INFO) << "clone success, set tablet infos. status:" << status
                           << ", signature:" << agent_task_req->signature;
                 finish_task_request.__set_finish_tablet_infos(tablet_infos);
 
                 int64_t copy_size = engine_task.get_copy_size();
                 finish_task_request.__set_copy_size(copy_size);
-                AgentMetrics::instance()->clone_task_inter_node_copy_bytes.increment(copy_size);
+                StarRocksMetrics::instance()->clone_task_inter_node_copy_bytes.increment(copy_size);
 
                 int64_t copy_time_ms = engine_task.get_copy_time_ms();
                 finish_task_request.__set_copy_time_ms(copy_time_ms);
-                AgentMetrics::instance()->clone_task_inter_node_copy_duration_ms.increment(copy_time_ms);
+                StarRocksMetrics::instance()->clone_task_inter_node_copy_duration_ms.increment(copy_time_ms);
             }
         }
     }
@@ -549,7 +545,7 @@ void run_check_consistency_task(const std::shared_ptr<CheckConsistencyTaskReques
     TStatus task_status;
     uint32_t checksum = 0;
 
-    MemTracker* mem_tracker = RuntimeEnv::GetInstance()->consistency_mem_tracker();
+    MemTracker* mem_tracker = GlobalEnv::GetInstance()->consistency_mem_tracker();
     Status check_limit_st = mem_tracker->check_mem_limit("Start consistency check.");
     if (!check_limit_st.ok()) {
         LOG(WARNING) << "check consistency failed: " << check_limit_st.message();
@@ -590,7 +586,7 @@ void run_compaction_task(const std::shared_ptr<CompactionTaskRequest>& agent_tas
     TStatus task_status;
 
     for (auto tablet_id : compaction_req.tablet_ids) {
-        EngineManualCompactionTask engine_task(RuntimeEnv::GetInstance()->compaction_mem_tracker(), tablet_id,
+        EngineManualCompactionTask engine_task(GlobalEnv::GetInstance()->compaction_mem_tracker(), tablet_id,
                                                compaction_req.is_base_compaction);
         (void)StorageEngine::instance()->execute_task(&engine_task);
     }
@@ -868,7 +864,7 @@ AgentStatus move_dir(TTabletId tablet_id, TSchemaHash schema_hash, const std::st
     TabletSharedPtr tablet = StorageEngine::instance()->tablet_manager()->get_tablet(tablet_id);
     if (tablet == nullptr) {
         LOG(INFO) << "Fail to get tablet_id=" << tablet_id << " schema hash=" << schema_hash;
-        error_msgs->emplace_back("failed to get tablet");
+        error_msgs->push_back("failed to get tablet");
         return STARROCKS_TASK_REQUEST_ERROR;
     }
 
@@ -928,7 +924,7 @@ void run_update_meta_info_task(const std::shared_ptr<UpdateTabletMetaInfoAgentTa
     // alter meta SHARED_DATA
     if (update_tablet_meta_req.__isset.tablet_type &&
         update_tablet_meta_req.tablet_type == TTabletType::TABLET_TYPE_LAKE) {
-        lake::SchemaChangeHandler handler(StorageEnv::GetInstance()->lake_tablet_manager());
+        lake::SchemaChangeHandler handler(ExecEnv::GetInstance()->lake_tablet_manager());
         auto res = handler.process_update_tablet_meta(update_tablet_meta_req);
         if (!res.ok()) {
             // TODO explict the error message and errorCode
@@ -1049,7 +1045,7 @@ void run_drop_auto_increment_map_task(const std::shared_ptr<DropAutoIncrementMap
 void run_remote_snapshot_task(const std::shared_ptr<RemoteSnapshotAgentTaskRequest>& agent_task_req,
                               ExecEnv* exec_env) {
     SCOPED_SET_MODULE_TYPE(ThreadModuleType::REPLICATION);
-    MemTracker* prev_tracker = tls_thread_status.set_mem_tracker(RuntimeEnv::GetInstance()->replication_mem_tracker());
+    MemTracker* prev_tracker = tls_thread_status.set_mem_tracker(GlobalEnv::GetInstance()->replication_mem_tracker());
     DeferOp op([prev_tracker] { tls_thread_status.set_mem_tracker(prev_tracker); });
 
     TRemoteSnapshotRequest& remote_snapshot_req = agent_task_req->task_req;
@@ -1071,8 +1067,7 @@ void run_remote_snapshot_task(const std::shared_ptr<RemoteSnapshotAgentTaskReque
 
     Status res;
     if (remote_snapshot_req.tablet_type == TTabletType::TABLET_TYPE_LAKE) {
-        res = StorageEnv::GetInstance()->lake_replication_txn_manager()->remote_snapshot(remote_snapshot_req,
-                                                                                         &src_snapshot_info);
+        res = exec_env->lake_replication_txn_manager()->remote_snapshot(remote_snapshot_req, &src_snapshot_info);
     } else {
         res = StorageEngine::instance()->replication_txn_manager()->remote_snapshot(remote_snapshot_req,
                                                                                     &src_snapshot_info);
@@ -1099,9 +1094,9 @@ void run_remote_snapshot_task(const std::shared_ptr<RemoteSnapshotAgentTaskReque
 }
 
 void run_replicate_snapshot_task(const std::shared_ptr<ReplicateSnapshotAgentTaskRequest>& agent_task_req,
-                                 ExecEnv* exec_env, ThreadPool* replicate_file_pool) {
+                                 ExecEnv* exec_env) {
     SCOPED_SET_MODULE_TYPE(ThreadModuleType::REPLICATION);
-    MemTracker* prev_tracker = tls_thread_status.set_mem_tracker(RuntimeEnv::GetInstance()->replication_mem_tracker());
+    MemTracker* prev_tracker = tls_thread_status.set_mem_tracker(GlobalEnv::GetInstance()->replication_mem_tracker());
     DeferOp op([prev_tracker] { tls_thread_status.set_mem_tracker(prev_tracker); });
 
     TReplicateSnapshotRequest& replicate_snapshot_req = agent_task_req->task_req;
@@ -1114,8 +1109,7 @@ void run_replicate_snapshot_task(const std::shared_ptr<ReplicateSnapshotAgentTas
 
     Status res;
     if (replicate_snapshot_req.tablet_type == TTabletType::TABLET_TYPE_LAKE) {
-        res = StorageEnv::GetInstance()->lake_replication_txn_manager()->replicate_snapshot(
-                replicate_snapshot_req, /*replicate_file_thread_pool=*/replicate_file_pool);
+        res = exec_env->lake_replication_txn_manager()->replicate_snapshot(replicate_snapshot_req);
     } else {
         res = StorageEngine::instance()->replication_txn_manager()->replicate_snapshot(replicate_snapshot_req);
     }

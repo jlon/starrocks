@@ -26,15 +26,15 @@ public:
         length = 0;
     }
 
-    ~MemoryOutputStream() override;
+    virtual ~MemoryOutputStream() override;
 
-    uint64_t getLength() const override { return length; }
+    virtual uint64_t getLength() const override { return length; }
 
-    uint64_t getNaturalWriteSize() const override { return naturalWriteSize; }
+    virtual uint64_t getNaturalWriteSize() const override { return naturalWriteSize; }
 
-    void write(const void* buf, size_t size) override;
+    virtual void write(const void* buf, size_t size) override;
 
-    const std::string& getName() const override { return name; }
+    virtual const std::string& getName() const override { return name; }
 
     const char* getData() const { return data; }
 

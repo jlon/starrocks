@@ -18,7 +18,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.gson.annotations.SerializedName;
-import com.starrocks.alter.reshard.presplit.Estimates;
 import com.starrocks.common.io.Writable;
 import com.starrocks.memory.MemoryTrackable;
 import com.starrocks.memory.estimate.Estimator;
@@ -73,8 +72,7 @@ public class InsertOverwriteJobMgr implements Writable, GsonPostProcessable, Mem
         this.lock = new ReentrantReadWriteLock();
     }
 
-    public void executeJob(ConnectContext context, StmtExecutor stmtExecutor, InsertOverwriteJob job,
-                           Estimates outputEstimates) throws Exception {
+    public void executeJob(ConnectContext context, StmtExecutor stmtExecutor, InsertOverwriteJob job) throws Exception {
         boolean registered = registerOverwriteJob(job);
         if (!registered) {
             LOG.warn("register insert overwrite job:{} failed", job.getJobId());
@@ -82,7 +80,7 @@ public class InsertOverwriteJobMgr implements Writable, GsonPostProcessable, Mem
         }
         try {
             InsertOverwriteJobRunner jobRunner =
-                    new InsertOverwriteJobRunner(job, context, stmtExecutor, outputEstimates);
+                    new InsertOverwriteJobRunner(job, context, stmtExecutor);
             jobRunner.run();
         } finally {
             deregisterOverwriteJob(job.getJobId());

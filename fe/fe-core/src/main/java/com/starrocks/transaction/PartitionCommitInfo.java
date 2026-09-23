@@ -54,12 +54,9 @@ public class PartitionCommitInfo implements Writable {
     private long version;
 
     // For LakeTable, the value of versionTime indicates different circumstances:
-    //  = 0 : this partition has not published yet
+    //  = 0 : no publish version task has been executed since process starts
+    //  < 0 : last publish version task failed and Math.abs(versionTime) is the last execution time
     //  > 0 : last publish version task succeeded and versionTime is the last execution time
-    //
-    // A failed attempt is recorded in lastPublishFailureTime instead of by negating this field:
-    // versionTime is also the timestamp handed to Partition#updateVisibleVersion, so it must never
-    // carry a negative value into the image.
     //
     // For OlapTable, versionTime always greater than 0.
     @SerializedName(value = "versionTime")
@@ -91,30 +88,9 @@ public class PartitionCommitInfo implements Writable {
     // (range-distribution tablets, and any tablet on first import), for shared-nothing tables
     // from TTabletInfo on first import. Transient (not serialized), leader-only. Consumed for
     // first-load statistics collection and (lake only) real-time reshard triggering.
-    //
-    // Deliberately an unsynchronized HashMap: exactly one thread may touch a given instance at a
-    // time, and that must stay true.
-    //  - shared-nothing: written only by the thread finishing the transaction, via
-    //    TransactionState.applyPublishTaskTabletStats() under the txn write lock. The thrift
-    //    finishTask handlers write to their own PublishVersionTask, never here.
-    //  - lake: written only by the publish thread that owns this partition, which happens-before
-    //    the finish through the publish CompletableFuture.
-    // Writing this map from a thread that does not own it is a bug, not a tuning question - it is
-    // what made the publish daemon's snapshot throw ConcurrentModificationException in issue #77595.
-    // Leaving it unsynchronized keeps such a mistake loud instead of silently truncating stats.
     private final Map<Long, TabletStatPB> tabletStats = new HashMap<>();
 
     private boolean isDoubleWrite = false;
-
-    // Paces the "fail to publish partition" error log for this partition. Deliberately not
-    // serialized: it only throttles logging inside one FE process. Races between publish
-    // threads can at worst let one extra line through, which is not worth a lock here.
-    private long lastPublishErrorLogTime = 0;
-
-    // When the last publish attempt for this partition failed, used to space out retries.
-    // Deliberately not serialized: it is in-process retry state, and a leader that has just taken
-    // over should attempt a publish immediately rather than inherit a stale back-off.
-    private long lastPublishFailureTime = 0;
 
     public PartitionCommitInfo() {
 
@@ -140,57 +116,8 @@ public class PartitionCommitInfo implements Writable {
         this.dictCollectedVersions = dictCollectedVersions;
     }
 
-    public PartitionCommitInfo(PartitionCommitInfo partitionCommitInfo) {
-        this.physicalPartitionId = partitionCommitInfo.physicalPartitionId;
-        this.version = partitionCommitInfo.version;
-        this.versionTime = partitionCommitInfo.versionTime;
-        this.dataVersion = partitionCommitInfo.dataVersion;
-        this.versionEpoch = partitionCommitInfo.versionEpoch;
-        this.invalidDictCacheColumns = partitionCommitInfo.invalidDictCacheColumns == null
-                ? Lists.newArrayList()
-                : Lists.newArrayList(partitionCommitInfo.invalidDictCacheColumns);
-        this.validDictCacheColumns = partitionCommitInfo.validDictCacheColumns == null
-                ? Lists.newArrayList()
-                : Lists.newArrayList(partitionCommitInfo.validDictCacheColumns);
-        this.dictCollectedVersions = partitionCommitInfo.dictCollectedVersions == null
-                ? Lists.newArrayList()
-                : Lists.newArrayList(partitionCommitInfo.dictCollectedVersions);
-        this.compactionScore = partitionCommitInfo.compactionScore == null
-                ? null
-                : new Quantiles(partitionCommitInfo.compactionScore);
-        this.tabletStats.putAll(partitionCommitInfo.tabletStats);
-        this.isDoubleWrite = partitionCommitInfo.isDoubleWrite;
-    }
-
     public void setVersionTime(long time) {
         this.versionTime = time;
-    }
-
-    // Records a failed publish attempt. versionTime is left alone so it keeps meaning
-    // "the time this partition became visible", which is what the txn log appliers read.
-    public void markPublishFailed(long now) {
-        this.lastPublishFailureTime = now;
-    }
-
-    public void markPublishSucceeded(long now) {
-        this.lastPublishFailureTime = 0;
-        this.versionTime = now;
-    }
-
-    // 0 when the last attempt did not fail.
-    public long getLastPublishFailureTime() {
-        return lastPublishFailureTime;
-    }
-
-    // Returns true at most once per intervalMs. A partition that keeps failing to publish is
-    // retried continuously, so logging every failure turns one stuck partition into a steady
-    // stream of identical messages.
-    public boolean shouldLogPublishError(long now, long intervalMs) {
-        if (now - lastPublishErrorLogTime < intervalMs) {
-            return false;
-        }
-        lastPublishErrorLogTime = now;
-        return true;
     }
 
     public long getPhysicalPartitionId() {
@@ -251,21 +178,6 @@ public class PartitionCommitInfo implements Writable {
 
     public Map<Long, TabletStatPB> getTabletStats() {
         return tabletStats;
-    }
-
-    // Single entry point for adding stats, so every writer of tabletStats is greppable and can be
-    // checked against the single-owner-thread rule documented on the field.
-    public void putAllTabletStats(@Nullable Map<Long, TabletStatPB> stats) {
-        if (stats == null) {
-            return;
-        }
-        // Lake entries come straight off a publish RPC response; every consumer null-checks the
-        // value, so drop null stats here instead of storing them.
-        stats.forEach((tabletId, stat) -> {
-            if (stat != null) {
-                tabletStats.put(tabletId, stat);
-            }
-        });
     }
 
     @Nullable

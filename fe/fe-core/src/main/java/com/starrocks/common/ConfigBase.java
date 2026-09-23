@@ -227,27 +227,6 @@ public class ConfigBase {
         }
     }
 
-    private static boolean isValidIPv4(String ip) {
-        String[] parts = ip.split("\\.", -1);
-        if (parts.length != 4) {
-            return false;
-        }
-        for (String part : parts) {
-            if (part.isEmpty()) {
-                return false;
-            }
-            try {
-                int val = Integer.parseInt(part);
-                if (val < 0 || val > 255) {
-                    return false;
-                }
-            } catch (NumberFormatException e) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     private static void validateConfValue(Field f, String[] arrayArgs, String confVal)
             throws InvalidConfException {
         // TODO: refactor to allow register custom validator for each config field
@@ -269,30 +248,6 @@ public class ConfigBase {
                             "must be at least 30 seconds, current value: " + confVal);
                 }
                 break;
-            case "label_clean_interval_second":
-                // The value drives Daemon.run()'s Thread.sleep(): 0 spins the label cleaner and a
-                // negative value throws IllegalArgumentException, which escapes the daemon loop and
-                // kills the cleaner thread for good.
-                int labelCleanInterval = Integer.parseInt(confVal);
-                if (labelCleanInterval <= 0) {
-                    throw new InvalidConfException("'label_clean_interval_second' configuration " +
-                            "must be greater than 0, current value: " + confVal);
-                }
-                break;
-            case "http_request_allow_private_in_allowlist":
-                if (!confVal.equalsIgnoreCase("true") && !confVal.equalsIgnoreCase("false")) {
-                    throw new InvalidConfException(
-                            "'http_request_allow_private_in_allowlist' must be 'true' or 'false'. Current value: "
-                                    + confVal);
-                }
-                break;
-            case "http_request_ssl_verification_required":
-                if (!confVal.equalsIgnoreCase("true") && !confVal.equalsIgnoreCase("false")) {
-                    throw new InvalidConfException(
-                            "'http_request_ssl_verification_required' must be 'true' or 'false'. Current value: "
-                                    + confVal);
-                }
-                break;
             case "query_queue_slots_estimator_strategy":
                 if (!confVal.equalsIgnoreCase("PBE")
                         && !confVal.equalsIgnoreCase("MBE")
@@ -301,59 +256,6 @@ public class ConfigBase {
                         && !confVal.equalsIgnoreCase("MIN")) {
                     throw new InvalidConfException("'query_queue_slots_estimator_strategy' must be one of PBE, "
                             + "MBE, CBE, MAX, or MIN. Current value: " + confVal);
-                }
-                break;
-            case "default_mv_refresh_mode":
-                // Must accept exactly what PropertyAnalyzer#analyzeRefreshMode accepts for the
-                // refresh_mode property: AUTO is implemented but deliberately not selectable.
-                if (!confVal.equalsIgnoreCase("PCT") && !confVal.equalsIgnoreCase("INCREMENTAL")) {
-                    throw new InvalidConfException("'default_mv_refresh_mode' must be one of PCT or INCREMENTAL. "
-                            + "Current value: " + confVal);
-                }
-                break;
-            case "http_request_security_level":
-                int securityLevel = Integer.parseInt(confVal);
-                if (securityLevel < 1 || securityLevel > 4) {
-                    throw new InvalidConfException("'http_request_security_level' must be between 1 and 4. " +
-                            "1=TRUSTED, 2=PUBLIC, 3=RESTRICTED, 4=PARANOID. Current value: " + confVal);
-                }
-                break;
-            case "http_request_ip_allowlist":
-                // Validate comma-separated IPv4 address list
-                // Valid: "192.168.1.1" or "10.0.0.1, 172.16.0.1"
-                if (!confVal.isEmpty()) {
-                    String[] ips = confVal.split(",");
-                    for (String ip : ips) {
-                        String trimmed = ip.trim();
-                        if (trimmed.isEmpty()) {
-                            throw new InvalidConfException(
-                                    "Invalid 'http_request_ip_allowlist': empty value between commas. " +
-                                            "Current value: '" + confVal + "'");
-                        }
-                        if (!isValidIPv4(trimmed)) {
-                            throw new InvalidConfException(
-                                    "Invalid 'http_request_ip_allowlist': '" + trimmed + "' is not a valid IPv4 address. " +
-                                            "Each octet must be 0-255. Expected format: '192.168.1.1' or '10.0.0.1,172.16.0.1'");
-                        }
-                    }
-                }
-                break;
-            case "http_request_host_allowlist_regexp":
-                // Validate each regex pattern in comma-separated list
-                if (!confVal.isEmpty()) {
-                    String[] patterns = confVal.split(",");
-                    for (String pattern : patterns) {
-                        String trimmed = pattern.trim();
-                        if (!trimmed.isEmpty()) {
-                            try {
-                                Pattern.compile(trimmed);
-                            } catch (Exception e) {
-                                throw new InvalidConfException(
-                                        "'http_request_host_allowlist_regexp' contains invalid regex pattern '" +
-                                                trimmed + "': " + e.getMessage());
-                            }
-                        }
-                    }
                 }
                 break;
             default:

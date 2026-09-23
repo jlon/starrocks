@@ -386,9 +386,4 @@ class SQLPlanGlobalStorage implements SQLPlanStorage {
     protected LoadingCache<Long, BaselinePlan> getCache() {
         return cache;
     }
-
-    @Override
-    public long getBaselineCount() {
-        return allBaselineIds.size();
-    }
 }

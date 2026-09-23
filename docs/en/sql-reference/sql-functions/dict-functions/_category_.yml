@@ -3,5 +3,4 @@ label: 'Dictionary'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: dict-functions
+  type: generated-index

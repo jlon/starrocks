@@ -47,11 +47,6 @@ public class FieldReference extends Expr {
     }
 
     @Override
-    protected boolean isConstantImpl() {
-        return false;
-    }
-
-    @Override
     public boolean equalsWithoutChild(Object o) {
         if (this == o) {
             return true;

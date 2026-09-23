@@ -1,7 +1,0 @@
-position: 70
-label: 'IDE Tools'
-collapsible: true
-collapsed: true
-link:
-  id: IDE_integrations
-  type: doc

@@ -3,5 +3,4 @@ label: 'Percentile'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: percentile-functions
+  type: generated-index

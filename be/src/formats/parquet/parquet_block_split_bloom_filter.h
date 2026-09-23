@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "common/block_split_bloom_filter.h"
+#include "util/block_split_bloom_filter.h"
 
 namespace starrocks {
 

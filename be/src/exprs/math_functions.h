@@ -16,7 +16,6 @@
 
 #include <cmath>
 
-#include "base/string/string_parser.hpp"
 #include "column/column.h"
 #include "column/column_builder.h"
 #include "column/column_viewer.h"
@@ -25,6 +24,7 @@
 #include "exprs/function_context.h"
 #include "exprs/function_helper.h"
 #include "exprs/unary_function.h"
+#include "util/string_parser.hpp"
 
 namespace starrocks {
 
@@ -171,9 +171,6 @@ public:
 
     template <LogicalType TYPE, bool isNorm>
     DEFINE_VECTORIZED_FN(cosine_similarity2);
-
-    template <LogicalType TYPE>
-    DEFINE_VECTORIZED_FN(inner_product);
 
     template <LogicalType TYPE>
     DEFINE_VECTORIZED_FN(l2_distance);
@@ -364,8 +361,8 @@ public:
      */
     template <LogicalType Type>
     DEFINE_VECTORIZED_FN(pmod) {
-        const auto& l = VECTORIZED_FN_ARGS(0);
-        const auto& r = VECTORIZED_FN_ARGS(1);
+        auto l = VECTORIZED_FN_ARGS(0);
+        auto r = VECTORIZED_FN_ARGS(1);
 
         if constexpr (Type == TYPE_FLOAT || Type == TYPE_DOUBLE) {
             return VectorizedUnstrictBinaryFunction<RValueCheckZeroImpl, pmodFloatImpl>::evaluate<Type>(l, r);
@@ -381,8 +378,8 @@ public:
      */
     template <LogicalType Type>
     DEFINE_VECTORIZED_FN(fmod) {
-        const auto& l = VECTORIZED_FN_ARGS(0);
-        const auto& r = VECTORIZED_FN_ARGS(1);
+        auto l = VECTORIZED_FN_ARGS(0);
+        auto r = VECTORIZED_FN_ARGS(1);
 
         return VectorizedUnstrictBinaryFunction<RValueCheckZeroImpl, fmodImpl>::evaluate<Type>(l, r);
     }
@@ -396,8 +393,8 @@ public:
      */
     template <LogicalType Type>
     DEFINE_VECTORIZED_FN(mod) {
-        const auto& l = VECTORIZED_FN_ARGS(0);
-        const auto& r = VECTORIZED_FN_ARGS(1);
+        auto l = VECTORIZED_FN_ARGS(0);
+        auto r = VECTORIZED_FN_ARGS(1);
 
         if constexpr (lt_is_decimalv2<Type>) {
             return VectorizedUnstrictBinaryFunction<RValueCheckZeroDecimalv2Impl, modDecimalv2Impl>::evaluate<Type>(l,

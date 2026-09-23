@@ -99,7 +99,6 @@ public class OdpsMetadata implements ConnectorMetadata {
     private LoadingCache<String, Set<String>> tableNameCache;
     private LoadingCache<OdpsTableName, OdpsTable> tableCache;
     private LoadingCache<OdpsTableName, List<Partition>> partitionCache;
-    private final Optional<OdpsCacheUpdateProcessor> cacheUpdateProcessor;
 
     public OdpsMetadata(Odps odps, String catalogName, AliyunCloudCredential aliyunCloudCredential,
                         OdpsProperties properties) {
@@ -108,8 +107,8 @@ public class OdpsMetadata implements ConnectorMetadata {
         this.aliyunCloudCredential = aliyunCloudCredential;
         this.properties = properties;
         EnvironmentSettings.Builder settingsBuilder =
-                EnvironmentSettings.newBuilder().withServiceEndpoint(OdpsUtils.getEndpoint(odps))
-                        .withCredentials(Credentials.newBuilder().withAccount(OdpsUtils.getAccount(odps)).build());
+                EnvironmentSettings.newBuilder().withServiceEndpoint(odps.getEndpoint())
+                        .withCredentials(Credentials.newBuilder().withAccount(odps.getAccount()).build());
         if (!StringUtils.isNullOrEmpty(properties.get(OdpsProperties.TUNNEL_ENDPOINT))) {
             settingsBuilder.withTunnelEndpoint(properties.get(OdpsProperties.TUNNEL_ENDPOINT));
         }
@@ -118,12 +117,6 @@ public class OdpsMetadata implements ConnectorMetadata {
         }
         settings = settingsBuilder.build();
         initMetaCache();
-        this.cacheUpdateProcessor = Optional.of(new OdpsCacheUpdateProcessor(
-                catalogName, odps, tableNameCache, tableCache, partitionCache));
-    }
-
-    public Optional<OdpsCacheUpdateProcessor> getCacheUpdateProcessor() {
-        return cacheUpdateProcessor;
     }
 
     private void initMetaCache() {
@@ -165,12 +158,12 @@ public class OdpsMetadata implements ConnectorMetadata {
         ImmutableList.Builder<String> builder = ImmutableList.builder();
         try {
             if (StringUtils.isNullOrEmpty(catalogOwner)) {
-                SecurityManager sm = OdpsUtils.getSecurityManager(odps);
+                SecurityManager sm = odps.projects().get().getSecurityManager();
                 String result = sm.runQuery("whoami", false);
                 JsonObject js = JsonParser.parseString(result).getAsJsonObject();
                 catalogOwner = js.get("DisplayName").getAsString();
             }
-            Iterator<Project> iterator = OdpsUtils.getProjectIterator(odps, catalogOwner);
+            Iterator<Project> iterator = odps.projects().iterator(catalogOwner);
             while (iterator.hasNext()) {
                 Project project = iterator.next();
                 builder.add(project.getName());
@@ -181,7 +174,7 @@ public class OdpsMetadata implements ConnectorMetadata {
         }
         ImmutableList<String> databases = builder.build();
         if (databases.isEmpty()) {
-            return ImmutableList.of(OdpsUtils.getDefaultProject(odps));
+            return ImmutableList.of(odps.getDefaultProject());
         }
         return databases;
     }
@@ -208,7 +201,7 @@ public class OdpsMetadata implements ConnectorMetadata {
 
     private Set<String> loadProjects(String dbName) {
         ImmutableSet.Builder<String> builder = ImmutableSet.builder();
-        Iterator<com.aliyun.odps.Table> iterator = OdpsUtils.getOdpsTablesIterator(odps, dbName);
+        Iterator<com.aliyun.odps.Table> iterator = odps.tables().iterator(dbName);
         while (iterator.hasNext()) {
             builder.add(iterator.next().getName());
         }
@@ -221,7 +214,7 @@ public class OdpsMetadata implements ConnectorMetadata {
     }
 
     private OdpsTable loadTable(OdpsTableName odpsTableName) {
-        com.aliyun.odps.Table table = OdpsUtils.getOdpsTable(odps, odpsTableName);
+        com.aliyun.odps.Table table = odps.tables().get(odpsTableName.getDatabaseName(), odpsTableName.getTableName());
         try {
             table.reload();
         } catch (OdpsException e) {
@@ -300,7 +293,9 @@ public class OdpsMetadata implements ConnectorMetadata {
     }
 
     private List<Partition> loadPartitions(OdpsTableName odpsTableName) {
-        return OdpsUtils.getOdpsTablePartitions(odps, odpsTableName);
+        com.aliyun.odps.Table odpsTable =
+                odps.tables().get(odpsTableName.getDatabaseName(), odpsTableName.getTableName());
+        return odpsTable.getPartitions();
     }
 
     @Override
@@ -328,12 +323,6 @@ public class OdpsMetadata implements ConnectorMetadata {
         if (!table.isUnPartitioned()) {
             partitionCache.invalidate(odpsTableName);
             get(partitionCache, odpsTableName);
-        }
-
-        if (partitionNames != null && !partitionNames.isEmpty()) {
-            cacheUpdateProcessor.ifPresent(processor -> processor.refreshPartition(table, partitionNames));
-        } else {
-            cacheUpdateProcessor.ifPresent(processor -> processor.refreshTable(srDbName, table, onlyCachedPartitions));
         }
     }
 

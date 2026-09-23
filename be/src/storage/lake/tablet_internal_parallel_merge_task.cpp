@@ -14,26 +14,29 @@
 
 #include "storage/lake/tablet_internal_parallel_merge_task.h"
 
-#include "column/chunk_factory.h"
-#include "column/chunk_schema_helper.h"
-#include "column/raw_data_visitor.h"
-#include "common/config_exec_fwd.h"
-#include "common/runtime_profile.h"
-#include "compute_env/load_spill/load_spill_merge_input_batch.h"
-#include "compute_env/spill/block_group.h"
+#include "exec/spill/input_stream.h"
+#include "exec/spill/options.h"
+#include "exec/spill/serde.h"
+#include "exec/spill/spiller.h"
+#include "exec/spill/spiller_factory.h"
 #include "gen_cpp/Types_types.h"
-#include "runtime/current_thread.h"
-#include "runtime/runtime_env.h"
+#include "runtime/runtime_state.h"
+#include "storage/aggregate_iterator.h"
 #include "storage/chunk_helper.h"
 #include "storage/lake/tablet_writer.h"
 #include "storage/lake/vacuum.h"
-#include "storage_primitive/chunk_iterator.h"
-#include "storage_primitive/primary_key_encoder.h"
+#include "storage/load_chunk_spiller.h"
+#include "storage/load_spill_block_manager.h"
+#include "storage/load_spill_pipeline_merge_iterator.h"
+#include "storage/merge_iterator.h"
+#include "storage/primary_key_encoder.h"
+#include "storage/storage_engine.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks::lake {
 
 TabletInternalParallelMergeTask::TabletInternalParallelMergeTask(std::unique_ptr<TabletWriter> writer,
-                                                                 std::unique_ptr<LoadSpillMergeInputBatch> task,
+                                                                 std::unique_ptr<LoadSpillPipelineMergeTask> task,
                                                                  const Schema* schema, std::atomic<bool>* quit_flag,
                                                                  RuntimeProfile::Counter* write_io_timer, bool op_aware,
                                                                  bool need_rssid_rowids)
@@ -47,7 +50,7 @@ TabletInternalParallelMergeTask::TabletInternalParallelMergeTask(std::unique_ptr
     std::string tracker_label =
             "LoadSpillMerge-" + std::to_string(_writer->tablet_id()) + "-" + std::to_string(_writer->txn_id());
     _merge_mem_tracker = std::make_unique<MemTracker>(MemTrackerType::COMPACTION_TASK, -1, std::move(tracker_label),
-                                                      RuntimeEnv::GetInstance()->compaction_mem_tracker());
+                                                      GlobalEnv::GetInstance()->compaction_mem_tracker());
 }
 
 TabletInternalParallelMergeTask::~TabletInternalParallelMergeTask() {
@@ -76,11 +79,10 @@ Status write_one_merged_chunk(TabletWriter* writer, Chunk* chunk, bool has_op, c
         }
         return writer->write(*chunk, nullptr);
     }
-    // Split the merged chunk by __op (last column).
+    // Split the merged chunk by __op (last column). __op is a non-nullable TINYINT (Int8) column, so read
+    // its raw buffer directly (branch-4.1 has no RawDataVisitor).
     const size_t op_idx = chunk->num_columns() - 1;
-    RawDataVisitor visitor;
-    RETURN_IF_ERROR(chunk->get_column_by_index(op_idx)->accept(&visitor));
-    const auto* ops = visitor.result();
+    const auto* ops = chunk->get_column_by_index(op_idx)->raw_data();
     const size_t nrows = chunk->num_rows();
     std::vector<uint32_t> up_idx;
     std::vector<uint32_t> del_idx;
@@ -161,7 +163,7 @@ Status finalize_merged_batch(TabletWriter* writer, bool has_op, const Schema& wr
     // the winning keys the unsort writer writes during flush() (separate-sort-key).
     if (has_op && had_deletes && !wrote_upsert) {
         SCOPED_TIMER(write_io_timer);
-        auto empty_chunk = ChunkFactory::new_chunk(write_schema, 0);
+        auto empty_chunk = ChunkHelper::new_chunk(write_schema, 0);
         RETURN_IF_ERROR(writer->write(*empty_chunk, nullptr));
     }
     {
@@ -185,7 +187,7 @@ Status finalize_merged_batch(TabletWriter* writer, bool has_op, const Schema& wr
 // LogBlock and legacy FileBlock return nullopt and are skipped. MUST run before release_block_groups()
 // clears the vector. Callers invoke this only on merge success -- failed-merge files are reclaimed by the
 // offline vacuum_full job once the txn is inactive, avoiding races with files still in use upstream.
-void hot_delete_merged_spill_files(TabletWriter* writer, LoadSpillMergeInputBatch* task) {
+void hot_delete_merged_spill_files(TabletWriter* writer, LoadSpillPipelineMergeTask* task) {
     std::vector<std::string> spill_paths;
     for (const auto& bg : task->block_groups) {
         if (bg == nullptr) continue;
@@ -224,7 +226,7 @@ void TabletInternalParallelMergeTask::run() {
         write_cids.push_back(static_cast<ColumnId>(i));
     }
     Schema write_schema(const_cast<Schema*>(_schema), write_cids);
-    auto char_field_indexes = ChunkSchemaHelper::get_char_field_indexes(write_schema);
+    auto char_field_indexes = ChunkHelper::get_char_field_indexes(write_schema);
     PrimaryKeyEncodingType pk_enc = PrimaryKeyEncodingType::PK_ENCODING_TYPE_NONE;
     if (has_op) {
         auto enc_or = _writer->tablet_schema()->primary_key_encoding_type_or_error();
@@ -235,7 +237,7 @@ void TabletInternalParallelMergeTask::run() {
         pk_enc = enc_or.value();
     }
 
-    auto chunk_shared_ptr = ChunkFactory::new_chunk(*_schema, config::vector_chunk_size);
+    auto chunk_shared_ptr = ChunkHelper::new_chunk(*_schema, config::vector_chunk_size);
     auto chunk = chunk_shared_ptr.get();
     auto st = Status::OK();
 

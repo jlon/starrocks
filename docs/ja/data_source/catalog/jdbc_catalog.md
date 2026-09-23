@@ -1,12 +1,10 @@
 ---
-sidebar_position: 70
 displayed_sidebar: docs
 description: "StarRocks v3.0 以降の JDBC catalog で、JDBC データソースからデータをインジェストせずにクエリおよび変換ロード。"
 toc_max_heading_level: 4
 ---
 
 import Beta from '../../_assets/commonMarkdown/_beta.mdx'
-import JoinPushdown from '../../_assets/commonMarkdown/join_pushdown.mdx'
 
 # JDBC catalog
 
@@ -158,19 +156,7 @@ PROPERTIES
     "jdbc_uri"="jdbc:clickhouse://127.0.0.1:8443",
     "driver_url"="https://repo1.maven.org/maven2/com/clickhouse/clickhouse-jdbc/0.4.6/clickhouse-jdbc-0.4.6.jar",
     "driver_class"="com.clickhouse.jdbc.ClickHouseDriver"
-);
--- 非標準ドライバーに schema_resolver を使用
-CREATE EXTERNAL CATALOG jdbc5
-PROPERTIES
-(
-    "type"="jdbc",
-    "user"="postgres",
-    "password"="changeme",
-    "jdbc_uri"="jdbc:postgresql://127.0.0.1:5432/mydb",
-    "driver_url"="file:///path/to/custom-postgresql-driver.jar",
-    "driver_class"="com.custom.PostgresDriver",
-    "schema_resolver"="postgresql"
-);
+);    
 ```
 
 ## JDBC catalog の表示
@@ -228,16 +214,6 @@ DROP Catalog jdbc0;
    ```SQL
    SELECT * FROM <table_name>;
    ```
-
-<JoinPushdown />
-
-## ネイティブ SQL で JDBC データをクエリする
-
-v4.1 以降、StarRocks は [`native_query`](../../sql-reference/sql-functions/table-functions/native_query.md) テーブル関数を使用して、データベースネイティブの `SELECT` 文で JDBC データをクエリできます。
-
-ソースデータベース側の Join、事前にフィルタリングしたサブクエリ、またはベンダー固有の SQL 構文など、単一の external table クエリでは表現できない SQL をソースデータベースで実行する必要がある場合に `native_query` を使用できます。StarRocks はパススルークエリの結果を通常のリレーションとして公開するため、StarRocks 側でさらにフィルター、Join、集計、射影を適用できます。
-
-構文、制限事項、例については、[`native_query`](../../sql-reference/sql-functions/table-functions/native_query.md) を参照してください。
 
 ## FAQ
 

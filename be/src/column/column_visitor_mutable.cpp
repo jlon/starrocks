@@ -14,19 +14,12 @@
 
 #include "column/column_visitor_mutable.h"
 
-#include <stdexcept>
-
 namespace starrocks {
-
-Status ColumnVisitorMutable::visit(GeoColumn*) {
-    throw std::runtime_error("GeoColumn does not support mutable visitor");
-}
 
 #define VISIT_IMPL(ClassName) \
     Status ColumnVisitorMutable::visit(ClassName* column) { return Status::NotSupported(#ClassName); }
 
 VISIT_IMPL(NullableColumn)
-VISIT_IMPL(AdaptiveNullableColumn)
 VISIT_IMPL(ConstColumn)
 VISIT_IMPL(ArrayColumn)
 VISIT_IMPL(MapColumn)

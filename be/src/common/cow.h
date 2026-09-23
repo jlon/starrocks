@@ -19,10 +19,10 @@
 #include <type_traits>
 #include <vector>
 
-#include "common/config_cow_fwd.h"
-#include "common/logging.h"
-#include "common/stack_util.h"
+#include "common/config.h"
 #include "gutil/casts.h"
+#include "logging.h"
+#include "util/stack_util.h"
 namespace starrocks {
 
 // A Clone-on-write base class inspired by Clickhouse and Rust.
@@ -232,8 +232,8 @@ protected:
         const T& operator*() const { return *value; }
         T& operator*() { return *get(); }
 
-        operator const ImmutPtr<T>&() const { return value; }
-        operator ImmutPtr<T>&() & { return value; }
+        operator const ImmutPtr<T> &() const { return value; }
+        operator ImmutPtr<T> &() & { return value; }
 
         operator bool() const { return value.get() != nullptr; }
         bool operator!() const { return value.get() == nullptr; }
@@ -354,7 +354,9 @@ public:
         return MutablePtr(new Derived(std::forward<std::initializer_list<T>>(arg)));
     }
 
-    typename AncestorBaseType::MutablePtr clone() const override = 0;
+    typename AncestorBaseType::MutablePtr clone() const override {
+        return typename AncestorBaseType::MutablePtr(new Derived(down_cast<const Derived&>(*this)));
+    }
 
     // cast base ptr to derived ptr statically, like std::static_pointer_cast; if failed, return nullptr.
     static Ptr static_pointer_cast(const BasePtr& ptr) {

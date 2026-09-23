@@ -1,7 +1,0 @@
-position: 120
-label: 'Integrations'
-collapsible: true
-collapsed: true
-link:
-  id: integrations
-  type: doc

@@ -15,51 +15,24 @@
 set(Boost_USE_STATIC_LIBS ON)
 set(Boost_USE_STATIC_RUNTIME ON)
 
-set(STARROCKS_PROTOC_EXECUTABLE "${THIRDPARTY_DIR}/bin/protoc")
-if(NOT EXISTS "${STARROCKS_PROTOC_EXECUTABLE}")
-    find_program(STARROCKS_PROTOC_EXECUTABLE NAMES protoc REQUIRED)
+# Compile generated source if necessary
+message(STATUS "build gensrc if necessary")
+execute_process(COMMAND make -C ${BASE_DIR}/../gensrc/
+                RESULT_VARIABLE MAKE_GENSRC_RESULT)
+if(NOT ${MAKE_GENSRC_RESULT} EQUAL 0 AND NOT APPLE)
+    message(FATAL_ERROR "Failed to build ${BASE_DIR}/../gensrc/")
 endif()
-
-set(STARROCKS_THRIFT_EXECUTABLE "${THIRDPARTY_DIR}/bin/thrift")
-if(NOT EXISTS "${STARROCKS_THRIFT_EXECUTABLE}")
-    find_program(STARROCKS_THRIFT_EXECUTABLE NAMES thrift REQUIRED)
-endif()
-
-set(THRIFT_COMPILER "${STARROCKS_THRIFT_EXECUTABLE}")
-
-message(STATUS "Using protoc compiler: ${STARROCKS_PROTOC_EXECUTABLE}")
-message(STATUS "Using thrift compiler: ${STARROCKS_THRIFT_EXECUTABLE}")
 
 #
 set(BUILD_VERSION_CC ${CMAKE_BINARY_DIR}/build_version.cc)
 configure_file(${SRC_DIR}/common/build_version.cc.in ${BUILD_VERSION_CC} @ONLY)
-set(BUILD_VERSION_CPP ${GENSRC_DIR}/gen_cpp/version.cpp)
-set_source_files_properties(${BUILD_VERSION_CPP} PROPERTIES GENERATED TRUE)
-add_library(build_version OBJECT ${BUILD_VERSION_CC} ${BUILD_VERSION_CPP})
+add_library(build_version OBJECT ${BUILD_VERSION_CC})
 target_include_directories(build_version PRIVATE ${SRC_DIR}/common)
 
 # Add common cmake prefix path and link library path
 list(APPEND CMAKE_PREFIX_PATH ${THIRDPARTY_DIR}/lib/cmake)
 list(APPEND CMAKE_PREFIX_PATH ${THIRDPARTY_DIR}/lib64/cmake)
 link_directories(${THIRDPARTY_DIR}/lib ${THIRDPARTY_DIR}/lib64)
-
-function(starrocks_resolve_thirdparty_library out_var file_name)
-    if (APPLE)
-        set(search_dirs "${THIRDPARTY_DIR}/lib" "${THIRDPARTY_DIR}/lib64")
-    else()
-        set(search_dirs "${THIRDPARTY_DIR}/lib64" "${THIRDPARTY_DIR}/lib")
-    endif()
-
-    foreach(search_dir IN LISTS search_dirs)
-        if (EXISTS "${search_dir}/${file_name}")
-            set(${out_var} "${search_dir}/${file_name}" PARENT_SCOPE)
-            return()
-        endif()
-    endforeach()
-
-    list(GET search_dirs 0 default_search_dir)
-    set(${out_var} "${default_search_dir}/${file_name}" PARENT_SCOPE)
-endfunction()
 
 # Set Boost
 set(Boost_DEBUG FALSE)
@@ -74,17 +47,6 @@ if (NOT APPLE)
     find_package(Boost 1.80.0 REQUIRED COMPONENTS thread regex program_options filesystem context iostreams)
 else()
     find_package(Boost 1.80.0 COMPONENTS thread regex program_options filesystem context iostreams)
-    set(BOOST_APPLE_LIBRARIES "")
-    foreach(BOOST_LIBRARY IN LISTS Boost_LIBRARIES)
-        get_filename_component(BOOST_LIBRARY_NAME "${BOOST_LIBRARY}" NAME)
-        if (BOOST_LIBRARY_NAME MATCHES "^libboost_.*\\.(a|dylib)$")
-            starrocks_resolve_thirdparty_library(BOOST_LIBRARY_RESOLVED "${BOOST_LIBRARY_NAME}")
-            list(APPEND BOOST_APPLE_LIBRARIES "${BOOST_LIBRARY_RESOLVED}")
-        else()
-            list(APPEND BOOST_APPLE_LIBRARIES "${BOOST_LIBRARY}")
-        endif()
-    endforeach()
-    set(Boost_LIBRARIES "${BOOST_APPLE_LIBRARIES}")
 endif()
 include_directories(${Boost_INCLUDE_DIRS})
 message(STATUS ${Boost_LIBRARIES})
@@ -94,17 +56,14 @@ set(JEMALLOC_HOME "${THIRDPARTY_DIR}/jemalloc")
 
 # Set all libraries
 
-starrocks_resolve_thirdparty_library(CLUCENE_CORE_LIBRARY libclucene-core-static.a)
 add_library(clucene-core STATIC IMPORTED)
-set_target_properties(clucene-core PROPERTIES IMPORTED_LOCATION ${CLUCENE_CORE_LIBRARY})
+set_target_properties(clucene-core PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libclucene-core-static.a)
 
-starrocks_resolve_thirdparty_library(CLUCENE_SHARED_LIBRARY libclucene-shared-static.a)
 add_library(clucene-shared STATIC IMPORTED)
-set_target_properties(clucene-shared PROPERTIES IMPORTED_LOCATION ${CLUCENE_SHARED_LIBRARY})
+set_target_properties(clucene-shared PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libclucene-shared-static.a)
 
-starrocks_resolve_thirdparty_library(CLUCENE_CONTRIBS_LIBRARY libclucene-contribs-lib.a)
 add_library(clucene-contribs-lib STATIC IMPORTED)
-set_target_properties(clucene-contribs-lib PROPERTIES IMPORTED_LOCATION ${CLUCENE_CONTRIBS_LIBRARY})
+set_target_properties(clucene-contribs-lib PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libclucene-contribs-lib.a)
 
 add_library(gflags STATIC IMPORTED GLOBAL)
 set_target_properties(gflags PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libgflags.a)
@@ -118,6 +77,10 @@ set_target_properties(re2 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/lib
 add_library(pprof STATIC IMPORTED)
 set_target_properties(pprof PROPERTIES IMPORTED_LOCATION
     ${GPERFTOOLS_HOME}/lib/libprofiler.a)
+
+add_library(tcmalloc STATIC IMPORTED)
+set_target_properties(tcmalloc PROPERTIES IMPORTED_LOCATION
+    ${GPERFTOOLS_HOME}/lib/libtcmalloc.a)
 
 add_library(protobuf STATIC IMPORTED GLOBAL)
 set_target_properties(protobuf PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libprotobuf.a)
@@ -167,38 +130,13 @@ add_library(icudata STATIC IMPORTED)
 set_target_properties(icudata PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libicudata.a)
 
 
-# Allow FindOpenSSL() to find correct static libraries from the prepared thirdparty root.
-set(OPENSSL_ROOT_DIR ${THIRDPARTY_DIR} CACHE PATH "root directory of an OpenSSL installation" FORCE)
-set(OPENSSL_USE_STATIC_LIBS TRUE CACHE BOOL "Prefer static OpenSSL from the prepared thirdparty root" FORCE)
-if (EXISTS "${THIRDPARTY_DIR}/include/openssl/ssl.h")
-    set(OPENSSL_INCLUDE_DIR "${THIRDPARTY_DIR}/include" CACHE PATH "OpenSSL include directory" FORCE)
-endif()
-if (EXISTS "${THIRDPARTY_DIR}/lib/libcrypto.a")
-    set(OPENSSL_CRYPTO_LIBRARY "${THIRDPARTY_DIR}/lib/libcrypto.a" CACHE FILEPATH "OpenSSL crypto library" FORCE)
-endif()
-if (EXISTS "${THIRDPARTY_DIR}/lib/libssl.a")
-    set(OPENSSL_SSL_LIBRARY "${THIRDPARTY_DIR}/lib/libssl.a" CACHE FILEPATH "OpenSSL ssl library" FORCE)
-endif()
+# Allow FindOpenSSL() to find correct static libraries
+set(OPENSSL_ROOT_DIR ${THIRDPARTY_DIR} CACHE STRING "root directory of an OpenSSL installation")
 message(STATUS "Using OpenSSL Root Dir: ${OPENSSL_ROOT_DIR}")
 add_library(crypto STATIC IMPORTED GLOBAL)
 set_target_properties(crypto PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libcrypto.a)
 
 add_library(AWS::crypto ALIAS crypto)
-
-add_library(libz STATIC IMPORTED GLOBAL)
-set_target_properties(libz PROPERTIES
-    IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libz.a
-    INTERFACE_INCLUDE_DIRECTORIES ${THIRDPARTY_DIR}/include)
-
-# Pre-declare ZLIB::ZLIB for third-party config packages that call
-# find_package(ZLIB), so they do not create a competing imported target.
-add_library(ZLIB::ZLIB ALIAS libz)
-set(ZLIB_FOUND TRUE)
-set(ZLIB_INCLUDE_DIR "${THIRDPARTY_DIR}/include")
-set(ZLIB_INCLUDE_DIRS "${THIRDPARTY_DIR}/include")
-set(ZLIB_LIBRARY "${THIRDPARTY_DIR}/lib/libz.a")
-set(ZLIB_LIBRARIES ZLIB::ZLIB)
-
 set(AWSSDK_ROOT_DIR ${THIRDPARTY_DIR})
 set(AWSSDK_COMMON_RUNTIME_LIBS "aws-crt-cpp;aws-c-auth;aws-c-cal;aws-c-common;aws-c-compression;aws-c-event-stream;aws-c-http;aws-c-io;aws-c-mqtt;aws-c-s3;aws-checksums;s2n;aws-c-sdkutils")
 foreach(lib IN ITEMS ${AWSSDK_COMMON_RUNTIME_LIBS})
@@ -208,18 +146,7 @@ endforeach()
 find_package(AWSSDK REQUIRED COMPONENTS core s3 s3-crt transfer identity-management sts)
 include_directories(${AWSSDK_INCLUDE_DIRS})
 
-if (APPLE AND "$ENV{STARROCKS_USE_NIX_DEPS}" STREQUAL "1" AND NOT "$ENV{PCRE2_ROOT_DIR}" STREQUAL "")
-    set(PCRE2_ROOT_DIR "$ENV{PCRE2_ROOT_DIR}" CACHE PATH "PCRE2 search path" FORCE)
-    set(PCRE2_INCLUDE_DIR "$ENV{PCRE2_ROOT_DIR}/include" CACHE PATH "PCRE2 include directory" FORCE)
-    if (EXISTS "$ENV{PCRE2_ROOT_DIR}/lib/libpcre2-8.a")
-        set(PCRE2_LIBRARY "$ENV{PCRE2_ROOT_DIR}/lib/libpcre2-8.a" CACHE FILEPATH "PCRE2 library" FORCE)
-    elseif (EXISTS "$ENV{PCRE2_ROOT_DIR}/lib/libpcre2-8.dylib")
-        set(PCRE2_LIBRARY "$ENV{PCRE2_ROOT_DIR}/lib/libpcre2-8.dylib" CACHE FILEPATH "PCRE2 library" FORCE)
-    endif()
-endif()
-
-set(Poco_ROOT "${THIRDPARTY_DIR}" CACHE PATH "Poco search path" FORCE)
-set(Poco_ROOT_DIR "${THIRDPARTY_DIR}" CACHE PATH "Poco search path" FORCE)
+set(Poco_ROOT_DIR ${THIRDPARTY_DIR})
 find_package(Poco REQUIRED COMPONENTS Net NetSSL)
 include_directories(${Poco_INCLUDE_DIRS})
 
@@ -234,95 +161,56 @@ set_target_properties(leveldb PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib
 
 if ("${CMAKE_BUILD_TYPE}" STREQUAL "DEBUG" OR "${CMAKE_BUILD_TYPE}" STREQUAL "RELEASE")
     add_library(jemalloc SHARED IMPORTED)
-    if (APPLE)
-        file(GLOB JEMALLOC_SHARED_LIBS
-             "${JEMALLOC_HOME}/lib-shared/libjemalloc*.dylib"
-             "${JEMALLOC_HOME}/lib-shared/libjemalloc*.dylib.*")
-        list(LENGTH JEMALLOC_SHARED_LIBS JEMALLOC_SHARED_LIBS_COUNT)
-        if (JEMALLOC_SHARED_LIBS_COUNT EQUAL 0)
-            message(FATAL_ERROR "jemalloc shared library not found under ${JEMALLOC_HOME}/lib-shared")
-        endif()
-        list(GET JEMALLOC_SHARED_LIBS 0 JEMALLOC_SHARED_LIB)
-    else()
-        set(JEMALLOC_SHARED_LIB "${JEMALLOC_HOME}/lib-shared/libjemalloc.so")
-    endif()
-    set_target_properties(jemalloc PROPERTIES IMPORTED_LOCATION "${JEMALLOC_SHARED_LIB}")
+    set_target_properties(jemalloc PROPERTIES IMPORTED_LOCATION ${JEMALLOC_HOME}/lib-shared/libjemalloc.so)
 else()
     add_library(jemalloc STATIC IMPORTED)
     set_target_properties(jemalloc PROPERTIES IMPORTED_LOCATION ${JEMALLOC_HOME}/lib-static/libjemalloc.a)
 endif()
 
-starrocks_resolve_thirdparty_library(BROTLICOMMON_LIBRARY libbrotlicommon.a)
 add_library(brotlicommon STATIC IMPORTED)
-set_target_properties(brotlicommon PROPERTIES IMPORTED_LOCATION ${BROTLICOMMON_LIBRARY})
+set_target_properties(brotlicommon PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libbrotlicommon.a)
 
-starrocks_resolve_thirdparty_library(BROTLIDEC_LIBRARY libbrotlidec.a)
 add_library(brotlidec STATIC IMPORTED)
-set_target_properties(brotlidec PROPERTIES IMPORTED_LOCATION ${BROTLIDEC_LIBRARY})
+set_target_properties(brotlidec PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libbrotlidec.a)
 
-starrocks_resolve_thirdparty_library(BROTLIENC_LIBRARY libbrotlienc.a)
 add_library(brotlienc STATIC IMPORTED)
-set_target_properties(brotlienc PROPERTIES IMPORTED_LOCATION ${BROTLIENC_LIBRARY})
+set_target_properties(brotlienc PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libbrotlienc.a)
 
-starrocks_resolve_thirdparty_library(ZSTD_LIBRARY libzstd.a)
 add_library(zstd STATIC IMPORTED)
-set_target_properties(zstd PROPERTIES IMPORTED_LOCATION ${ZSTD_LIBRARY})
+set_target_properties(zstd PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libzstd.a)
 
 add_library(streamvbyte STATIC IMPORTED)
 set_target_properties(streamvbyte PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libstreamvbyte_static.a)
 
-starrocks_resolve_thirdparty_library(ARROW_LIBRARY libarrow.a)
 add_library(arrow STATIC IMPORTED)
-set_target_properties(arrow PROPERTIES IMPORTED_LOCATION ${ARROW_LIBRARY})
+set_target_properties(arrow PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libarrow.a)
 
-starrocks_resolve_thirdparty_library(PARQUET_LIBRARY libparquet.a)
 add_library(parquet STATIC IMPORTED)
-set_target_properties(parquet PROPERTIES IMPORTED_LOCATION ${PARQUET_LIBRARY})
+set_target_properties(parquet PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libparquet.a)
 
-starrocks_resolve_thirdparty_library(BRPC_LIBRARY libbrpc.a)
 add_library(brpc STATIC IMPORTED GLOBAL)
-set_target_properties(brpc PROPERTIES IMPORTED_LOCATION ${BRPC_LIBRARY})
+set_target_properties(brpc PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libbrpc.a)
 
 add_library(rocksdb STATIC IMPORTED GLOBAL)
 set_target_properties(rocksdb PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/librocksdb.a)
 
-if (APPLE)
-    add_library(krb5support SHARED IMPORTED)
-    set_target_properties(krb5support PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libkrb5support.dylib)
+add_library(krb5support STATIC IMPORTED)
+set_target_properties(krb5support PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libkrb5support.a)
 
-    add_library(krb5 SHARED IMPORTED)
-    set_target_properties(krb5 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libkrb5.dylib)
+add_library(krb5 STATIC IMPORTED)
+set_target_properties(krb5 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libkrb5.a)
 
-    add_library(com_err SHARED IMPORTED)
-    set_target_properties(com_err PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libcom_err.dylib)
+add_library(com_err STATIC IMPORTED)
+set_target_properties(com_err PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libcom_err.a)
 
-    add_library(k5crypto SHARED IMPORTED)
-    set_target_properties(k5crypto PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libk5crypto.dylib)
+add_library(k5crypto STATIC IMPORTED)
+set_target_properties(k5crypto PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libk5crypto.a)
 
-    add_library(gssapi_krb5 SHARED IMPORTED)
-    set_target_properties(gssapi_krb5 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libgssapi_krb5.dylib)
+add_library(gssapi_krb5 STATIC IMPORTED)
+set_target_properties(gssapi_krb5 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libgssapi_krb5.a)
 
-    add_library(sasl SHARED IMPORTED GLOBAL)
-    set_target_properties(sasl PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libsasl2.dylib)
-else()
-    add_library(krb5support STATIC IMPORTED)
-    set_target_properties(krb5support PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libkrb5support.a)
-
-    add_library(krb5 STATIC IMPORTED)
-    set_target_properties(krb5 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libkrb5.a)
-
-    add_library(com_err STATIC IMPORTED)
-    set_target_properties(com_err PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libcom_err.a)
-
-    add_library(k5crypto STATIC IMPORTED)
-    set_target_properties(k5crypto PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libk5crypto.a)
-
-    add_library(gssapi_krb5 STATIC IMPORTED)
-    set_target_properties(gssapi_krb5 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libgssapi_krb5.a)
-
-    add_library(sasl STATIC IMPORTED GLOBAL)
-    set_target_properties(sasl PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libsasl2.a)
-endif()
+add_library(sasl STATIC IMPORTED GLOBAL)
+set_target_properties(sasl PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libsasl2.a)
 
 add_library(librdkafka_cpp STATIC IMPORTED)
 set_target_properties(librdkafka_cpp PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/librdkafka++.a)
@@ -345,42 +233,27 @@ set_target_properties(roaring PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib
 add_library(cctz STATIC IMPORTED)
 set_target_properties(cctz PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libcctz.a)
 
-starrocks_resolve_thirdparty_library(BENCHMARK_LIBRARY libbenchmark.a)
 add_library(benchmark STATIC IMPORTED)
-set_target_properties(benchmark PROPERTIES IMPORTED_LOCATION ${BENCHMARK_LIBRARY})
+set_target_properties(benchmark PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libbenchmark.a)
 
-starrocks_resolve_thirdparty_library(BENCHMARK_MAIN_LIBRARY libbenchmark_main.a)
 add_library(benchmark_main STATIC IMPORTED)
-set_target_properties(benchmark_main PROPERTIES IMPORTED_LOCATION ${BENCHMARK_MAIN_LIBRARY})
+set_target_properties(benchmark_main PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libbenchmark_main.a)
 
 if (ENABLE_MULTI_DYNAMIC_LIBS)
     add_library(fmt SHARED IMPORTED)
-    if (APPLE)
-        if (EXISTS "${THIRDPARTY_DIR}/lib64/libfmt.dylib" OR EXISTS "${THIRDPARTY_DIR}/lib64/libfmt.12.dylib")
-            set(FMT_SHARED_DIR "${THIRDPARTY_DIR}/lib64")
-        else()
-            set(FMT_SHARED_DIR "${THIRDPARTY_DIR}/lib")
-        endif()
-        find_library(FMT_SHARED_LIBRARY NAMES fmt PATHS ${FMT_SHARED_DIR} NO_DEFAULT_PATH)
-        if (NOT FMT_SHARED_LIBRARY)
-            message(FATAL_ERROR "fmt shared library not found under ${FMT_SHARED_DIR}")
-        endif()
-        set_target_properties(fmt PROPERTIES IMPORTED_LOCATION ${FMT_SHARED_LIBRARY})
-        file(GLOB FMT_SHARED_FILES "${FMT_SHARED_DIR}/libfmt*.dylib")
-    else()
-        set_target_properties(fmt PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libfmt.so.10)
-        file(GLOB FMT_SHARED_FILES "${THIRDPARTY_DIR}/lib64/libfmt.so*")
-    endif()
-    install(FILES ${FMT_SHARED_FILES} DESTINATION ${OUTPUT_DIR}/lib)
+    set_target_properties(fmt PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libfmt.so.8)
+    file(GLOB FMT_SO_FILES "${THIRDPARTY_DIR}/lib64/libfmt.so*")
+    install(FILES ${FMT_SO_FILES} DESTINATION ${OUTPUT_DIR}/lib)
 else()
-    starrocks_resolve_thirdparty_library(FMT_STATIC_LIBRARY libfmt.a)
     add_library(fmt STATIC IMPORTED)
-    set_target_properties(fmt PROPERTIES IMPORTED_LOCATION ${FMT_STATIC_LIBRARY})
+    set_target_properties(fmt PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libfmt.a)
 endif()
 
-starrocks_resolve_thirdparty_library(RYU_LIBRARY libryu.a)
 add_library(ryu STATIC IMPORTED)
-set_target_properties(ryu PROPERTIES IMPORTED_LOCATION ${RYU_LIBRARY})
+set_target_properties(ryu PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libryu.a)
+
+add_library(libz STATIC IMPORTED GLOBAL)
+set_target_properties(libz PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libz.a)
 
 add_library(libbz2 STATIC IMPORTED)
 set_target_properties(libbz2 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libbz2.a)
@@ -403,47 +276,37 @@ set_target_properties(simdutf PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib
 add_library(velocypack STATIC IMPORTED)
 set_target_properties(velocypack PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libvelocypack.a)
 
-starrocks_resolve_thirdparty_library(HTTP_CLIENT_CURL_LIBRARY libopentelemetry_http_client_curl.a)
+find_program(THRIFT_COMPILER thrift ${CMAKE_SOURCE_DIR}/bin)
+
 add_library(http_client_curl STATIC IMPORTED GLOBAL)
-set_target_properties(http_client_curl PROPERTIES IMPORTED_LOCATION ${HTTP_CLIENT_CURL_LIBRARY})
+set_target_properties(http_client_curl PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libhttp_client_curl.a)
 
-starrocks_resolve_thirdparty_library(OPENTELEMETRY_COMMON_LIBRARY libopentelemetry_common.a)
 add_library(opentelemetry_common STATIC IMPORTED GLOBAL)
-set_target_properties(opentelemetry_common PROPERTIES IMPORTED_LOCATION ${OPENTELEMETRY_COMMON_LIBRARY})
+set_target_properties(opentelemetry_common PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libopentelemetry_common.a)
 
-starrocks_resolve_thirdparty_library(OPENTELEMETRY_TRACE_LIBRARY libopentelemetry_trace.a)
 add_library(opentelemetry_trace STATIC IMPORTED GLOBAL)
-set_target_properties(opentelemetry_trace PROPERTIES IMPORTED_LOCATION ${OPENTELEMETRY_TRACE_LIBRARY})
+set_target_properties(opentelemetry_trace PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libopentelemetry_trace.a)
 
-starrocks_resolve_thirdparty_library(OPENTELEMETRY_RESOURCES_LIBRARY libopentelemetry_resources.a)
 add_library(opentelemetry_resources STATIC IMPORTED GLOBAL)
-set_target_properties(opentelemetry_resources PROPERTIES IMPORTED_LOCATION ${OPENTELEMETRY_RESOURCES_LIBRARY})
+set_target_properties(opentelemetry_resources PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libopentelemetry_resources.a)
 
 add_library(jansson STATIC IMPORTED GLOBAL)
 set_target_properties(jansson PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libjansson.a)
 
-starrocks_resolve_thirdparty_library(AVRO_LIBRARY libavro.a)
 add_library(avro STATIC IMPORTED GLOBAL)
-set_target_properties(avro PROPERTIES IMPORTED_LOCATION ${AVRO_LIBRARY})
+set_target_properties(avro PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libavro.a)
 
-starrocks_resolve_thirdparty_library(AVROCPP_LIBRARY libavrocpp_s.a)
 add_library(avrocpp STATIC IMPORTED GLOBAL)
-set_target_properties(avrocpp PROPERTIES IMPORTED_LOCATION ${AVROCPP_LIBRARY})
+set_target_properties(avrocpp PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libavrocpp_s.a)
 
 add_library(serdes STATIC IMPORTED GLOBAL)
 set_target_properties(serdes PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libserdes.a)
 
-starrocks_resolve_thirdparty_library(OPENTELEMETRY_JAEGER_LIBRARY libopentelemetry_exporter_jaeger_trace.a)
 add_library(opentelemetry_exporter_jaeger_trace STATIC IMPORTED GLOBAL)
-set_target_properties(opentelemetry_exporter_jaeger_trace PROPERTIES IMPORTED_LOCATION ${OPENTELEMETRY_JAEGER_LIBRARY})
+set_target_properties(opentelemetry_exporter_jaeger_trace PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libopentelemetry_exporter_jaeger_trace.a)
 
-if (APPLE AND NOT "$ENV{STARROCKS_USE_NIX_DEPS}" STREQUAL "1")
-    add_library(libxml2 SHARED IMPORTED GLOBAL)
-    set_target_properties(libxml2 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libxml2.dylib)
-else()
-    add_library(libxml2 STATIC IMPORTED GLOBAL)
-    set_target_properties(libxml2 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libxml2.a)
-endif()
+add_library(libxml2 STATIC IMPORTED GLOBAL)
+set_target_properties(libxml2 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libxml2.a)
 include_directories(${THIRDPARTY_DIR}/include/libxml2)
 
 add_library(azure-core STATIC IMPORTED GLOBAL)
@@ -461,33 +324,21 @@ set_target_properties(azure-storage-blobs PROPERTIES IMPORTED_LOCATION ${THIRDPA
 add_library(azure-storage-files-datalake STATIC IMPORTED GLOBAL)
 set_target_properties(azure-storage-files-datalake PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libazure-storage-files-datalake.a)
 
-add_library(benchgen STATIC IMPORTED GLOBAL)
-set_target_properties(benchgen PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libbenchgen.a)
-
 set(absl_DIR "${THIRDPARTY_DIR}/lib/cmake/absl" CACHE PATH "absl search path" FORCE)
 find_package(absl CONFIG REQUIRED)
-
-# Pre-declare protobuf::libprotobuf + Protobuf_FOUND so gRPCConfig.cmake's
-# guarded find_package(Protobuf) is skipped. TP ships no ProtobufConfig.cmake
-# for 3.14; without this, module-mode FindProtobuf can bind to a host
-# protobuf (e.g. Homebrew 33.x) whose imported target then collides with
-# the ALIAS below.
-add_library(protobuf::libprotobuf ALIAS protobuf)
-set(Protobuf_FOUND TRUE)
-set(PROTOBUF_FOUND TRUE)
-set(Protobuf_INCLUDE_DIR "${THIRDPARTY_DIR}/include")
-set(Protobuf_INCLUDE_DIRS "${THIRDPARTY_DIR}/include")
-set(Protobuf_LIBRARIES protobuf::libprotobuf)
-
 set(gRPC_DIR "${THIRDPARTY_DIR}/lib/cmake/grpc" CACHE PATH "grpc search path")
 find_package(gRPC CONFIG REQUIRED)
-get_target_property(gRPC_INCLUDE_DIR gRPC::grpc INTERFACE_INCLUDE_DIRECTORIES)
 message(STATUS "Using gRPC ${gRPC_VERSION}")
+get_target_property(gRPC_INCLUDE_DIR gRPC::grpc INTERFACE_INCLUDE_DIRECTORIES)
 include_directories(SYSTEM ${gRPC_INCLUDE_DIR})
+add_library(protobuf::libprotobuf ALIAS protobuf)
+add_library(ZLIB::ZLIB ALIAS libz)
 
-starrocks_resolve_thirdparty_library(LIBDEFLATE_LIBRARY libdeflate.a)
-add_library(libdeflate STATIC IMPORTED GLOBAL)
-set_target_properties(libdeflate PROPERTIES IMPORTED_LOCATION ${LIBDEFLATE_LIBRARY})
+# Disable libdeflate on aarch64
+if ("${CMAKE_BUILD_TARGET_ARCH}" STREQUAL "x86" OR "${CMAKE_BUILD_TARGET_ARCH}" STREQUAL "x86_64")
+    add_library(libdeflate STATIC IMPORTED GLOBAL)
+    set_target_properties(libdeflate PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libdeflate.a)
+endif()
 
 if (${WITH_TENANN} STREQUAL "ON")
     add_library(tenann STATIC IMPORTED GLOBAL)
@@ -498,87 +349,9 @@ if (${WITH_TENANN} STREQUAL "ON")
     endif()
 endif()
 
-if (${WITH_PAIMON_CPP} STREQUAL "ON")
-    set(PAIMON_CPP_DIR "${THIRDPARTY_DIR}/paimon-cpp")
-    find_library(PAIMON_SHARED_LIBRARY NAMES paimon
-                 PATHS ${PAIMON_CPP_DIR}/lib NO_DEFAULT_PATH)
-    if (NOT PAIMON_SHARED_LIBRARY)
-        message(FATAL_ERROR "libpaimon.so not found under ${PAIMON_CPP_DIR}/lib, "
-                            "run thirdparty/build-thirdparty.sh paimon_cpp first")
-    endif()
-    # paimon-cpp ships its file formats, file/global indexes, and the local
-    # filesystem as plugin shared libraries that register themselves into
-    # libpaimon's FactoryCreator via load-time constructors. Nothing references
-    # their symbols, so they must be linked explicitly (as DT_NEEDED of the
-    # libstarrocks_paimon.so shim; their constructors run when the shim is
-    # dlopen()ed) or FileFormatFactory finds no parquet/orc/avro at runtime.
-    set(PAIMON_CPP_PLUGINS
-        paimon_parquet_file_format
-        paimon_orc_file_format
-        paimon_avro_file_format
-        paimon_blob_file_format
-        paimon_file_index
-        paimon_global_index
-        paimon_local_file_system)
-    foreach(PAIMON_PLUGIN ${PAIMON_CPP_PLUGINS})
-        find_library(${PAIMON_PLUGIN}_SHARED_LIBRARY NAMES ${PAIMON_PLUGIN}
-                     PATHS ${PAIMON_CPP_DIR}/lib NO_DEFAULT_PATH)
-        if (NOT ${PAIMON_PLUGIN}_SHARED_LIBRARY)
-            message(FATAL_ERROR "lib${PAIMON_PLUGIN}.so not found under ${PAIMON_CPP_DIR}, "
-                                "run thirdparty/build-thirdparty.sh paimon_cpp first")
-        endif()
-        add_library(${PAIMON_PLUGIN} SHARED IMPORTED GLOBAL)
-        set_target_properties(${PAIMON_PLUGIN} PROPERTIES
-            IMPORTED_LOCATION ${${PAIMON_PLUGIN}_SHARED_LIBRARY})
-    endforeach()
-    add_library(paimon SHARED IMPORTED GLOBAL)
-    # Headers install under <prefix>/include/paimon/..., so consumers write
-    # #include <paimon/predicate/literal.h>. The include path rides on the
-    # imported target (treated as SYSTEM by default) instead of the global
-    # include path, so only targets that link `paimon` can see the headers.
-    # The plugins ride on INTERFACE_LINK_LIBRARIES so every consumer of
-    # `paimon` links them without listing them itself.
-    set_target_properties(paimon PROPERTIES
-        IMPORTED_LOCATION ${PAIMON_SHARED_LIBRARY}
-        INTERFACE_INCLUDE_DIRECTORIES "${PAIMON_CPP_DIR}/include"
-        INTERFACE_LINK_LIBRARIES "${PAIMON_CPP_PLUGINS}")
-    message(STATUS "link paimon-cpp from ${PAIMON_SHARED_LIBRARY}")
-endif()
-
-set(BUNDLED_JAVA_HOME ${THIRDPARTY_DIR}/open_jdk)
-if (DEFINED ENV{JAVA_HOME} AND NOT "$ENV{JAVA_HOME}" STREQUAL "")
-    set(JAVA_HOME_CANDIDATE "$ENV{JAVA_HOME}")
-elseif (EXISTS "${BUNDLED_JAVA_HOME}/include/jni.h" OR
-        EXISTS "${BUNDLED_JAVA_HOME}/Contents/Home/include/jni.h" OR
-        EXISTS "${BUNDLED_JAVA_HOME}/libexec/openjdk.jdk/Contents/Home/include/jni.h")
-    set(JAVA_HOME_CANDIDATE "${BUNDLED_JAVA_HOME}")
-else()
-    message(FATAL_ERROR "No bundled OpenJDK found under ${BUNDLED_JAVA_HOME} and JAVA_HOME is not set")
-endif()
-if (EXISTS "${JAVA_HOME_CANDIDATE}/libexec/openjdk.jdk/Contents/Home/include/jni.h")
-    set(JAVA_HOME "${JAVA_HOME_CANDIDATE}/libexec/openjdk.jdk/Contents/Home")
-elseif (EXISTS "${JAVA_HOME_CANDIDATE}/Contents/Home/include/jni.h")
-    set(JAVA_HOME "${JAVA_HOME_CANDIDATE}/Contents/Home")
-elseif (EXISTS "${JAVA_HOME_CANDIDATE}/include/jni.h")
-    set(JAVA_HOME "${JAVA_HOME_CANDIDATE}")
-else()
-    message(FATAL_ERROR "JNI headers not found under ${JAVA_HOME_CANDIDATE}")
-endif()
-message(STATUS "Using JAVA_HOME for BE: ${JAVA_HOME}")
-
+set(JAVA_HOME ${THIRDPARTY_DIR}/open_jdk/)
 add_library(jvm SHARED IMPORTED)
-if (APPLE)
-    file(GLOB_RECURSE LIB_JVM "${JAVA_HOME}/lib/*/libjvm.dylib")
-    set(JAVA_PLATFORM_INCLUDE_DIR "${JAVA_HOME}/include/darwin")
-else()
-    file(GLOB_RECURSE LIB_JVM "${JAVA_HOME}/lib/*/libjvm.so")
-    set(JAVA_PLATFORM_INCLUDE_DIR "${JAVA_HOME}/include/linux")
-endif()
-list(LENGTH LIB_JVM LIB_JVM_COUNT)
-if (LIB_JVM_COUNT EQUAL 0)
-    message(FATAL_ERROR "libjvm not found under ${JAVA_HOME}")
-endif()
-list(GET LIB_JVM 0 LIB_JVM_PATH)
-set_target_properties(jvm PROPERTIES IMPORTED_LOCATION "${LIB_JVM_PATH}")
+FILE(GLOB_RECURSE LIB_JVM ${JAVA_HOME}/lib/*/libjvm.so)
+set_target_properties(jvm PROPERTIES IMPORTED_LOCATION ${LIB_JVM})
 include_directories(${JAVA_HOME}/include)
-include_directories(${JAVA_PLATFORM_INCLUDE_DIR})
+include_directories(${JAVA_HOME}/include/linux)

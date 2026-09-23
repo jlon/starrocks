@@ -17,8 +17,7 @@
 #include <any>
 #include <vector>
 
-#include "platform/user_function_cache.h"
-#include "runtime/java/java_runtime.h"
+#include "runtime/user_function_cache.h"
 
 namespace starrocks {
 
@@ -33,20 +32,20 @@ static StatusOr<std::shared_ptr<JavaUDAFSharedContext>> build_window_shared_cont
     std::string state = symbol + "$State";
 
     auto shared = std::make_shared<JavaUDAFSharedContext>();
-    shared->udf_classloader = std::make_unique<JavaUdfClassLoader>(libpath);
-    auto analyzer = std::make_unique<JavaUdfClassAnalyzer>();
+    shared->udf_classloader = std::make_unique<ClassLoader>(libpath);
+    auto analyzer = std::make_unique<ClassAnalyzer>();
     RETURN_IF_ERROR(shared->udf_classloader->init());
 
     ASSIGN_OR_RETURN(shared->udaf_class, shared->udf_classloader->getClass(symbol));
     ASSIGN_OR_RETURN(shared->udaf_state_class, shared->udf_classloader->getClass(state));
 
-    auto add_method = [&](const std::string& name, jclass clazz, std::unique_ptr<JavaUdfMethodDescriptor>* res) {
+    auto add_method = [&](const std::string& name, jclass clazz, std::unique_ptr<JavaMethodDescriptor>* res) {
         std::string method_name = name;
         std::string signature;
-        std::vector<JavaUdfMethodTypeDescriptor> mtdesc;
+        std::vector<MethodTypeDescriptor> mtdesc;
         RETURN_IF_ERROR(analyzer->get_signature(clazz, method_name, &signature));
         RETURN_IF_ERROR(analyzer->get_udaf_method_desc(signature, &mtdesc));
-        *res = std::make_unique<JavaUdfMethodDescriptor>();
+        *res = std::make_unique<JavaMethodDescriptor>();
         (*res)->name = std::move(method_name);
         (*res)->signature = std::move(signature);
         (*res)->method_desc = std::move(mtdesc);
@@ -72,14 +71,15 @@ static StatusOr<std::shared_ptr<JavaUDAFSharedContext>> build_window_shared_cont
 }
 
 // Build a per-aggregator JavaUDAFUniqueContext for a window function on top of a shared context.
+// The context is already pre-allocated in FunctionContext::_jvm_udaf_ctxs; we populate it here.
 static Status build_window_unique_context(std::shared_ptr<JavaUDAFSharedContext> shared, FunctionContext* context) {
-    auto udaf_ctx = std::make_unique<JavaUDAFUniqueContext>();
+    auto* udaf_ctx = context->udaf_ctxs();
     udaf_ctx->ctx = std::move(shared);
 
     ASSIGN_OR_RETURN(udaf_ctx->handle, udaf_ctx->ctx->udaf_class.newInstance());
 
     // Create a new FunctionStates instance; clone method refs from the shared context.
-    JNIEnv* env = JVMHelper::getInstance().getEnv();
+    JNIEnv* env = JVMFunctionHelper::getInstance().getEnv();
     auto& state_clazz = JVMFunctionHelper::getInstance().function_state_clazz();
     ASSIGN_OR_RETURN(auto instance, state_clazz.newInstance());
     udaf_ctx->states = std::make_unique<UDAFStateList>(
@@ -88,8 +88,7 @@ static Status build_window_unique_context(std::shared_ptr<JavaUDAFSharedContext>
             JavaGlobalRef(env->NewGlobalRef(udaf_ctx->ctx->states_add_method.handle())),
             JavaGlobalRef(env->NewGlobalRef(udaf_ctx->ctx->states_remove_method.handle())),
             JavaGlobalRef(env->NewGlobalRef(udaf_ctx->ctx->states_clear_method.handle())));
-    udaf_ctx->_func = std::make_unique<UDAFFunction>(udaf_ctx->handle.handle(), context, udaf_ctx.get());
-    attach_java_udaf_context(context, std::move(udaf_ctx));
+    udaf_ctx->_func = std::make_unique<UDAFFunction>(udaf_ctx->handle.handle(), context, udaf_ctx);
     return Status::OK();
 }
 

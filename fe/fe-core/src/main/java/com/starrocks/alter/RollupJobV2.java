@@ -76,7 +76,7 @@ import com.starrocks.planner.TupleDescriptor;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.SelectAnalyzer;
-import com.starrocks.sql.ast.CreateSyncMVStmt;
+import com.starrocks.sql.ast.CreateMaterializedViewStmt;
 import com.starrocks.sql.ast.KeysType;
 import com.starrocks.sql.ast.OriginStatement;
 import com.starrocks.sql.ast.expression.CastExpr;
@@ -94,6 +94,7 @@ import com.starrocks.task.AgentTaskQueue;
 import com.starrocks.task.AlterReplicaTask;
 import com.starrocks.task.CreateReplicaTask;
 import com.starrocks.thrift.TColumn;
+import com.starrocks.thrift.TDescriptorTable;
 import com.starrocks.thrift.TStatusCode;
 import com.starrocks.thrift.TStorageMedium;
 import com.starrocks.thrift.TStorageType;
@@ -174,8 +175,7 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
     private Expr whereClause;
 
     // save all create rollup tasks
-    // Package-private so same-package tests can verify the leader-handoff reset without reflection.
-    AgentBatchTask rollupBatchTask = new AgentBatchTask();
+    private AgentBatchTask rollupBatchTask = new AgentBatchTask();
 
     // runtime variable for synchronization between cancel and runPendingJob
     private MarkedCountDownLatch<Long, Long> createReplicaLatch = null;
@@ -185,26 +185,6 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
     // for deserialization
     public RollupJobV2() {
         super(JobType.ROLLUP);
-    }
-
-    @Override
-    protected void resetTransientState() {
-        // WAITING_TXN -> RUNNING is deliberately not journaled; map it back so the re-elected
-        // leader re-enters runWaitingTxnJob and re-sends every AlterReplicaTask.
-        if (jobState == JobState.RUNNING) {
-            jobState = JobState.WAITING_TXN;
-        }
-        // runWaitingTxnJob APPENDS to the batch - see SchemaChangeJobV2 for the double-add hazard.
-        rollupBatchTask = new AgentBatchTask();
-        createReplicaLatch = null;
-        waitingCreatingReplica.set(false);
-        isCancelling.set(false);
-        if (jobState == JobState.PENDING) {
-            watershedTxnId = -1;
-        }
-        // whereClause is deliberately KEPT: gsonPostProcess only restores it for PENDING jobs,
-        // so a true reload would silently lose the sync-MV filter (pre-existing reload bug);
-        // the surviving in-memory value is strictly better and every derived value is recomputed.
     }
 
     public RollupJobV2(long jobId, long dbId, long tableId, String tableName, long timeoutMs,
@@ -232,42 +212,6 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
         this.viewDefineSql = viewDefineSql;
         this.isColocateMVIndex = isColocateMVIndex;
         this.whereClause = whereClause;
-    }
-
-    protected RollupJobV2(RollupJobV2 job) {
-        super(job);
-        if (job.physicalPartitionIdToBaseRollupTabletIdMap != null) {
-            this.physicalPartitionIdToBaseRollupTabletIdMap = Maps.newHashMap();
-            for (Map.Entry<Long, Map<Long, Long>> entry : job.physicalPartitionIdToBaseRollupTabletIdMap.entrySet()) {
-                Map<Long, Long> tabletIdMap = Maps.newHashMap();
-                if (entry.getValue() != null) {
-                    tabletIdMap.putAll(entry.getValue());
-                }
-                this.physicalPartitionIdToBaseRollupTabletIdMap.put(entry.getKey(), tabletIdMap);
-            }
-        } else {
-            this.physicalPartitionIdToBaseRollupTabletIdMap = null;
-        }
-        if (job.physicalPartitionIdToRollupIndex != null) {
-            this.physicalPartitionIdToRollupIndex = Maps.newHashMap();
-            this.physicalPartitionIdToRollupIndex.putAll(job.physicalPartitionIdToRollupIndex);
-        } else {
-            this.physicalPartitionIdToRollupIndex = null;
-        }
-        this.baseIndexMetaId = job.baseIndexMetaId;
-        this.rollupIndexMetaId = job.rollupIndexMetaId;
-        this.baseIndexName = job.baseIndexName;
-        this.rollupIndexName = job.rollupIndexName;
-        this.rollupSchema = job.rollupSchema == null ? null : new ArrayList<>(job.rollupSchema);
-        this.rollupSchemaVersion = job.rollupSchemaVersion;
-        this.baseSchemaHash = job.baseSchemaHash;
-        this.rollupSchemaHash = job.rollupSchemaHash;
-        this.rollupKeysType = job.rollupKeysType;
-        this.rollupShortKeyColumnCount = job.rollupShortKeyColumnCount;
-        this.origStmt = job.origStmt;
-        this.watershedTxnId = job.watershedTxnId;
-        this.viewDefineSql = job.viewDefineSql;
-        this.isColocateMVIndex = job.isColocateMVIndex;
     }
 
     @Override
@@ -365,7 +309,6 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
                         .setStorageType(TStorageType.COLUMN)
                         .setBloomFilterColumnNames(tbl.getBfColumnIds())
                         .setBloomFilterFpp(tbl.getBfFpp())
-                        .setZstdCompressionColumns(tbl.getZstdCompressionColumnIds(), tbl.getZstdCompressionPageSizes())
                         .setIndexes(OlapTable.getIndexesBySchema(tbl.getCopiedIndexes(), rollupSchema))
                         .setSortKeyIndexes(null) // Rollup tablets does not have sort key
                         .setSortKeyUniqueIds(null)
@@ -454,15 +397,17 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
         Preconditions.checkState(tbl.getState() == OlapTableState.ROLLUP);
         try (AutoCloseableLock ignore =
                 new AutoCloseableLock(new Locker(), db.getId(), Lists.newArrayList(tbl.getId()), LockType.WRITE)) {
-            this.watershedTxnId =
-                    GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getTransactionIDGenerator().getNextTransactionId();
-            final OlapTable finalTbl = tbl;
-            persistStateChange(this, JobState.WAITING_TXN, () -> addRollupIndexToCatalog(finalTbl));
+            addRollupIndexToCatalog(tbl);
         }
 
+        this.watershedTxnId =
+                GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getTransactionIDGenerator().getNextTransactionId();
+        this.jobState = JobState.WAITING_TXN;
         span.setAttribute("watershedTxnId", this.watershedTxnId);
         span.addEvent("setWaitingTxn");
 
+        // write edit log
+        GlobalStateMgr.getCurrentState().getEditLog().logAlterJob(this);
         LOG.info("transfer rollup job {} state to {}, watershed txn_id: {}", jobId, this.jobState, watershedTxnId);
     }
 
@@ -602,7 +547,7 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
         Expr whereExpr = null;
         if (whereClause != null) {
             Type type = BooleanType.BOOLEAN;
-            whereExpr = analyzeExpr(visitor, type, CreateSyncMVStmt.WHERE_PREDICATE_COLUMN_NAME,
+            whereExpr = analyzeExpr(visitor, type, CreateMaterializedViewStmt.WHERE_PREDICATE_COLUMN_NAME,
                     whereClause, slotDescByName);
             List<SlotRef> slots = Lists.newArrayList();
             whereExpr.collect(SlotRef.class, slots);
@@ -663,6 +608,7 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
         // initially, rollup index id and rollup index meta id are the same
         long rollupIndexId = rollupIndexMetaId;
         Map<Long, List<TColumn>> indexToThriftColumns = new HashMap<>();
+        Optional<TDescriptorTable> tDescTable = Optional.empty();
         try (AutoCloseableLock ignore =
                 new AutoCloseableLock(new Locker(), db.getId(), Lists.newArrayList(tbl.getId()), LockType.READ)) {
             Preconditions.checkState(tbl.getState() == OlapTableState.ROLLUP);
@@ -688,18 +634,7 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
                     if (baseTColumn == null) {
                         baseTColumn = tbl.getIndexMetaByMetaId(baseIndexMetaId).getSchema()
                                 .stream()
-                                .map(column -> {
-                                    TColumn tColumn = column.toThrift();
-                                    // BE rebuilds the base schema from these and diffs it against the
-                                    // rollup schema above, which does carry the per-column ZSTD fields.
-                                    // A base that reads as "no ZSTD" is a difference that is not there,
-                                    // and an otherwise linkable rollup rewrites all the data instead.
-                                    // Only those fields are filled in: is_bloom_filter_column and
-                                    // has_bitmap_index have the same effect here and predate this feature.
-                                    column.setIndexFlag(tColumn, List.of(), null,
-                                            tbl.getZstdCompressionColumnIds(), tbl.getZstdCompressionPageSizes());
-                                    return tColumn;
-                                })
+                                .map(Column::toThrift)
                                 .collect(Collectors.toList());
                         indexToThriftColumns.put(baseIndexMetaId, baseTColumn);
                     }
@@ -796,12 +731,14 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
                 } // end for tablets
             } // end for partitions
 
-            this.finishedTimeMs = System.currentTimeMillis();
-            persistStateChange(this, JobState.FINISHED, () -> onFinished(tbl));
+            onFinished(tbl);
         }
 
-        LOG.info("rollup job finished: {}", jobId);
+        this.jobState = JobState.FINISHED;
+        this.finishedTimeMs = System.currentTimeMillis();
 
+        GlobalStateMgr.getCurrentState().getEditLog().logAlterJob(this);
+        LOG.info("rollup job finished: {}", jobId);
         this.span.end();
     }
 
@@ -854,12 +791,13 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
         if (jobState.isFinalState()) {
             return false;
         }
+        cancelInternal();
 
+        jobState = JobState.CANCELLED;
         this.errMsg = errMsg;
         this.finishedTimeMs = System.currentTimeMillis();
-        persistStateChange(this, JobState.CANCELLED, this::cancelInternal);
-
         LOG.info("cancel {} job {}, err: {}", this.type, jobId, errMsg);
+        GlobalStateMgr.getCurrentState().getEditLog().logAlterJob(this);
         span.setStatus(StatusCode.ERROR, errMsg);
         span.end();
         return true;
@@ -1100,15 +1038,10 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
         }
 
         Map<String, Expr> columnNameToDefineExpr = MetaUtils.parseColumnNameToDefineExpr(origStmt);
-        if (columnNameToDefineExpr.containsKey(CreateSyncMVStmt.WHERE_PREDICATE_COLUMN_NAME)) {
-            whereClause = columnNameToDefineExpr.get(CreateSyncMVStmt.WHERE_PREDICATE_COLUMN_NAME);
+        if (columnNameToDefineExpr.containsKey(CreateMaterializedViewStmt.WHERE_PREDICATE_COLUMN_NAME)) {
+            whereClause = columnNameToDefineExpr.get(CreateMaterializedViewStmt.WHERE_PREDICATE_COLUMN_NAME);
         }
         setColumnsDefineExpr(columnNameToDefineExpr);
-    }
-
-    @Override
-    public AlterJobV2 copyForPersist() {
-        return new RollupJobV2(this);
     }
 
     @Override

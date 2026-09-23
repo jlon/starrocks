@@ -17,7 +17,7 @@
 #include <utility>
 
 #include "exec/aggregator.h"
-#include "exec_primitive/pipeline/operator_factory.h"
+#include "exec/pipeline/operator.h"
 
 namespace starrocks::pipeline {
 // TODO: use AggregateBlockSink instead of this class

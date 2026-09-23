@@ -546,5 +546,6 @@ public class Tablet {
         Tablet tablet = new Tablet(1, 1, 1, 1, true);
         String json = GsonUtils.GSON.toJson(tablet);
         System.out.println(json);
+        Tablet newTablet = GsonUtils.GSON.fromJson(json, Tablet.class);
     }
 }

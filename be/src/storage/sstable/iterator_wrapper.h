@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license.
 // (https://developers.google.com/open-source/licenses/bsd)
 
-#pragma once
-
 #include "storage/sstable/iterator.h"
 
 namespace starrocks {

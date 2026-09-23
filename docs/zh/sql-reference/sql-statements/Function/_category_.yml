@@ -3,5 +3,4 @@ label: '函数'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: Function
+  type: generated-index

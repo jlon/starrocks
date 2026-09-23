@@ -163,9 +163,7 @@ public class AggregationAnalyzer {
 
         @Override
         public Boolean visitArithmeticExpr(ArithmeticExpr node, Void context) {
-            // Not every arithmetic operator is binary: BITNOT is unary, and TreeNode.getChild(1) returns
-            // null there rather than throwing, so asking for it used to NPE inside visit().
-            return node.getChildren().stream().allMatch(this::visit);
+            return visit(node.getChild(0)) && visit(node.getChild(1));
         }
 
         @Override
@@ -194,11 +192,7 @@ public class AggregationAnalyzer {
 
         @Override
         public Boolean visitCollectionElementExpr(CollectionElementExpr node, Void context) {
-            // The subscript is an ordinary expression and has to satisfy the same grouping rules as the
-            // collection itself. Only checking the collection lets a bare column slip through, e.g.
-            // `SELECT map_agg(k, v)[c] FROM t`, and the planner then fails much later with an
-            // unactionable "Invalid plan" from the input-dependency checker.
-            return node.getChildren().stream().allMatch(this::visit);
+            return visit(node.getChild(0));
         }
 
         @Override
@@ -276,11 +270,6 @@ public class AggregationAnalyzer {
                         node.getPos());
             }
 
-            // GROUP BY ALL folds GROUPING(...) to 0 in the non-grouping-sets path.
-            if (analyzeState.getGroupingSetsList() == null) {
-                return true;
-            }
-
             if (node.getChildren().stream().anyMatch(argument -> !analyzeState.getGroupBy().contains(argument))) {
                 throw new SemanticException(PARSER_ERROR_MSG.argsCanOnlyFromGroupBy(), node.getPos());
             }
@@ -305,13 +294,12 @@ public class AggregationAnalyzer {
 
         @Override
         public Boolean visitLikePredicate(LikePredicate node, Void context) {
-            // The pattern only has to be a string expression, not a literal, so it can carry a bare column.
-            return node.getChildren().stream().allMatch(this::visit);
+            return visit(node.getChild(0));
         }
 
         @Override
         public Boolean visitMatchExpr(MatchExpr node, Void context) {
-            return node.getChildren().stream().allMatch(this::visit);
+            return visit(node.getChild(0));
         }
 
         @Override
@@ -342,7 +330,9 @@ public class AggregationAnalyzer {
                     if (!SqlModeHelper.check(session.getSessionVariable().getSqlMode(),
                             SqlModeHelper.MODE_ONLY_FULL_GROUP_BY)) {
                         if (!analyzeState.getColumnNotInGroupBy().contains(expr)) {
-                            analyzeState.getColumnNotInGroupBy().add(expr);
+                            throw new SemanticException(
+                                    PARSER_ERROR_MSG.unsupportedNoGroupBySubquery(ExprToSql.toSql(expr), ExprToSql.toSql(node)),
+                                    expr.getPos());
                         }
                     } else {
                         return false;

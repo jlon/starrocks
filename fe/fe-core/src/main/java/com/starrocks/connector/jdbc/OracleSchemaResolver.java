@@ -20,6 +20,7 @@ import com.starrocks.catalog.Column;
 import com.starrocks.catalog.JDBCTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.DdlException;
+import com.starrocks.common.util.TimeUtils;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.type.PrimitiveType;
 import com.starrocks.type.Type;
@@ -271,7 +272,7 @@ public class OracleSchemaResolver extends JDBCSchemaResolver {
             ps.setQueryTimeout(getQueryTimeoutSeconds());
             final ResultSet rs = ps.executeQuery();
             final ImmutableList.Builder<Partition> list = ImmutableList.builder();
-            long createTime = System.currentTimeMillis();
+            long createTime = TimeUtils.getEpochSeconds();
             if (null != rs) {
                 while (rs.next()) {
                     final String[] partitionNames = rs.getString("NAME").

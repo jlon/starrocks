@@ -20,10 +20,10 @@
 
 #include <boost/locale/encoding_utf.hpp>
 
-#include "base/string/faststring.h"
 #include "common/status.h"
 #include "storage/index/index_descriptor.h"
 #include "types/logical_type.h"
+#include "util/faststring.h"
 
 namespace starrocks {
 
@@ -41,9 +41,9 @@ namespace starrocks {
 template <LogicalType field_type>
 class CLuceneInvertedWriterImpl : public CLuceneInvertedWriter {
 public:
-    using CppType = StorageCppType<field_type>;
+    using CppType = typename CppTypeTraits<field_type>::CppType;
 
-    explicit CLuceneInvertedWriterImpl(const std::string& field_name, std::string directory,
+    explicit CLuceneInvertedWriterImpl(const std::string& field_name, const std::string& directory,
                                        const TabletIndex* inverted_index)
             : _directory(std::move(directory)), _inverted_index(inverted_index) {
         _parser_type = get_inverted_index_parser_type_from_string(

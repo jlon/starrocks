@@ -19,14 +19,12 @@
 #include <filesystem>
 #include <memory>
 
-#include "base/testutil/assert.h"
 #include "column/array_column.h"
 #include "column/chunk.h"
 #include "column/column_helper.h"
 #include "column/map_column.h"
 #include "column/nullable_column.h"
 #include "column/struct_column.h"
-#include "common/config_exec_fwd.h"
 #include "common/statusor.h"
 #include "formats/parquet/file_reader.h"
 #include "formats/parquet/parquet_test_util/util.h"
@@ -34,11 +32,11 @@
 #include "fs/fs_memory.h"
 #include "gutil/casts.h"
 #include "runtime/descriptor_helper.h"
-#include "runtime/runtime_state.h"
+#include "testutil/assert.h"
 
 namespace starrocks::parquet {
 
-static FormatScannerStats g_hdfs_stats;
+static HdfsScannerStats g_hdfs_stats;
 using starrocks::HdfsScannerContext;
 
 class FileWriterTest : public testing::Test {
@@ -51,7 +49,7 @@ protected:
         auto ctx = _pool.add(new HdfsScannerContext());
         auto* lazy_column_coalesce_counter = _pool.add(new std::atomic<int32_t>(0));
 
-        ctx->format_scan_context.lazy_column_coalesce_counter = lazy_column_coalesce_counter;
+        ctx->lazy_column_coalesce_counter = lazy_column_coalesce_counter;
 
         std::vector<Utils::SlotDesc> slot_descs;
         for (auto& type_desc : type_descs) {
@@ -62,14 +60,11 @@ protected:
 
         TupleDescriptor* tuple_desc =
                 parquet::Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs.data());
-        parquet::Utils::make_column_info_vector(tuple_desc, &ctx->format_scan_context.materialized_columns);
+        parquet::Utils::make_column_info_vector(tuple_desc, &ctx->materialized_columns);
         ASSIGN_OR_ABORT(auto file_size, _fs.get_file_size(_file_path));
         ctx->scan_range = (_create_scan_range(_file_path, file_size));
-        ctx->format_scan_context.scan_range_offset = ctx->scan_range->offset;
-        ctx->format_scan_context.scan_range_length = ctx->scan_range->length;
-        ctx->format_scan_context.timezone = "Asia/Shanghai";
-        ctx->format_scan_context.stats = &g_hdfs_stats;
-        ctx->format_scan_context.predicate_tree = &ctx->predicates.predicate_tree;
+        ctx->timezone = "Asia/Shanghai";
+        ctx->stats = &g_hdfs_stats;
 
         return ctx;
     }
@@ -124,7 +119,7 @@ protected:
         ASSIGN_OR_ABORT(auto file_size, _fs.get_file_size(_file_path));
         auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(), file_size);
 
-        auto st = file_reader->init(&ctx->format_scan_context);
+        auto st = file_reader->init(ctx);
         if (!st.ok()) {
             std::cout << st.to_string() << std::endl;
             return nullptr;

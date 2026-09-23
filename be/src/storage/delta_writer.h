@@ -257,7 +257,7 @@ private:
     // in _commit_result. Not directly callable from outside commit().
     Status _do_commit_body();
 
-    State _state{kUninitialized};
+    State _state;
     Status _err_status;
     mutable std::mutex _state_lock;
     // Serialises the body of commit(). The first caller to enter
@@ -284,7 +284,7 @@ private:
     TabletSharedPtr _tablet;
     RowsetSharedPtr _cur_rowset;
     std::unique_ptr<RowsetWriter> _rowset_writer;
-    bool _schema_initialized{false};
+    bool _schema_initialized;
     Schema _vectorized_schema;
     std::unique_ptr<MemTable> _mem_table;
     std::unique_ptr<MemTableSink> _mem_table_sink;
@@ -296,7 +296,7 @@ private:
     std::unique_ptr<FlushToken> _flush_token;
     std::unique_ptr<ReplicateToken> _replicate_token;
     std::unique_ptr<SegmentFlushToken> _segment_flush_token;
-    bool _with_rollback_log{true};
+    bool _with_rollback_log;
     // initial value is max value
     size_t _memtable_buffer_row = std::numeric_limits<size_t>::max();
     bool _partial_schema_with_sort_key_conflict = false;

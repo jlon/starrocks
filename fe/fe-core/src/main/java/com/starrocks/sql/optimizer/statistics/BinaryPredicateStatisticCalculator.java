@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+
 package com.starrocks.sql.optimizer.statistics;
 
 import com.starrocks.qe.ConnectContext;
@@ -31,8 +32,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;
-import javax.annotation.Nonnull;
 
 import static java.lang.Double.NEGATIVE_INFINITY;
 import static java.lang.Double.NaN;
@@ -227,9 +226,9 @@ public class BinaryPredicateStatisticCalculator {
                     orElseGet(() -> statistics.withOutputRowCount(rowCount));
         } else {
             ColumnStatistic estimatedColumnStatistic = ColumnStatistic.buildFrom(columnStatistic).setNullsFraction(0).build();
-            double rowCount = Math.max(0.0, statistics.getOutputRowCount() * (1 - columnStatistic.getNullsFraction())
-                    - estimateColumnEqualToConstant(columnRefOperator, columnStatistic, constant, statistics)
-                    .getOutputRowCount());
+            double rowCount = statistics.getOutputRowCount() -
+                    estimateColumnEqualToConstant(columnRefOperator, columnStatistic, constant, statistics)
+                            .getOutputRowCount();
 
             return columnRefOperator.map(operator -> Statistics.buildFrom(statistics)
                             .setOutputRowCount(rowCount).addColumnStatistic(operator, estimatedColumnStatistic).build())
@@ -262,7 +261,7 @@ public class BinaryPredicateStatisticCalculator {
             Histogram estimatedHistogram = hist.get();
 
             long rowCountInHistogram = estimatedHistogram.getTotalRows();
-            double rowCount = statistics.getOutputRowCount() * (1 - columnStatistic.getNullsFraction())
+            double rowCount = statistics.getOutputRowCount()
                     * ((double) rowCountInHistogram / (double) columnStatistic.getHistogram().getTotalRows());
 
             ColumnStatistic newEstimateColumnStatistics =
@@ -302,7 +301,7 @@ public class BinaryPredicateStatisticCalculator {
         } else {
             Histogram estimatedHistogram = hist.get();
             long rowCountInHistogram = estimatedHistogram.getTotalRows();
-            double rowCount = statistics.getOutputRowCount() * (1 - columnStatistic.getNullsFraction())
+            double rowCount = statistics.getOutputRowCount()
                     * ((double) rowCountInHistogram / (double) columnStatistic.getHistogram().getTotalRows());
 
             ColumnStatistic newEstimateColumnStatistics =
@@ -311,7 +310,7 @@ public class BinaryPredicateStatisticCalculator {
             ColumnStatistic finalNewEstimateColumnStatistics = adjustColumnStatisticsMinMax(
                     newEstimateColumnStatistics, constant, statistics, columnRefOperator, false);
             return columnRefOperator.map(operator -> Statistics.buildFrom(statistics).setOutputRowCount(rowCount)
-                            .addColumnStatistic(operator, finalNewEstimateColumnStatistics).build())
+                                    .addColumnStatistic(operator, finalNewEstimateColumnStatistics).build())
                     .orElseGet(() -> statistics.withOutputRowCount(rowCount));
         }
     }
@@ -400,17 +399,16 @@ public class BinaryPredicateStatisticCalculator {
         Optional<Histogram> hist = enableJoinHistogram ?
                 updateHistWithJoin(leftColumnStatistic, leftColumn.getType(), rightColumnStatistic, rightColumn.getType()) :
                 Optional.empty();
-        double nonNullFactor = isEqualForNull ? 1 :
-                (1 - leftColumnStatistic.getNullsFraction()) * (1 - rightColumnStatistic.getNullsFraction());
         if (hist.isEmpty()) {
             double selectivity = 1.0 /
                     max(1, max(leftColumnStatistic.getDistinctValuesCount(), rightColumnStatistic.getDistinctValuesCount()));
-            rowCount = statistics.getOutputRowCount() * selectivity * nonNullFactor;
+            rowCount = statistics.getOutputRowCount() * selectivity *
+                    (isEqualForNull ? 1 :
+                            (1 - leftColumnStatistic.getNullsFraction()) * (1 - rightColumnStatistic.getNullsFraction()));
         } else {
             double selectivity = hist.get().getTotalRows() / (double)
                     (leftColumnStatistic.getHistogram().getTotalRows() * rightColumnStatistic.getHistogram().getTotalRows());
-            // Histograms exclude nulls, so their selectivity is conditional on both operands being non-null.
-            rowCount = statistics.getOutputRowCount() * selectivity * nonNullFactor;
+            rowCount = statistics.getOutputRowCount() * selectivity;
         }
 
         ColumnStatistic.Builder newLeftStatisticBuilder = ColumnStatistic.buildFrom(newEstimateColumnStatistics.build());
@@ -454,11 +452,6 @@ public class BinaryPredicateStatisticCalculator {
 
         Histogram leftHistogram = leftColumnStatistic.getHistogram();
         Histogram rightHistogram = rightColumnStatistic.getHistogram();
-
-        if (hasOnlyNonFiniteBuckets(leftHistogram) || hasOnlyNonFiniteBuckets(rightHistogram)) {
-            return Optional.empty();
-        }
-
         double leftColumnDistinctCount = min(leftHistogram.getTotalRows(), leftColumnStatistic.getDistinctValuesCount());
         double rightColumnDistinctCount = min(rightHistogram.getTotalRows(), rightColumnStatistic.getDistinctValuesCount());
 
@@ -488,6 +481,10 @@ public class BinaryPredicateStatisticCalculator {
 
     private static void estimateMcvToBucket(Map<String, Long> leftMcv, Map<String, Long> estimatedMcv,
                                             Histogram rightHistogram, double distinctValuesCount, Type dataType) {
+        if (rightHistogram.getBuckets() == null) {
+            return;
+        }
+
         for (Map.Entry<String, Long> entry : leftMcv.entrySet()) {
             if (estimatedMcv.containsKey(entry.getKey())) {
                 continue;
@@ -505,21 +502,17 @@ public class BinaryPredicateStatisticCalculator {
         }
     }
 
-    @Nonnull
     private static List<Bucket> estimateBucketToBucket(Histogram leftHistogram, double leftColumnDistinctValue, Type dataTypeLeft,
                                                        Histogram rightHistogram, double rightColumnDistinctValue,
                                                        Type dataTypeRight) {
         if (leftHistogram == null || rightHistogram == null) {
-            return List.of();
+            return null;
         }
 
-        // Intersecting two such placeholders bucket degenerate zero-count bucket that collapses the estimate to ~1/(L*R),
-        // so drop them here. If either side is left without a usable bucket, decline and let the caller fall back
-        // to MCV/NDV-based estimation.
-        List<Bucket> leftBuckets = withFiniteBounds(leftHistogram.getBuckets());
-        List<Bucket> rightBuckets = withFiniteBounds(rightHistogram.getBuckets());
-        if (leftBuckets.isEmpty() || rightBuckets.isEmpty()) {
-            return List.of();
+        List<Bucket> leftBuckets = leftHistogram.getBuckets();
+        List<Bucket> rightBuckets = rightHistogram.getBuckets();
+        if (leftBuckets == null || leftBuckets.isEmpty() || rightBuckets == null || rightBuckets.isEmpty()) {
+            return null;
         }
 
         // Assume the distinct values are uniformly distributed.
@@ -596,20 +589,6 @@ public class BinaryPredicateStatisticCalculator {
         return mergedBuckets;
     }
 
-    private static List<Bucket> withFiniteBounds(@Nonnull List<Bucket> buckets) {
-        return buckets.stream()
-                .filter(b -> Double.isFinite(b.getLower()) && Double.isFinite(b.getUpper()))
-                .collect(Collectors.toList());
-    }
-
-    // True when the histogram has buckets but none with finite bounds - i.e. it holds only placeholder buckets and
-    // provides no usable positional (range) information for join estimation. An empty bucket list returns false: a
-    // histogram fully described by MCVs is legitimately complete, not a placeholder.
-    private static boolean hasOnlyNonFiniteBuckets(Histogram histogram) {
-        List<Bucket> buckets = histogram.getBuckets();
-        return !buckets.isEmpty() && withFiniteBounds(buckets).isEmpty();
-    }
-
     private static Optional<StatisticRangeValues> computeBucketIntersection(Bucket leftBucket, Bucket rightBucket) {
         if (leftBucket.getUpper() < rightBucket.getLower() || rightBucket.getUpper() < leftBucket.getLower()) {
             return Optional.empty();
@@ -675,8 +654,8 @@ public class BinaryPredicateStatisticCalculator {
     }
 
     public static Optional<Histogram> updateHistWithLessThan(ColumnStatistic columnStatistic,
-                                                             Optional<ConstantOperator> constant,
-                                                             boolean containUpper) {
+                                                   Optional<ConstantOperator> constant,
+                                                   boolean containUpper) {
         if (columnStatistic.getHistogram() == null || !constant.isPresent()) {
             return Optional.empty();
         }

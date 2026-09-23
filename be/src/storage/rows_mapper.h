@@ -46,8 +46,8 @@ class TabletManager;
 //
 class RowsMapperBuilder {
 public:
-    RowsMapperBuilder(std::string filename) : _filename(std::move(filename)) {}
-    ~RowsMapperBuilder() = default;
+    RowsMapperBuilder(const std::string& filename) : _filename(filename) {}
+    ~RowsMapperBuilder() {}
     // append rssid rowids to file
     Status append(const std::vector<uint64_t>& rssid_rowids);
     Status finalize();
@@ -93,7 +93,7 @@ private:
 //
 class RowsMapperIterator {
 public:
-    RowsMapperIterator() = default;
+    RowsMapperIterator() {}
     ~RowsMapperIterator();
     // Open file and prepare internal state.
     // IMPORTANT: Now accepts FileInfo instead of string to support both local and remote storage.
@@ -161,15 +161,23 @@ private:
 };
 
 // rows mapper file's name for lake table
-// Lake mapper files are always stored on remote storage (.lcrm).
+// WHY: Lake tables support both local and remote storage strategies for mapper files.
+// The choice depends on config::enable_pk_index_parallel_execution and performance tradeoffs.
+
+// Local filesystem storage (legacy path, used when parallel execution is disabled)
+// WHY: Uses local disk for faster I/O but limited to single-node access
+StatusOr<std::string> lake_rows_mapper_filename(int64_t tablet_id, int64_t txn_id);
 
 // Remote storage access for existing lcrm files
-// WHY: The mapper is stored on remote storage (S3/HDFS) so any node can read it without
-// file copying.
+// WHY: During parallel pk index execution, multiple nodes may need to read the same mapper file.
+// Storing on remote storage (S3/HDFS) enables distributed access without file copying.
 StatusOr<std::string> lake_rows_mapper_filename(lake::TabletManager* mgr, int64_t tablet_id,
                                                 const std::string& lcrm_file);
 
-// Create a new mapper file. Always returns a remote (.lcrm) location.
+// Create new mapper file (chooses storage based on config)
+// WHY: Automatically selects between local disk (fast, single-node) and remote storage
+// (slower, multi-node accessible) based on enable_pk_index_parallel_execution config.
+// This allows transparent switching between execution modes without code changes.
 StatusOr<std::string> new_lake_rows_mapper_filename(lake::TabletManager* mgr, int64_t tablet_id, int64_t txn_id);
 
 // rows mapper file's name for local table

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+
 package com.starrocks.connector.iceberg;
 
 import com.google.common.base.Preconditions;
@@ -33,7 +34,6 @@ import com.starrocks.sql.optimizer.operator.scalar.LikePredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperatorVisitor;
 import com.starrocks.sql.optimizer.operator.scalar.SubfieldOperator;
-import com.starrocks.sql.optimizer.rule.tree.VariantPathRewriteRule;
 import com.starrocks.type.BooleanType;
 import com.starrocks.type.DateType;
 import com.starrocks.type.PrimitiveType;
@@ -427,8 +427,8 @@ public class ScalarOperatorToIcebergExpr {
                 case BINARY:
                     res = operator.castTo(VarbinaryType.VARBINARY);
                     break;
-                // num usually don't need cast, and num and string has different comparator
-                // cast is dangerous.
+                    // num usually don't need cast, and num and string has different comparator
+                    // cast is dangerous.
                 case DECIMAL:
                     res = operator.castTo(TypeFactory.createDecimalV3Type(PrimitiveType.DECIMAL128, 9, 0));
                     break;
@@ -484,10 +484,10 @@ public class ScalarOperatorToIcebergExpr {
                         //In iceberg transform expr, the decimal's scale will influence the result, like truncate and bucket...
                         //For column value 123.40 and const value 123.4, column = value should be true
                         //But in iceberg transform, 123.40 and 123.4 are not the same, and the partition may be pruned incorretly.
-                        return operator.getDecimal().setScale(((Types.DecimalType) context).scale(),
+                        return operator.getDecimal().setScale(((Types.DecimalType) context).scale(), 
                                 RoundingMode.HALF_UP);
                     } else {
-                        return operator.getDecimal().setScale(((ScalarType) operator.getType()).getScalarScale(),
+                        return operator.getDecimal().setScale(((ScalarType) operator.getType()).getScalarScale(), 
                                 RoundingMode.HALF_UP);
                     }
                 case HLL:
@@ -537,19 +537,11 @@ public class ScalarOperatorToIcebergExpr {
 
         @Override
         public String visitVariableReference(ColumnRefOperator operator, Void context) {
-            if (operator.getHints().contains(VariantPathRewriteRule.COLUMN_REF_HINT)) {
-                return null;
-            }
             return operator.getName();
         }
 
         @Override
         public String visitCastOperator(CastOperator operator, Void context) {
-            // Stripping a non-identity cast can change predicate semantics and incorrectly prune files.
-            // Any non-identity cast that still reaches this converter must remain a residual predicate.
-            if (!operator.getType().equals(operator.getChild(0).getType())) {
-                return null;
-            }
             return operator.getChild(0).accept(this, context);
         }
 
@@ -560,9 +552,6 @@ public class ScalarOperatorToIcebergExpr {
                 return null;
             }
             ColumnRefOperator columnRefChild = ((ColumnRefOperator) child);
-            if (columnRefChild.getHints().contains(VariantPathRewriteRule.COLUMN_REF_HINT)) {
-                return null;
-            }
             List<String> paths = new ImmutableList.Builder<String>()
                     .add(columnRefChild.getName()).addAll(operator.getFieldNames())
                     .build();

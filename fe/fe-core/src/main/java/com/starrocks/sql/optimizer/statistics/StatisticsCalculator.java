@@ -22,10 +22,8 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Range;
 import com.google.common.collect.Sets;
-import com.starrocks.catalog.BenchmarkTable;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.FileTable;
-import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.ListPartitionInfo;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.OlapTable;
@@ -42,8 +40,6 @@ import com.starrocks.common.tvr.TvrTableSnapshot;
 import com.starrocks.common.tvr.TvrVersionRange;
 import com.starrocks.connector.PartitionUtil;
 import com.starrocks.connector.RemoteFileDesc;
-import com.starrocks.connector.benchmark.BenchmarkRowCountCalculator;
-import com.starrocks.connector.benchmark.RowCountEstimate;
 import com.starrocks.connector.hive.HiveStorageFormat;
 import com.starrocks.connector.iceberg.IcebergMORParams;
 import com.starrocks.connector.statistics.ConnectorTableColumnStats;
@@ -53,7 +49,6 @@ import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.JoinOperator;
-import com.starrocks.sql.ast.expression.BinaryType;
 import com.starrocks.sql.ast.expression.DateLiteral;
 import com.starrocks.sql.ast.expression.LiteralExpr;
 import com.starrocks.sql.ast.expression.MaxLiteral;
@@ -73,10 +68,8 @@ import com.starrocks.sql.optimizer.operator.OperatorVisitor;
 import com.starrocks.sql.optimizer.operator.Projection;
 import com.starrocks.sql.optimizer.operator.ScanOperatorPredicates;
 import com.starrocks.sql.optimizer.operator.UKFKConstraints;
-import com.starrocks.sql.optimizer.operator.logical.LogicalAIProjectOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalAggregationOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalAssertOneRowOperator;
-import com.starrocks.sql.optimizer.operator.logical.LogicalBenchmarkScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalCTEAnchorOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalCTEConsumeOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalCTEProduceOperator;
@@ -86,7 +79,6 @@ import com.starrocks.sql.optimizer.operator.logical.LogicalEsScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalExceptOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalFileScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalFilterOperator;
-import com.starrocks.sql.optimizer.operator.logical.LogicalFlussScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalHiveScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalHudiScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalIcebergEqualityDeleteScanOperator;
@@ -115,9 +107,7 @@ import com.starrocks.sql.optimizer.operator.logical.LogicalUnionOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalValuesOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalViewScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalWindowOperator;
-import com.starrocks.sql.optimizer.operator.physical.PhysicalAIProjectOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalAssertOneRowOperator;
-import com.starrocks.sql.optimizer.operator.physical.PhysicalBenchmarkScanOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalCTEAnchorOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalCTEConsumeOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalCTEProduceOperator;
@@ -126,7 +116,6 @@ import com.starrocks.sql.optimizer.operator.physical.PhysicalEsScanOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalExceptOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalFileScanOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalFilterOperator;
-import com.starrocks.sql.optimizer.operator.physical.PhysicalFlussScanOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalHashAggregateOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalHashJoinOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalHiveScanOperator;
@@ -165,6 +154,8 @@ import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.PredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.operator.scalar.SubfieldOperator;
+import com.starrocks.sql.optimizer.operator.stream.LogicalBinlogScanOperator;
+import com.starrocks.sql.optimizer.operator.stream.PhysicalStreamScanOperator;
 import com.starrocks.sql.optimizer.rule.transformation.ListPartitionPruner;
 import com.starrocks.statistic.StatisticUtils;
 import com.starrocks.statistic.columns.PredicateColumnsMgr;
@@ -365,6 +356,12 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
     }
 
     @Override
+    public Void visitLogicalBinlogScan(LogicalBinlogScanOperator node, ExpressionContext context) {
+        return computeOlapScanNode(node, context, node.getTable(), Lists.newArrayList(),
+                node.getColRefToColumnMetaMap());
+    }
+
+    @Override
     public Void visitLogicalViewScan(LogicalViewScanOperator node, ExpressionContext context) {
         Statistics.Builder builder = Statistics.builder();
         List<ColumnRefOperator> requiredColumnRefs = Lists.newArrayList(node.getColRefToColumnMetaMap().keySet());
@@ -382,6 +379,12 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
     public Void visitLogicalTableFunctionTableScan(LogicalTableFunctionTableScanOperator node, ExpressionContext context) {
         return computeTableFunctionScanNode(node, context, node.getColRefToColumnMetaMap(),
                 (TableFunctionTable) node.getTable());
+    }
+
+    @Override
+    public Void visitPhysicalStreamScan(PhysicalStreamScanOperator node, ExpressionContext context) {
+        return computeOlapScanNode(node, context, node.getTable(), Lists.newArrayList(),
+                node.getColRefToColumnMetaMap());
     }
 
     private Void computeOlapScanNode(Operator node, ExpressionContext context, Table table,
@@ -812,34 +815,6 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
         return computeNormalExternalTableScanNode(node, context, table, columnRefOperatorColumnMap, rowCount, source);
     }
 
-    @Override
-    public Void visitLogicalFlussScan(LogicalFlussScanOperator node, ExpressionContext context) {
-        return computeFlussScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap());
-    }
-
-    @Override
-    public Void visitPhysicalFlussScan(PhysicalFlussScanOperator node, ExpressionContext context) {
-        return computeFlussScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap());
-    }
-
-    private Void computeFlussScanNode(Operator node, ExpressionContext context, Table table,
-                                      Map<ColumnRefOperator, Column> columnRefOperatorColumnMap) {
-        if (context.getStatistics() == null) {
-            String catalogName = table.getCatalogName();
-            Statistics stats = GlobalStateMgr.getCurrentState().getMetadataMgr().getTableStatistics(
-                    optimizerContext, catalogName, table, columnRefOperatorColumnMap, null,
-                    node.getPredicate(), node.getLimit(), TvrTableSnapshot.empty());
-            context.setStatistics(stats);
-            if (node.isLogical()) {
-                boolean hasUnknownColumns = stats.getColumnStatistics().values().stream()
-                        .anyMatch(ColumnStatistic::isUnknown);
-                ((LogicalFlussScanOperator) node).setHasUnknownColumn(hasUnknownColumns);
-            }
-        }
-
-        return visitOperator(node, context);
-    }
-
     public Void visitLogicalHudiScan(LogicalHudiScanOperator node, ExpressionContext context) {
         return computeHMSTableScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap());
     }
@@ -915,18 +890,6 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
         return visitOperator(node, context);
     }
 
-    private long estimateBenchmarkRowCount(Table table) {
-        Preconditions.checkState(table instanceof BenchmarkTable, "Not a benchmark table: %s", table.getType());
-        BenchmarkTable benchmarkTable = (BenchmarkTable) table;
-        RowCountEstimate estimate =
-                BenchmarkRowCountCalculator.estimateRowCount(benchmarkTable.getCatalogDBName(), benchmarkTable.getName(),
-                        benchmarkTable.getScaleFactor());
-        if (!estimate.isKnown()) {
-            return Config.default_statistics_output_row_count;
-        }
-        return estimate.getRowCount();
-    }
-
     @Override
     public Void visitLogicalMysqlScan(LogicalMysqlScanOperator node, ExpressionContext context) {
         return computeNormalExternalTableScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap(),
@@ -937,18 +900,6 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
     public Void visitPhysicalMysqlScan(PhysicalMysqlScanOperator node, ExpressionContext context) {
         return computeNormalExternalTableScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap(),
                 Config.default_statistics_output_row_count);
-    }
-
-    @Override
-    public Void visitLogicalBenchmarkScan(LogicalBenchmarkScanOperator node, ExpressionContext context) {
-        return computeNormalExternalTableScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap(),
-                estimateBenchmarkRowCount(node.getTable()));
-    }
-
-    @Override
-    public Void visitPhysicalBenchmarkScan(PhysicalBenchmarkScanOperator node, ExpressionContext context) {
-        return computeNormalExternalTableScanNode(node, context, node.getTable(), node.getColRefToColumnMetaMap(),
-                estimateBenchmarkRowCount(node.getTable()));
     }
 
     @Override
@@ -1152,27 +1103,15 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
 
     @Override
     public Void visitLogicalProject(LogicalProjectOperator node, ExpressionContext context) {
-        return computeProjectNode(context, Collections.emptyMap(), node.getColumnRefMap());
-    }
-
-    @Override
-    public Void visitLogicalAIProject(LogicalAIProjectOperator node, ExpressionContext context) {
-        return computeProjectNode(context, node.getCommonSubOperatorMap(), node.getColumnRefMap());
+        return computeProjectNode(context, node.getColumnRefMap());
     }
 
     @Override
     public Void visitPhysicalProject(PhysicalProjectOperator node, ExpressionContext context) {
-        return computeProjectNode(context, Collections.emptyMap(), node.getColumnRefMap());
+        return computeProjectNode(context, node.getColumnRefMap());
     }
 
-    @Override
-    public Void visitPhysicalAIProject(PhysicalAIProjectOperator node, ExpressionContext context) {
-        return computeProjectNode(context, node.getCommonSubOperatorMap(), node.getColumnRefMap());
-    }
-
-    private Void computeProjectNode(ExpressionContext context,
-                                    Map<ColumnRefOperator, ScalarOperator> commonSubOperatorMap,
-                                    Map<ColumnRefOperator, ScalarOperator> columnRefMap) {
+    private Void computeProjectNode(ExpressionContext context, Map<ColumnRefOperator, ScalarOperator> columnRefMap) {
         Preconditions.checkState(context.arity() == 1);
 
         Statistics.Builder builder = Statistics.builder();
@@ -1182,12 +1121,6 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
         Statistics.Builder allBuilder = Statistics.builder();
         allBuilder.setOutputRowCount(inputStatistics.getOutputRowCount());
         allBuilder.addColumnStatistics(inputStatistics.getColumnStatistics());
-
-        for (Map.Entry<ColumnRefOperator, ScalarOperator> entry : commonSubOperatorMap.entrySet()) {
-            ColumnStatistic commonStatistic =
-                    ExpressionStatisticCalculator.calculate(entry.getValue(), allBuilder.build());
-            allBuilder.addColumnStatistic(entry.getKey(), commonStatistic);
-        }
 
         for (ColumnRefOperator requiredColumnRefOperator : columnRefMap.keySet()) {
             ScalarOperator mapOperator = columnRefMap.get(requiredColumnRefOperator);
@@ -1438,7 +1371,6 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
         }
 
         Statistics.Builder joinStatsBuilder;
-        double outputRowCount;
         switch (joinType) {
             case CROSS_JOIN:
                 joinStatsBuilder = Statistics.buildFrom(crossJoinStats);
@@ -1453,16 +1385,15 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
                 break;
             case LEFT_OUTER_JOIN:
                 joinStatsBuilder = Statistics.buildFrom(innerJoinStats);
-                outputRowCount = max(innerRowCount, leftRowCount);
-                joinStatsBuilder.setOutputRowCount(outputRowCount);
-                computeNullFractionForOuterJoin(leftRowCount, innerRowCount, outputRowCount,
-                        leftStatistics, rightStatistics, eqOnPredicates, hasUnknownColumnStatistics, joinStatsBuilder);
+                joinStatsBuilder.setOutputRowCount(max(innerRowCount, leftRowCount));
+                computeNullFractionForOuterJoin(leftRowCount, innerRowCount, leftStatistics, rightStatistics,
+                        eqOnPredicates, joinStatsBuilder);
                 break;
             case ASOF_LEFT_OUTER_JOIN:
                 joinStatsBuilder = Statistics.buildFrom(innerJoinStats);
                 joinStatsBuilder.setOutputRowCount(leftRowCount);
-                computeNullFractionForOuterJoin(leftRowCount, innerRowCount, leftRowCount, leftStatistics, rightStatistics,
-                        eqOnPredicates, hasUnknownColumnStatistics, joinStatsBuilder);
+                computeNullFractionForOuterJoin(leftRowCount, innerRowCount, leftStatistics, rightStatistics,
+                        eqOnPredicates, joinStatsBuilder);
                 break;
             case LEFT_SEMI_JOIN:
                 joinStatsBuilder = Statistics.buildFrom(StatisticsEstimateUtils.adjustStatisticsByRowCount(
@@ -1481,10 +1412,9 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
                 break;
             case RIGHT_OUTER_JOIN:
                 joinStatsBuilder = Statistics.buildFrom(innerJoinStats);
-                outputRowCount = max(innerRowCount, rightRowCount);
-                joinStatsBuilder.setOutputRowCount(outputRowCount);
-                computeNullFractionForOuterJoin(rightRowCount, innerRowCount, outputRowCount,
-                        rightStatistics, leftStatistics, eqOnPredicates, hasUnknownColumnStatistics, joinStatsBuilder);
+                joinStatsBuilder.setOutputRowCount(max(innerRowCount, rightRowCount));
+                computeNullFractionForOuterJoin(rightRowCount, innerRowCount, rightStatistics, leftStatistics,
+                        eqOnPredicates, joinStatsBuilder);
                 break;
             case RIGHT_ANTI_JOIN:
                 joinStatsBuilder = Statistics.buildFrom(innerJoinStats);
@@ -1494,15 +1424,11 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
                 break;
             case FULL_OUTER_JOIN:
                 joinStatsBuilder = Statistics.buildFrom(innerJoinStats);
-                // A full outer join preserves all rows from both sides and includes all inner-join matches,
-                // so its output must be at least as large as either input and the inner-join row count.
-                outputRowCount =
-                        max(leftRowCount, max(rightRowCount, max(innerRowCount, leftRowCount + rightRowCount - innerRowCount)));
-                joinStatsBuilder.setOutputRowCount(outputRowCount);
-                computeNullFractionForOuterJoin(leftRowCount, innerRowCount, outputRowCount,
-                        leftStatistics, rightStatistics, eqOnPredicates, hasUnknownColumnStatistics, joinStatsBuilder);
-                computeNullFractionForOuterJoin(rightRowCount, innerRowCount, outputRowCount,
-                        rightStatistics, leftStatistics, eqOnPredicates, hasUnknownColumnStatistics, joinStatsBuilder);
+                joinStatsBuilder.setOutputRowCount(max(1, leftRowCount + rightRowCount - innerRowCount));
+                computeNullFractionForOuterJoin(leftRowCount + rightRowCount, innerRowCount, leftStatistics,
+                        leftStatistics, eqOnPredicates, joinStatsBuilder);
+                computeNullFractionForOuterJoin(leftRowCount + rightRowCount, innerRowCount, rightStatistics,
+                        rightStatistics, eqOnPredicates, joinStatsBuilder);
                 break;
             default:
                 throw new StarRocksPlannerException("Not support join type : " + joinType,
@@ -1587,25 +1513,16 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
         return builder.build();
     }
 
-    private Set<ColumnRefOperator> getEqForNullJoinKeyColumns(List<BinaryPredicateOperator> eqOnPredicates) {
-        return eqOnPredicates.stream() //
-                .filter(pred -> pred.getBinaryType() == BinaryType.EQ_FOR_NULL) //
-                .flatMap(pred -> pred.getChildren().stream()) //
-                .filter(ScalarOperator::isColumnRef) //
-                .map(col -> (ColumnRefOperator) col) //
-                .collect(Collectors.toSet());
-    }
-
     // In an outer join, all rows from the outer (preserved) side are kept, including those with NULLs
     // in the join key. The inner join estimation sets the null fraction to 0 for eq-join columns,
     // which is correct for inner joins but not for the outer side of outer joins.
     // This method first restores the original null fractions for the outer side's eq-join columns
     // (the only columns whose null fractions are zeroed by the inner join estimation), then computes
     // the new null fractions for the inner (nullable) side's columns to account for additional null rows.
-    private void computeNullFractionForOuterJoin(double outerSideRowCount, double innerRowCount,
-                                                 double outputRowCount, Statistics outerSideStatistics,
-                                                 Statistics innerSideStatistics, List<BinaryPredicateOperator> eqOnPredicates,
-                                                 boolean hasUncertainSelectivity, Statistics.Builder builder) {
+    private void computeNullFractionForOuterJoin(double outerTableRowCount, double innerJoinRowCount,
+                                                 Statistics outerSideStatistics, Statistics innerSideStatistics,
+                                                 List<BinaryPredicateOperator> eqOnPredicates,
+                                                 Statistics.Builder builder) {
         // Collect the eq-join column refs that belong to the outer (preserved) side.
         // Only these columns had their null fractions zeroed during inner join estimation.
         final var outerColumns = outerSideStatistics.getUsedColumns();
@@ -1619,57 +1536,30 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
         }
 
         // Restore the original null fractions for the outer side's eq-join columns only.
-        // When outerSideRowCount < outputRowCount (e.g. one-to-many matches), the output
+        // When outerTableRowCount < innerJoinRowCount (e.g. one-to-many matches), the output
         // has more rows than the original outer table, so scale proportionally.
         for (final var outerEqJoinColumn : outerEqJoinColumns) {
             final var originalStat = outerSideStatistics.getColumnStatistic(outerEqJoinColumn);
             final var currentStat = builder.getColumnStatistics(outerEqJoinColumn);
             if (currentStat != null) {
-                double adjustedNullFraction = (outerSideRowCount < outputRowCount)
-                        ? originalStat.getNullsFraction() * outerSideRowCount / Math.max(1, outputRowCount)
+                double adjustedNullFraction = (outerTableRowCount < innerJoinRowCount)
+                        ? originalStat.getNullsFraction() * outerTableRowCount / Math.max(1, innerJoinRowCount)
                         : originalStat.getNullsFraction();
-                // In the case of a full outer join, we might already have set the value in the builder to a higher null
-                // fraction. So we'll max the adjusted and the already set value.
-                double maxNullFraction = Math.max(adjustedNullFraction, currentStat.getNullsFraction());
                 builder.addColumnStatistic(outerEqJoinColumn, buildFrom(currentStat) //
-                        .setNullsFraction(maxNullFraction) //
+                        .setNullsFraction(adjustedNullFraction) //
                         .build());
             }
         }
 
-        // Compute new null fractions for the inner (nullable) side's columns.
-        // Two sources of NULLs for inner-side columns after an outer join:
-        // 1. Unmatched rows: outerSideRowCount - innerRowCount (row-count based, from selectivity)
-        // 2. Null-key rows: outer-side rows whose join key is NULL can never match under normal =,
-        //    so inner-side columns are NULL for those rows regardless of row-count estimates.
-        //
-        // Source (2) is only used as a fallback when the computed selectivity is uncertain, making the
-        // selectivity-based estimate (1) unreliable.
-        final double nullRowsFromSelectivity = Math.max(0, outerSideRowCount - innerRowCount);
-        double effectiveNullRowCount = nullRowsFromSelectivity;
-        if (hasUncertainSelectivity) {
-            // For EQ_FOR_NULL (<=>) predicates, NULL keys can match, so we exclude those columns.
-            final var eqForNullJoinKeyColumns = getEqForNullJoinKeyColumns(eqOnPredicates);
-            final double maxOuterKeyNullFraction = outerEqJoinColumns.stream() //
-                    .filter(col -> !eqForNullJoinKeyColumns.contains(col)) //
-                    .map(outerSideStatistics::getColumnStatistic) //
-                    .filter(Objects::nonNull) //
-                    .filter(stat -> !stat.isUnknown()) //
-                    .map(ColumnStatistic::getNullsFraction) //
-                    .max(Double::compareTo) //
-                    .orElse(0.0);
-            final double nullRowsFromNullKey = maxOuterKeyNullFraction * outerSideRowCount;
-            effectiveNullRowCount = Math.max(nullRowsFromSelectivity, nullRowsFromNullKey);
-        }
-
-        if (effectiveNullRowCount > 0 && outputRowCount > 0) {
-            for (final var entry : innerSideStatistics.getColumnStatistics().entrySet()) {
-                final var innerStat = entry.getValue();
-                final double matchedRows = outputRowCount - effectiveNullRowCount;
-                final double matchNullCount = innerStat.getNullsFraction() * Math.max(0, matchedRows);
-                final double newNullFraction = Math.min(1.0, (matchNullCount + effectiveNullRowCount) / outputRowCount);
+        // Compute new null fractions for the inner (nullable) side's columns
+        if (outerTableRowCount > innerJoinRowCount) {
+            double nullRowCount = outerTableRowCount - innerJoinRowCount;
+            for (Map.Entry<ColumnRefOperator, ColumnStatistic> entry : innerSideStatistics.getColumnStatistics().entrySet()) {
+                ColumnStatistic columnStatistic = entry.getValue();
+                double columnNullCount = columnStatistic.getNullsFraction() * innerJoinRowCount;
+                double newNullFraction = (columnNullCount + nullRowCount) / outerTableRowCount;
                 builder.addColumnStatistic(entry.getKey(),
-                        buildFrom(innerStat).setNullsFraction(newNullFraction).build());
+                        buildFrom(columnStatistic).setNullsFraction(newNullFraction).build());
             }
         }
     }
@@ -2165,46 +2055,30 @@ public class StatisticsCalculator extends OperatorVisitor<Void, ExpressionContex
     public Void visitLogicalAnalytic(LogicalWindowOperator node, ExpressionContext context) {
         PredicateColumnsMgr.getInstance().recordWindowPartitionBy(node.getPartitionExpressions(),
                 optimizerContext.getColumnRefFactory(), context.getOptExpression());
-        return computeAnalyticNode(context, node.getPartitionExpressions(), node.getWindowCall());
+        return computeAnalyticNode(context, node.getWindowCall());
     }
 
     @Override
     public Void visitPhysicalAnalytic(PhysicalWindowOperator node, ExpressionContext context) {
         PredicateColumnsMgr.getInstance().recordWindowPartitionBy(node.getPartitionExpressions(),
                 optimizerContext.getColumnRefFactory(), context.getOptExpression());
-        return computeAnalyticNode(context, node.getPartitionExpressions(), node.getAnalyticCall());
+        return computeAnalyticNode(context, node.getAnalyticCall());
     }
 
-    private Void computeAnalyticNode(ExpressionContext context, List<ScalarOperator> partitionExpressions,
-                                     Map<ColumnRefOperator, CallOperator> analyticCall) {
+    private Void computeAnalyticNode(ExpressionContext context, Map<ColumnRefOperator, CallOperator> analyticCall) {
         Preconditions.checkState(context.arity() == 1);
 
         Statistics.Builder builder = Statistics.builder();
         Statistics inputStatistics = context.getChildStatistics(0);
         builder.addColumnStatistics(inputStatistics.getColumnStatistics());
 
-        analyticCall.forEach((key, value) -> builder.addColumnStatistic(
-                key, estimateWindowCall(value, inputStatistics, partitionExpressions)));
+        analyticCall.forEach((key, value) -> builder
+                .addColumnStatistic(key, ExpressionStatisticCalculator.calculate(value, inputStatistics)));
 
         builder.setOutputRowCount(inputStatistics.getOutputRowCount());
 
         context.setStatistics(builder.build());
         return visitOperator(context.getOp(), context);
-    }
-
-    private static ColumnStatistic estimateWindowCall(CallOperator call, Statistics inputStatistics,
-                                                      List<ScalarOperator> partitionExpressions) {
-        if (!partitionExpressions.isEmpty() || !FunctionSet.ROW_NUMBER.equals(call.getFnName())) {
-            return ExpressionStatisticCalculator.calculate(call, inputStatistics);
-        }
-        double rowCount = inputStatistics.getOutputRowCount();
-        return ColumnStatistic.builder()
-                .setMinValue(1)
-                .setMaxValue(rowCount)
-                .setDistinctValuesCount(rowCount)
-                .setNullsFraction(0)
-                .setAverageRowSize(call.getType().getTypeSize())
-                .build();
     }
 
     public Statistics estimateStatistics(List<ScalarOperator> predicateList, Statistics statistics) {

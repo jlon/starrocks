@@ -21,6 +21,7 @@ import com.starrocks.catalog.JDBCTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.SchemaConstants;
+import com.starrocks.common.util.TimeUtils;
 import com.starrocks.type.PrimitiveType;
 import com.starrocks.type.Type;
 import com.starrocks.type.TypeFactory;
@@ -81,19 +82,13 @@ public class PostgresSchemaResolver extends JDBCSchemaResolver {
                 }
             } catch (SQLException ignored) { }
 
-            columnName = normalizeColumnName(columnSet.getString("COLUMN_NAME"));
+            if (!columnName.equals(columnName.toLowerCase())) {
+                columnName = "\"" + columnName + "\"";
+            }
             fullSchema.add(new Column(columnName, type,
                     columnSet.getString("IS_NULLABLE").equals(SchemaConstants.YES), comment));
         }
         return fullSchema;
-    }
-
-    @Override
-    protected String normalizeColumnName(String columnName) {
-        if (!columnName.equals(columnName.toLowerCase())) {
-            return "\"" + columnName + "\"";
-        }
-        return columnName;
     }
 
     @Override
@@ -224,7 +219,7 @@ public class PostgresSchemaResolver extends JDBCSchemaResolver {
     }
 
     public List<Partition> getPartitions(Connection connection, Table table) {
-        return Lists.newArrayList(new Partition(table.getName(), System.currentTimeMillis()));
+        return Lists.newArrayList(new Partition(table.getName(), TimeUtils.getEpochSeconds()));
     }
 
     private static boolean isTimeWithTimezoneTypeName(String typeName) {

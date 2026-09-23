@@ -67,7 +67,7 @@ public class HiveView extends ConnectorView {
             if (Strings.isNullOrEmpty(name.getCatalog()) &&
                     Strings.isNullOrEmpty(name.getDb()) &&
                     cteRelationNames.contains(name.getTbl())) {
-                continue;
+                return;
             }
 
             tableRelation.getName().setCatalog(catalogName);

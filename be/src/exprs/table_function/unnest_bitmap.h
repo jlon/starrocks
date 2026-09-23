@@ -16,10 +16,10 @@
 
 #include "column/column_builder.h"
 #include "column/column_viewer.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
+#include "common/config.h"
 #include "exprs/table_function/table_function.h"
-#include "runtime/runtime_state.h"
-#include "types/integer_overflow_arithmetics.h"
+#include "runtime/integer_overflow_arithmetics.h"
 #include "types/logical_type.h"
 
 namespace starrocks {
@@ -46,13 +46,9 @@ public:
     Status open(RuntimeState* runtime_state, TableFunctionState* state) const override { return Status::OK(); }
 
     Status close(RuntimeState* runtime_state, TableFunctionState* state) const override {
-        delete state;
+        SAFE_DELETE(state);
         return Status::OK();
     }
-
-    // Output is already bounded by chunk_size, so the wrapper is inert here; declared anyway so that
-    // every implementation states its answer explicitly rather than inheriting the unsafe default.
-    bool is_exception_safe() const override { return true; }
 
     std::pair<Columns, UInt32Column::Ptr> process(RuntimeState* runtime_state,
                                                   TableFunctionState* state) const override {

@@ -17,24 +17,20 @@
 #include <glog/logging.h>
 
 #include <algorithm>
-#include <limits>
 #include <memory>
-#include <optional>
-#include <unordered_set>
 #include <utility>
 
-#include "base/simd/simd.h"
+#include "agent/master_info.h"
 #include "column/chunk.h"
-#include "column/column_helper.h"
-#include "common/config_scan_io_fwd.h"
+#include "common/config.h"
+#include "common/status.h"
 #include "common/statusor.h"
-#include "common/system/master_info.h"
-#include "exprs/chunk_predicate_evaluator.h"
+#include "exec/exec_node.h"
+#include "exec/hdfs_scanner/hdfs_scanner.h"
 #include "exprs/expr.h"
 #include "exprs/expr_context.h"
 #include "formats/parquet/column_materializer.h"
 #include "formats/parquet/column_reader_factory.h"
-#include "formats/parquet/complex_column_reader.h"
 #include "formats/parquet/iceberg_row_id_reader.h"
 #include "formats/parquet/lazy_materialization_context.h"
 #include "formats/parquet/metadata.h"
@@ -44,11 +40,10 @@
 #include "formats/parquet/row_source_reader.h"
 #include "formats/parquet/scalar_column_reader.h"
 #include "formats/parquet/schema.h"
-#include "formats/parquet/variant_projection.h"
 #include "formats/reserved_columns.h"
 #include "gen_cpp/Exprs_types.h"
-#include "gen_cpp/RuntimeFilter_types.h"
-#include "types/type_descriptor.h"
+#include "runtime/types.h"
+#include "simd/simd.h"
 #include "utils.h"
 
 namespace starrocks::parquet {
@@ -60,13 +55,13 @@ GroupReader::GroupReader(GroupReaderParam& param, int row_group_number, SkipRows
         : _row_group_first_row(row_group_first_row), _skip_rows_ctx(std::move(skip_rows_ctx)), _param(param) {
     _row_group_metadata = &_param.file_metadata->t_metadata().row_groups[row_group_number];
     _column_materializer = std::make_unique<ColumnMaterializer>(_param, &_column_readers);
-    _variant = std::make_unique<VariantProjectionHandler>(this, _param, _row_group_metadata);
 }
 
 GroupReader::~GroupReader() {
     if (_param.sb_stream) {
         _param.sb_stream->release_to_offset(_end_offset);
     }
+    // If GroupReader is filtered by statistics, it's _has_prepared = false
     if (_has_prepared) {
         if (_column_materializer->lazy_column_needed()) {
             _param.lazy_column_coalesce_counter->fetch_add(1, std::memory_order_relaxed);
@@ -77,7 +72,7 @@ GroupReader::~GroupReader() {
         // was triggered during predicate evaluation.  A consistently high count
         // suggests the active/lazy classification (Phase 3b) would help.
         if (_param.stats) {
-            size_t total_lazy = _column_materializer->lazy_slot_ids().size() + _variant->lazy_hidden_slot_ids().size();
+            size_t total_lazy = _column_materializer->lazy_slot_ids().size();
             size_t triggered = _column_materializer->lazy_triggered_count();
             if (total_lazy > 0 && static_cast<size_t>(triggered) >= total_lazy) {
                 _param.stats->parquet_lazy_full_trigger_count++;
@@ -90,9 +85,8 @@ GroupReader::~GroupReader() {
     }
 }
 
-// ── init / prepare ──────────────────────────────────────────────────────────
-
 Status GroupReader::init() {
+    // Create column readers and bind ParquetField & ColumnChunkMetaData(except complex type) to each ColumnReader
     RETURN_IF_ERROR(_create_column_readers());
     _process_columns_and_conjunct_ctxs();
     _range = SparseRange<uint64_t>(_row_group_first_row, _row_group_first_row + _row_group_metadata->num_rows);
@@ -101,20 +95,21 @@ Status GroupReader::init() {
 
 Status GroupReader::prepare() {
     RETURN_IF_ERROR(_prepare_column_readers());
+    // we need deal with page index first, so that it can work on collect_io_range,
+    // and pageindex's io has been collected in FileReader
 
     if (_range.span_size() != get_row_group_metadata()->num_rows) {
         for (const auto& pair : _column_readers) {
             pair.second->select_offset_index(_range, _row_group_first_row);
         }
-        _variant->select_hidden_source_offset_index();
     }
 
-    // Promote variant virtual columns to typed-value proxy readers.
-    _variant->try_promote();
-
-    // Coalesce IO ranges using ReadRangePlanner's staged planning.
+    // if coalesce read enabled, we have to
+    // 1. allocate shared buffered input stream and
+    // 2. collect io ranges of every row group reader.
+    // 3. set io ranges to the stream.
     if (config::parquet_coalesce_read_enable && _param.sb_stream != nullptr) {
-        std::vector<SharedBufferedInputStream::IORange> ranges;
+        std::vector<starrocks::io::SharedBufferedInputStream::IORange> ranges;
         int64_t end_offset = 0;
         collect_io_ranges(&ranges, &end_offset, ColumnIOType::PAGES);
         auto* planner = _column_materializer->read_range_planner();
@@ -130,7 +125,6 @@ Status GroupReader::prepare() {
 
     RETURN_IF_ERROR(_column_materializer->rewrite_dict_conjuncts_to_predicate(&_is_group_filtered));
     RETURN_IF_ERROR(_column_materializer->init_read_chunk());
-    _variant->init_read_chunk_slots();
 
     if (!_is_group_filtered) {
         _range_iter = _range.new_iterator();
@@ -139,8 +133,6 @@ Status GroupReader::prepare() {
     _has_prepared = true;
     return Status::OK();
 }
-
-// ── Simple accessors ────────────────────────────────────────────────────────
 
 const tparquet::ColumnChunk* GroupReader::get_chunk_metadata(SlotId slot_id) {
     const auto& it = _column_readers.find(slot_id);
@@ -170,18 +162,6 @@ const tparquet::RowGroup* GroupReader::get_row_group_metadata() const {
     return _row_group_metadata;
 }
 
-// ── get_next: materialise one chunk from the current row group ──────────────
-//
-// Pipeline (8 stages):
-//   1. Prune deleted rows           — deletion bitmap
-//   2. Read & filter active columns — dict / expression predicate pushdown
-//   3. Evaluate compound predicates — multi-slot conjuncts from scanner_ctxs
-//   4. Evaluate variant predicates  — fetch sources + deferred subfield conjuncts
-//   4.1 Probe join runtime filters  — row-level RF probe before lazy materialization
-//   5. Filter & backfill lazy       — apply combined filter + lazy column backfill
-//   6. Append output side columns   — partition / not-existed / extended / count
-//   7. Emit output                  — variant projections + physical columns
-
 Status GroupReader::get_next(ChunkPtr* chunk, size_t* row_count) {
     SCOPED_RAW_TIMER(&_param.stats->group_chunk_read_ns);
     if (_is_group_filtered) {
@@ -199,14 +179,13 @@ Status GroupReader::get_next(ChunkPtr* chunk, size_t* row_count) {
         _param.stats->raw_rows_read += r.span_size();
 
         _column_materializer->reset_read_chunk();
-        _variant->reset_iteration_state();
 
         RowGroupScanState state;
         state.active_chunk = _column_materializer->create_active_chunk();
         state.row_count = r.span_size();
         state.chunk_filter = Filter(state.row_count, 1);
 
-        LazyMaterializationContext lazy_ctx(_column_materializer.get(), _variant.get(), r, nullptr, state.active_chunk);
+        LazyMaterializationContext lazy_ctx(_column_materializer.get(), r, nullptr, state.active_chunk);
 
         // 1. Prune deleted rows
         ASSIGN_OR_RETURN(bool rows_survive, _prune_deleted_rows(r, state));
@@ -225,29 +204,16 @@ Status GroupReader::get_next(ChunkPtr* chunk, size_t* row_count) {
         state.active_chunk->set_missing_column_provider(nullptr);
         if (!rows_survive) continue;
 
-        // 4. Evaluate variant predicates
-        ASSIGN_OR_RETURN(rows_survive, _evaluate_variant_predicates(r, state));
-        if (!rows_survive) continue;
-
-        // 4.1 Probe join runtime filters
-        ASSIGN_OR_RETURN(rows_survive, _evaluate_runtime_filters(r, state));
-        if (!rows_survive) continue;
-
-        // 5. Apply combined filter and backfill lazy columns
+        // 4. Apply combined filter and backfill lazy columns
         ASSIGN_OR_RETURN(rows_survive, _filter_and_backfill_lazy(r, state));
         if (!rows_survive) continue;
 
-        // 6. Emit output
+        // 5. Emit output
         RETURN_IF_ERROR(_emit_output_columns(state, chunk, row_count));
 
-        // 7. Append output side columns AFTER emit.
-        //    Use *row_count (captured before emit swaps columns out of
-        //    active_chunk) rather than (*chunk)->num_rows() — the latter
-        //    reads the first column's size, which can be 0 when the first
-        //    slot is a partition/not-existed/extended side column that
-        //    hasn't been populated yet.
+        // 6. Append output side columns AFTER emit.
         if ((*row_count) > 0) {
-            RETURN_IF_ERROR(_param.scan_ctx->append_side_columns_to_chunk(chunk, (*row_count)));
+            RETURN_IF_ERROR(_param.scanner_ctx->append_side_columns_to_chunk(chunk, (*row_count)));
         }
         break;
     }
@@ -293,27 +259,15 @@ StatusOr<bool> GroupReader::_read_and_filter_active_columns(const Range<uint64_t
 // ── 3. Evaluate compound predicates ──────
 
 StatusOr<bool> GroupReader::_evaluate_compound_predicates(const Range<uint64_t>& r, RowGroupScanState& state) {
-    if (_param.scan_ctx->conjuncts.scanner_ctxs.empty()) {
+    if (_param.scanner_ctx->conjuncts.scanner_ctxs.empty()) {
         return true;
-    }
-
-    // VARIANT virtual projection slots must be materialised before compound
-    // conjuncts are evaluated.  When a compound conjunct references a variant
-    // virtual slot, fetch the needed hidden sources and project the virtual
-    // slots early.  active_chunk is rebuilt per range so stale slots cannot leak.
-    if (!_variant->empty()) {
-        auto early_projected = _variant->referenced_variant_virtual_slot_ids(_param.scan_ctx->conjuncts.scanner_ctxs);
-        if (!early_projected.empty()) {
-            RETURN_IF_ERROR(_variant->fetch_and_project_virtual_slots(early_projected, r, state.active_chunk,
-                                                                      _variant->projection_timezone()));
-        }
     }
 
     // Append side columns to active_chunk so compound conjuncts referencing
     // partition / not-existed / extended slots can be evaluated correctly.
     if (state.active_chunk->num_rows() > 0) {
         RETURN_IF_ERROR(
-                _param.scan_ctx->append_side_columns_to_chunk(&state.active_chunk, state.active_chunk->num_rows()));
+                _param.scanner_ctx->append_side_columns_to_chunk(&state.active_chunk, state.active_chunk->num_rows()));
     }
 
     // Finalize all active columns to logical form before compound conjunct eval.
@@ -323,152 +277,13 @@ StatusOr<bool> GroupReader::_evaluate_compound_predicates(const Range<uint64_t>&
     }
 
     ASSIGN_OR_RETURN(size_t compound_hit,
-                     ChunkPredicateEvaluator::eval_conjuncts_into_filter(
-                             _param.scan_ctx->conjuncts.scanner_ctxs, state.active_chunk.get(), &state.chunk_filter));
+                     ExecNode::eval_conjuncts_into_filter(_param.scanner_ctx->conjuncts.scanner_ctxs,
+                                                          state.active_chunk.get(), &state.chunk_filter));
     if (compound_hit == 0) {
         _param.stats->late_materialize_skip_rows += state.row_count;
         return false;
     }
     state.has_filter = true;
-    return true;
-}
-
-// ── 4. Evaluate variant predicates ──────
-
-StatusOr<bool> GroupReader::_evaluate_variant_predicates(const Range<uint64_t>& r, RowGroupScanState& state) {
-    // fetch_sources() runs unconditionally: active variant hidden sources are
-    // needed for output even when no deferred conjuncts exist.
-    // _fetched_hidden_slots tracks already-populated columns from any early
-    // fetch during compound eval; fetch_sources() skips those.
-    RETURN_IF_ERROR(_variant->fetch_sources(r, state.active_chunk));
-
-    if (!_variant->has_deferred_conjuncts()) {
-        return true;
-    }
-
-    ASSIGN_OR_RETURN(Filter vr, _variant->filter_subfields(state.active_chunk, state.row_count, _param.stats,
-                                                           _variant->projection_timezone()));
-    if (!vr.empty()) {
-        if (SIMD::count_nonzero(vr.data(), vr.size()) == 0) {
-            return false;
-        }
-        DCHECK_EQ(vr.size(), state.row_count);
-        for (size_t i = 0; i < state.row_count; i++) {
-            state.chunk_filter[i] &= vr[i];
-        }
-        state.has_filter = true;
-    }
-    return true;
-}
-
-// ── 4.1 Evaluate join runtime filters ──────
-//
-// Sits immediately before stage 5 so the filter is applied where it pays off: it
-// narrows the lazy-column read range and shrinks the emitted chunk. Like stages 1/3/4
-// this only ANDs into state.chunk_filter, so it can never change query results --
-// worst case it is a no-op. The scan operator still probes the same filters
-// afterwards (has_push_down_to_storage stays false for connector scans), so a slot we
-// cannot serve here stays correct, just not accelerated.
-//
-// ── Why every probe column is finalized to its logical form first ──
-//
-// A column sitting in a slot after read_range() may be PHYSICAL rather than logical:
-// Int32 dictionary codes, or decoded-but-not-yet-converted parquet values (see the
-// swap machinery documented in scalar_column_reader.h). Three properties make this
-// impossible to reason about from here, so we do not try:
-//
-//   1. It cannot be inferred from the column. Dictionary codes are an Int32Column,
-//      indistinguishable from a genuine INT column. Only the owning ColumnReader
-//      knows, via pointer identity against its own _code_column, and that check is
-//      private to the reader -- ColumnReader deliberately exposes only
-//      finalize_lazy_state() ("make it logical"), never "what is it right now".
-//   2. Active does not imply decoded. A column whose conjuncts all became dict
-//      filters is evaluated directly on the codes and is never finalized in stage 2
-//      (see ColumnMaterializer::read_active_range_round_by_round), and stage 3
-//      early-returns when there are no compound conjuncts.
-//   3. It varies per chunk. ScalarColumnReader::read_range() picks DICT_CODE only
-//      when the incoming filter is selective enough, so the same column in the same
-//      row group can hand back codes for one chunk and values for the next.
-//
-// Getting this wrong yields silently wrong rows, not a crash: the filter would probe
-// dictionary codes against a filter built over the decoded values. So we pay an
-// unconditional finalize_active_slot(), which is idempotent and costs a null check
-// when the column is already logical.
-//
-// The cost of that choice: for a dict-encoded string join key we materialize every
-// surviving string and hash it once per row. Probing the dictionary instead (D
-// distinct values, D << rows) and reducing each row to a byte lookup -- what
-// DictColumnRuntimeFilterPredicate already does for OLAP -- would be considerably
-// cheaper. It is deliberately not done here, because a "detect the state, then take
-// the fast path" implementation would be racing property 3 above. Doing it safely
-// means making the state deterministic instead of detecting it: request dict codes
-// up front so read_range() must produce them, and expose the fast path through an
-// API that cannot be misread (e.g. one returning the code column or nullptr, never
-// leaving the caller to guess). Until a string join key actually shows up as a
-// bottleneck, the simpler always-finalize path is the better trade -- note the
-// motivating TPC-DS q27 case joins exclusively on integer surrogate keys, which this
-// optimization would not help at all.
-StatusOr<bool> GroupReader::_evaluate_runtime_filters(const Range<uint64_t>& r, RowGroupScanState& state) {
-    if (_rf_probe_columns.empty() || state.row_count == 0) {
-        return true;
-    }
-    // RuntimeFilterPredicates::evaluate() takes uint16_t row bounds. FileReader caps
-    // requests at _chunk_size, so this is defensive only.
-    if (state.row_count > std::numeric_limits<uint16_t>::max()) {
-        return true;
-    }
-    // Nothing has arrived yet: skip before materializing any probe column, so an RF
-    // that never shows up costs no extra IO at all.
-    if (!_rf_predicates.any_filter_ready()) {
-        return true;
-    }
-
-    const size_t input_rows = SIMD::count_nonzero(state.chunk_filter.data(), state.row_count);
-    if (input_rows == 0) {
-        return false;
-    }
-
-    SCOPED_RAW_TIMER(&_param.stats->rf_cond_evaluate_ns);
-
-    // RuntimeFilterPredicate looks columns up by ColumnId (Chunk::_cid_to_index), but
-    // the parquet active chunk is keyed by SlotId only. Build a throwaway cid-keyed
-    // view over the same columns, the way SegmentIterator does for its per-column
-    // runtime filters. It must be built *after* the columns are finalized, because
-    // finalizing replaces the ColumnPtr rather than mutating it in place.
-    Chunk rf_chunk;
-    for (const auto& probe : _rf_probe_columns) {
-        if (probe.is_active) {
-            // Unconditional and idempotent -- see the note above on why the physical
-            // vs logical state cannot be inferred here.
-            RETURN_IF_ERROR(_column_materializer->finalize_active_slot(probe.slot_id, state.active_chunk));
-            rf_chunk.append_column(state.active_chunk->get_column_by_slot_id(probe.slot_id),
-                                   static_cast<ColumnId>(probe.slot_id), true);
-        } else {
-            // Lazy column: read just this slot on demand. materialize_slot() honors the
-            // current filter (so rows already dropped by stages 1-4 are skipped),
-            // finalizes to logical form, and caches the column so stage 5's backfill
-            // picks it up instead of re-reading it.
-            RETURN_IF_ERROR(_column_materializer->materialize_slot(probe.slot_id, r, &state.chunk_filter));
-            const auto* cached = _column_materializer->get_slot_cache(probe.slot_id);
-            RETURN_IF_ERROR(cached != nullptr ? Status::OK()
-                                              : Status::InternalError("runtime filter probe column not materialized"));
-            rf_chunk.append_column(cached->values, static_cast<ColumnId>(probe.slot_id), true);
-        }
-    }
-
-    RETURN_IF_ERROR(
-            _rf_predicates.evaluate(&rf_chunk, state.chunk_filter.data(), 0, static_cast<uint16_t>(state.row_count)));
-
-    const size_t output_rows = SIMD::count_nonzero(state.chunk_filter.data(), state.row_count);
-    _param.stats->rf_cond_input_rows += input_rows;
-    _param.stats->rf_cond_output_rows += output_rows;
-    if (output_rows != input_rows) {
-        state.has_filter = true;
-    }
-    if (output_rows == 0) {
-        _param.stats->late_materialize_skip_rows += state.row_count;
-        return false;
-    }
     return true;
 }
 
@@ -483,7 +298,6 @@ StatusOr<bool> GroupReader::_filter_and_backfill_lazy(const Range<uint64_t>& r, 
         if (state.active_chunk->num_rows() == 0) {
             return false;
         }
-        RETURN_IF_ERROR(_variant->align_after_combined_filter(state.active_chunk, state.chunk_filter, state.row_count));
 
         post_filter_range = r.filter(&state.chunk_filter);
         DCHECK(post_filter_range.span_size() > 0);
@@ -491,8 +305,7 @@ StatusOr<bool> GroupReader::_filter_and_backfill_lazy(const Range<uint64_t>& r, 
                        state.chunk_filter.begin() + post_filter_range.end() - r.begin()};
     }
 
-    bool has_any_lazy =
-            !_column_materializer->lazy_column_indices().empty() || !_variant->lazy_hidden_slot_ids().empty();
+    bool has_any_lazy = !_column_materializer->lazy_column_indices().empty();
     if (has_any_lazy) {
         _param.stats->parquet_lazy_col_skip_rows += state.row_count - state.active_chunk->num_rows();
     }
@@ -501,9 +314,6 @@ StatusOr<bool> GroupReader::_filter_and_backfill_lazy(const Range<uint64_t>& r, 
                                                                 state.has_filter, state.active_chunk));
     }
 
-    RETURN_IF_ERROR(_variant->backfill_sources(r, state.has_filter ? &post_filter_range : nullptr,
-                                               state.has_filter ? &post_filter : nullptr, state.has_filter,
-                                               state.active_chunk));
     return true;
 }
 
@@ -512,14 +322,7 @@ StatusOr<bool> GroupReader::_filter_and_backfill_lazy(const Range<uint64_t>& r, 
 Status GroupReader::_emit_output_columns(RowGroupScanState& state, ChunkPtr* chunk, size_t* row_count) {
     SCOPED_RAW_TIMER(&_param.stats->group_dict_decode_ns);
     *row_count = state.active_chunk->num_rows();
-
-    if (_variant->has_projections()) {
-        RETURN_IF_ERROR(_variant->emit_projections(state.active_chunk, chunk, _variant->projection_timezone()));
-    }
-    {
-        auto skip_slots = _variant->projection_slot_ids();
-        RETURN_IF_ERROR(_column_materializer->emit_physical_columns(state.active_chunk, chunk, &skip_slots));
-    }
+    RETURN_IF_ERROR(_column_materializer->emit_physical_columns(state.active_chunk, chunk));
     return Status::OK();
 }
 
@@ -527,6 +330,8 @@ Status GroupReader::_emit_output_columns(RowGroupScanState& state, ChunkPtr* chu
 
 StatusOr<ColumnReaderPtr> GroupReader::_create_reserved_iceberg_column_reader(const SlotDescriptor* slot,
                                                                               int32_t field_id) {
+    // Try to find the physical column in the Parquet file by Iceberg spec field ID first (canonical),
+    // then fall back to column name lookup for compatibility.
     int32_t field_idx = _param.file_metadata->schema().get_field_idx_by_field_id(field_id);
     if (field_idx < 0) {
         field_idx = _param.file_metadata->schema().get_field_idx_by_column_name(slot->col_name());
@@ -546,15 +351,19 @@ StatusOr<ColumnReaderPtr> GroupReader::_create_reserved_iceberg_column_reader(co
 }
 
 StatusOr<Datum> GroupReader::_get_extended_bigint_value(SlotId slot_id) const {
-    const auto& extended_columns = _param.scan_ctx->extended_column_exprs;
+    if (_param.scan_range == nullptr || !_param.scan_range->__isset.extended_columns) {
+        return Status::NotFound(strings::Substitute("Cannot find extended column for slot $0", slot_id));
+    }
+
+    const auto& extended_columns = _param.scan_range->extended_columns;
     auto it = extended_columns.find(slot_id);
     if (it == extended_columns.end()) {
-        return Status::NotFound(fmt::format("Cannot find extended column value for slot {}", slot_id));
+        return Status::NotFound(strings::Substitute("Cannot find extended column value for slot $0", slot_id));
     }
 
     const auto& expr = it->second;
     if (expr.nodes.empty()) {
-        return Status::InvalidArgument(fmt::format("Invalid extended column expression for slot {}", slot_id));
+        return Status::InvalidArgument(strings::Substitute("Invalid extended column expression for slot $0", slot_id));
     }
 
     const auto& node = expr.nodes[0];
@@ -562,7 +371,8 @@ StatusOr<Datum> GroupReader::_get_extended_bigint_value(SlotId slot_id) const {
         return kNullDatum;
     }
     if (node.node_type != TExprNodeType::INT_LITERAL || !node.__isset.int_literal) {
-        return Status::InvalidArgument(fmt::format("Unsupported extended column expression for slot {}", slot_id));
+        return Status::InvalidArgument(
+                strings::Substitute("Unsupported extended column expression for slot $0", slot_id));
     }
 
     return Datum(node.int_literal.value);
@@ -570,15 +380,15 @@ StatusOr<Datum> GroupReader::_get_extended_bigint_value(SlotId slot_id) const {
 
 Status GroupReader::_create_column_readers() {
     SCOPED_RAW_TIMER(&_param.stats->column_reader_init_ns);
-    _global_dict_applied_in_group = false;
+    // ColumnReaderOptions is used by all column readers in one row group
     ColumnReaderOptions& opts = _column_reader_opts;
     opts.file_meta_data = _param.file_metadata;
-    if (_param.scan_ctx == nullptr) {
+    if (_param.scanner_ctx == nullptr) {
         return Status::InternalError("GroupReader: scanner_ctx must not be null");
     }
-    opts.timezone = _param.scan_ctx->timezone;
-    opts.case_sensitive = _param.scan_ctx->options.case_sensitive;
-    opts.use_file_pagecache = _param.scan_ctx->options.use_file_pagecache;
+    opts.timezone = _param.scanner_ctx->timezone;
+    opts.case_sensitive = _param.scanner_ctx->options.case_sensitive;
+    opts.use_file_pagecache = _param.scanner_ctx->options.use_file_pagecache;
     opts.chunk_size = _param.chunk_size;
     opts.stats = _param.stats;
     opts.file = _param.file;
@@ -587,23 +397,14 @@ Status GroupReader::_create_column_readers() {
     opts.modification_time = _param.modification_time;
     opts.file_size = _param.file_size;
     opts.datacache_options = _param.datacache_options;
-
-    // Setup variant handler (idempotent: no-op when no variant virtual columns exist).
-    RETURN_IF_ERROR(_variant->setup_readers());
-
     for (const auto& column : _param.read_cols) {
-        // Extended variant virtual columns are handled by _variant->setup_readers above.
-        if (column.is_extended_variant_virtual) continue;
         ASSIGN_OR_RETURN(ColumnReaderPtr column_reader, _create_column_reader(column));
         _column_readers[column.slot_id()] = std::move(column_reader);
     }
 
-    // Register zone-map readers AFTER physical column readers are created.
-    _variant->register_zone_map_readers();
-
     // create for partition values
-    const auto& partition_columns = _param.scan_ctx->partition_columns;
-    const auto& partition_values = _param.scan_ctx->partition_values;
+    const auto& partition_columns = _param.scanner_ctx->partition_columns;
+    const auto& partition_values = _param.scanner_ctx->partition_values;
     for (size_t i = 0; i < partition_columns.size(); i++) {
         const auto& column = partition_columns[i];
         const auto* slot_desc = column.slot_desc;
@@ -612,30 +413,31 @@ Status GroupReader::_create_column_readers() {
     }
 
     // create for not existed column
-    for (const auto* slot : _param.scan_ctx->not_existed_slots) {
+    for (const auto* slot : _param.scanner_ctx->not_existed_slots) {
         _column_readers.emplace(slot->id(), std::make_unique<FixedValueColumnReader>(kNullDatum));
     }
 
-    const auto& reserved_slots = _param.scan_ctx->reserved_field_slots;
+    const auto& reserved_slots = _param.scanner_ctx->reserved_field_slots;
     if (!reserved_slots.empty()) {
         bool use_legacy_lookup_row_id =
                 std::any_of(reserved_slots.begin(), reserved_slots.end(), [](const SlotDescriptor* slot) {
-                    return slot->col_name() == formats::kRowSourceIdColumnName ||
-                           slot->col_name() == formats::kScanRangeIdColumnName;
+                    return slot->col_name() == "_row_source_id" || slot->col_name() == "_scan_range_id";
                 });
         for (const auto* slot : reserved_slots) {
-            if (slot->col_name() == formats::kIcebergRowIdColumnName) {
+            if (slot->col_name() == HdfsScanner::ICEBERG_ROW_ID) {
+                // Iceberg v3 row lineage: try physical column first (post-compaction files),
+                // fall back to computed row_id (firstRowId + position) for non-compacted files.
                 ASSIGN_OR_RETURN(auto reader,
                                  _create_reserved_iceberg_column_reader(slot, formats::kIcebergRowIdColumnId));
                 std::optional<int64_t> first_row_id = std::nullopt;
-                if (_param.scan_ctx->first_row_id.has_value()) {
+                if (_param.scan_range != nullptr && _param.scan_range->__isset.first_row_id) {
                     // IcebergRowIdReader emits `first_row_id + i` where `i` is a file-local row
                     // index (it already includes the row-group start), so the base must be the
                     // file-level first_row_id. A row-group-level base double-counts the row-group
                     // start and shifts the emitted _row_id for every row group after the first,
                     // diverging from the physical _row_id column of compacted files. The file-level
                     // base also keeps the reader's zone-map filters (base + rg_first_row) correct.
-                    first_row_id = _param.scan_ctx->first_row_id;
+                    first_row_id = std::optional<int64_t>(_param.scan_range->first_row_id);
                 } else if (use_legacy_lookup_row_id) {
                     // Legacy (non-lineage) GLM keys rows by file-local position: the base is 0.
                     first_row_id = std::optional<int64_t>(0);
@@ -644,9 +446,12 @@ Status GroupReader::_create_column_readers() {
                         reader != nullptr ? std::make_unique<IcebergRowIdReader>(std::move(reader), first_row_id)
                                           : std::make_unique<IcebergRowIdReader>(first_row_id);
                 _column_readers.emplace(slot->id(), std::move(row_id_reader));
-            } else if (slot->col_name() == formats::kIcebergLastUpdatedSequenceNumberColumnName) {
-                ASSIGN_OR_RETURN(auto reader, _create_reserved_iceberg_column_reader(
-                                                      slot, formats::kIcebergLastUpdatedSequenceNumberColumnId));
+            } else if (slot->col_name() == HdfsScanner::ICEBERG_LAST_UPDATED_SEQUENCE_NUMBER) {
+                // Iceberg v3 row lineage: try physical column first (post-compaction files),
+                // fall back to file-level dataSequenceNumber passed via extended_columns from FE.
+                ASSIGN_OR_RETURN(auto reader,
+                                 _create_reserved_iceberg_column_reader(
+                                         slot, HdfsScanner::ICEBERG_LAST_UPDATED_SEQUENCE_NUMBER_COLUMN_ID));
                 Datum sequence_number = kNullDatum;
                 bool can_use_fallback = false;
                 auto sequence_number_or = _get_extended_bigint_value(slot->id());
@@ -661,27 +466,19 @@ Status GroupReader::_create_column_readers() {
                                                     std::move(reader), can_use_fallback, sequence_number)
                                           : std::make_unique<IcebergLastUpdatedSequenceNumberReader>(sequence_number);
                 _column_readers.emplace(slot->id(), std::move(seq_reader));
-            } else if (slot->col_name() == formats::kRowSourceIdColumnName) {
+            } else if (slot->col_name() == "_row_source_id") {
                 if (auto opt = get_backend_id(); opt.has_value()) {
                     _column_readers.emplace(slot->id(), std::make_unique<RowSourceReader>(opt.value()));
                 } else {
                     return Status::InternalError("get_backend_id failed");
                 }
-            } else if (slot->col_name() == formats::kScanRangeIdColumnName) {
+            } else if (slot->col_name() == "_scan_range_id") {
                 _column_readers.emplace(slot->id(), std::make_unique<FixedValueColumnReader>(_param.scan_range_id));
-            } else if (slot->col_name() == formats::kIcebergRowPositionColumnName) {
+            } else if (slot->col_name() == HdfsScanner::ICEBERG_ROW_POSITION) {
                 _column_readers.emplace(slot->id(), std::make_unique<ParquetPosReader>());
             }
         }
     }
-
-    if (_param.stats != nullptr) {
-        _param.stats->global_dict_total_row_groups++;
-        if (_global_dict_applied_in_group) {
-            _param.stats->global_dict_applied_row_groups++;
-        }
-    }
-
     return Status::OK();
 }
 
@@ -689,15 +486,7 @@ StatusOr<ColumnReaderPtr> GroupReader::_create_column_reader(const GroupReaderPa
     std::unique_ptr<ColumnReader> column_reader = nullptr;
     const auto* schema_node = _param.file_metadata->schema().get_stored_column_by_field_idx(column.idx_in_parquet);
     {
-        if (column.slot_type().type == LogicalType::TYPE_VARIANT && schema_node != nullptr &&
-            schema_node->type == ColumnType::STRUCT) {
-            // Physical VARIANT columns use _get_variant_shredded_hints; this path
-            // is for non-virtual VARIANT columns that appear directly in the SELECT list.
-            VariantShreddedReadHints hints =
-                    build_variant_shredded_hints(&_param.scan_ctx->column_access_paths, column.slot_desc->col_name());
-            ASSIGN_OR_RETURN(column_reader, ColumnReaderFactory::create_variant_column_reader(_column_reader_opts,
-                                                                                              schema_node, hints));
-        } else if (column.t_lake_schema_field == nullptr) {
+        if (column.t_lake_schema_field == nullptr) {
             ASSIGN_OR_RETURN(column_reader,
                              ColumnReaderFactory::create(_column_reader_opts, schema_node, column.slot_type()));
         } else {
@@ -705,30 +494,19 @@ StatusOr<ColumnReaderPtr> GroupReader::_create_column_reader(const GroupReaderPa
                              ColumnReaderFactory::create(_column_reader_opts, schema_node, column.slot_type(),
                                                          column.t_lake_schema_field));
         }
-        auto* global_dictmaps = _param.scan_ctx->global_dictmaps;
+        auto* global_dictmaps = _param.scanner_ctx->global_dictmaps;
         if (global_dictmaps->contains(column.slot_id())) {
-            GlobalDictReaderKind kind = GlobalDictReaderKind::kNone;
             ASSIGN_OR_RETURN(column_reader, ColumnReaderFactory::create(
                                                     std::move(column_reader), global_dictmaps->at(column.slot_id()),
-                                                    column.slot_id(), _row_group_metadata->num_rows, &kind));
-            if (_param.stats != nullptr && kind != GlobalDictReaderKind::kNone) {
-                _param.stats->global_dict_applied_slots++;
-                if (kind == GlobalDictReaderKind::kDictCode) {
-                    _param.stats->global_dict_dict_code_reader_slots++;
-                } else if (kind == GlobalDictReaderKind::kLowRowsEncode) {
-                    _param.stats->global_dict_encode_reader_slots++;
-                }
-                _global_dict_applied_in_group = true;
-            }
+                                                    column.slot_id(), _row_group_metadata->num_rows));
         }
         if (column_reader == nullptr) {
+            // this shouldn't happen but guard
             return Status::InternalError("No valid column reader.");
         }
     }
     return column_reader;
 }
-
-// ── Column / conjunct classification ────────────────────────────────────────
 
 Status GroupReader::_prepare_column_readers() const {
     SCOPED_RAW_TIMER(&_param.stats->column_reader_init_ns);
@@ -736,111 +514,37 @@ Status GroupReader::_prepare_column_readers() const {
         RETURN_IF_ERROR(column_reader->prepare());
         if (column_reader->get_column_parquet_field() != nullptr &&
             column_reader->get_column_parquet_field()->is_complex_type()) {
+            // For complex type columns, we need parse def & rep levels.
+            // For OptionalColumnReader, by default, we will not parse it's def level for performance. But if
+            // column is a complex type, we have to parse def level to calculate nullability.
             column_reader->set_need_parse_levels(true);
         }
     }
-    RETURN_IF_ERROR(_variant->prepare_hidden_readers());
     return Status::OK();
 }
 
 void GroupReader::_process_columns_and_conjunct_ctxs() {
-    // ── Variant setup ─────────────────────────────────────────────────────────
-    auto deferred_slots = _variant->deferred_conjunct_physical_source_slots();
-    _variant->collect_deferred_conjuncts();
-
     // ── Classify physical columns and conjuncts ───────────────────────────────
     bool has_reserved_field_filter = false;
+    std::unordered_set<SlotId> deferred_slots;
     _column_materializer->classify_columns(deferred_slots, &has_reserved_field_filter);
 
-    // ── Variant hidden source classification ──────────────────────────────────
-    _variant->classify_hidden_sources();
-    for (SlotId sid : _variant->active_hidden_slot_ids()) {
-        _column_materializer->add_active_slot(sid);
-    }
     if (!config::parquet_late_materialization_enable) {
         _column_materializer->promote_lazy_to_active();
-        _variant->promote_lazy_to_active();
     }
 
     // ── Promote lazy to active when no active columns exist ───────────────────
     if (_column_materializer->active_slot_ids().empty() && !has_reserved_field_filter) {
         _column_materializer->promote_lazy_to_active();
-        _variant->promote_lazy_to_active();
     }
-
-    // ── Join runtime filter pushdown ──────────────────────────────────────────
-    // Must run last: it needs the final active/lazy split.
-    _setup_runtime_filter_predicates();
-}
-
-void GroupReader::_setup_runtime_filter_predicates() {
-    _rf_predicates = RuntimeFilterPredicates();
-    _rf_probe_columns.clear();
-
-    auto* src = _param.scan_ctx == nullptr ? nullptr : _param.scan_ctx->runtime_filter_preds;
-    if (src == nullptr || src->empty()) {
-        return;
-    }
-
-    // Membership must be tested against exactly the sets the two probe paths can
-    // serve, and nothing else. active_slot_ids() is precisely what
-    // create_active_chunk() materializes, and lazy_slot_ids() is precisely what
-    // materialize_slot() can read. A runtime filter may target a slot in neither --
-    // ConnectorPredicateParser::can_pushdown() accepts every slot, so partition,
-    // not-existed and extended slots all reach us, as do columns pruned from this
-    // file by schema evolution. Those must be dropped: deriving "active" as "not
-    // lazy" would wrongly admit them and then fail looking them up.
-    const auto& active_ids = _column_materializer->active_slot_ids();
-    const auto& lazy_ids = _column_materializer->lazy_slot_ids();
-    const std::unordered_set<SlotId> active_slots(active_ids.begin(), active_ids.end());
-    const std::unordered_set<SlotId> lazy_slots(lazy_ids.begin(), lazy_ids.end());
-
-    RuntimeFilterPredicates preds(src->driver_sequence());
-    std::unordered_set<SlotId> probe_columns_seen;
-    for (auto* pred : src->rf_predicates()) {
-        // Group-colocate filters hold one sub-filter per driver and are only valid for the
-        // driver that built them. Every other pushdown consumer excludes them via
-        // can_push_down_runtime_filter() -- the operator-level collector, project and
-        // aggregate nodes -- but get_runtime_filter_predicates() does not, so do it here.
-        // A lake fragment is not expected to produce one (FE adds every connector scan to
-        // its exec group with disableColocateGroup=true), which is why driver_sequence is
-        // never consulted below; this is the cheap guard that keeps that from mattering.
-        if (!pred->get_rf_desc()->can_push_down_runtime_filter()) continue;
-        // The check above also covers what the storage-layer probe needs:
-        // RuntimeFilterPredicate::evaluate() derives the sub-filter index from the single
-        // probe column, which only matches the operator-level probe while the filter has no
-        // partition-by exprs -- with them, compute_hash_values() evaluates those into a
-        // separate column list and indexes off that instead. Both predicates read
-        // _partition_by_exprs_contexts, so this cannot fail today; state it so the coupling
-        // is visible if can_push_down_runtime_filter() is ever narrowed.
-        DCHECK_EQ(pred->get_rf_desc()->num_partition_by_exprs(), 0);
-        // ConnectorPredicateParser::column_id() returns SlotDescriptor::id(), so the
-        // predicate's ColumnId is the probe slot id.
-        const auto slot_id = static_cast<SlotId>(pred->get_column_id());
-        const bool is_active = active_slots.count(slot_id) > 0;
-        if (!is_active && lazy_slots.count(slot_id) == 0) continue;
-        if (_column_readers.find(slot_id) == _column_readers.end()) continue;
-        preds.add_predicate(pred);
-        // Several filters may probe the same column. _rf_probe_columns drives building
-        // the probe chunk, which keys columns by id and rejects duplicates, so it must
-        // hold each column once even though every predicate is kept.
-        if (probe_columns_seen.insert(slot_id).second) {
-            _rf_probe_columns.push_back({slot_id, is_active});
-        }
-    }
-    if (_rf_probe_columns.empty()) {
-        return;
-    }
-    _rf_predicates = std::move(preds);
 }
 
 // ── IO range collection ─────────────────────────────────────────────────────
 
-void GroupReader::collect_io_ranges(std::vector<SharedBufferedInputStream::IORange>* ranges, int64_t* end_offset,
-                                    ColumnIOTypeFlags types) {
+void GroupReader::collect_io_ranges(std::vector<starrocks::io::SharedBufferedInputStream::IORange>* ranges,
+                                    int64_t* end_offset, ColumnIOTypeFlags types) {
     int64_t end = 0;
     _column_materializer->collect_io_ranges(ranges, &end, types);
-    _variant->collect_io_ranges(ranges, &end, types);
     ReadRangePlanner::deduplicate(ranges);
     *end_offset = end;
 }

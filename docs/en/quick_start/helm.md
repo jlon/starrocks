@@ -1,5 +1,4 @@
 ---
-sidebar_position: 70
 displayed_sidebar: docs
 description: "Quick start guide for deploying StarRocks on Kubernetes using Helm."
 toc_max_heading_level: 2

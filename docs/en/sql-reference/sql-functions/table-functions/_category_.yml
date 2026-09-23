@@ -3,5 +3,4 @@ label: 'Table'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: table-functions
+  type: generated-index

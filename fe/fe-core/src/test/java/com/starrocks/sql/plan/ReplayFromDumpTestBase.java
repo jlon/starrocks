@@ -60,7 +60,6 @@ public class ReplayFromDumpTestBase extends StarRocksTestBase {
         UtFrameUtils.createMinStarRocksCluster();
         // Should disable Dynamic Partition in replay dump test
         Config.show_execution_groups = false;
-        Config.enable_virtual_columns = false;
         Config.dynamic_partition_enable = false;
         Config.tablet_sched_disable_colocate_overall_balance = true;
         // create connect context
@@ -151,10 +150,10 @@ public class ReplayFromDumpTestBase extends StarRocksTestBase {
 
     protected static String getDumpInfoFromFile(String fileName) throws Exception {
         String completeFileName = fileName + ".json";
-        return getContentFromFile(completeFileName);
+        return geContentFromFile(completeFileName);
     }
 
-    public static String getContentFromFile(String completeFileName) throws Exception {
+    public static String geContentFromFile(String completeFileName) throws Exception {
         String path = Objects.requireNonNull(ClassLoader.getSystemClassLoader().getResource("sql")).getPath();
         File file = new File(path + "/" + completeFileName);
         StringBuilder sb = new StringBuilder();

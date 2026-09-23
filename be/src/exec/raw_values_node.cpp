@@ -14,7 +14,6 @@
 
 #include "exec/raw_values_node.h"
 
-#include "exec/pipeline/fragment_context.h"
 #include "exec/pipeline/limit_operator.h"
 #include "exec/pipeline/pipeline_builder.h"
 #include "gen_cpp/PlanNodes_types.h"
@@ -23,7 +22,7 @@
 namespace starrocks {
 
 RawValuesNode::RawValuesNode(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs)
-        : PipelineNode(pool, tnode, descs), _tuple_id(tnode.raw_values_node.tuple_id) {}
+        : ExecNode(pool, tnode, descs), _tuple_id(tnode.raw_values_node.tuple_id) {}
 
 RawValuesNode::~RawValuesNode() {
     if (runtime_state() != nullptr) {
@@ -53,6 +52,22 @@ Status RawValuesNode::init(const TPlanNode& tnode, RuntimeState* state) {
     return Status::OK();
 }
 
+Status RawValuesNode::prepare(RuntimeState* state) {
+    RETURN_IF_ERROR(ExecNode::prepare(state));
+
+    _tuple_desc = state->desc_tbl().get_tuple_descriptor(_tuple_id);
+    if (_tuple_desc == nullptr) {
+        return Status::InternalError("RawValuesNode: failed to get tuple descriptor");
+    }
+
+    return Status::OK();
+}
+
+Status RawValuesNode::open(RuntimeState* state) {
+    RETURN_IF_ERROR(ExecNode::open(state));
+    return Status::OK();
+}
+
 void RawValuesNode::close(RuntimeState* state) {
     if (is_closed()) {
         return;
@@ -60,7 +75,7 @@ void RawValuesNode::close(RuntimeState* state) {
     ExecNode::close(state);
 }
 
-StatusOr<pipeline::OpFactories> RawValuesNode::decompose_to_pipeline(pipeline::PipelineBuilderContext* context) {
+pipeline::OpFactories RawValuesNode::decompose_to_pipeline(pipeline::PipelineBuilderContext* context) {
     using namespace pipeline;
     OpFactories operators;
 

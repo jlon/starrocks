@@ -59,7 +59,6 @@ public class CatalogQueryMetricsTest extends PlanTestBase {
         assertEquals("deltalake", StmtExecutor.toCatalogType(Table.TableType.DELTALAKE));
         assertEquals("jdbc", StmtExecutor.toCatalogType(Table.TableType.JDBC));
         assertEquals("paimon", StmtExecutor.toCatalogType(Table.TableType.PAIMON));
-        assertEquals("paimon", StmtExecutor.toCatalogType(Table.TableType.PAIMON_VIEW));
         assertEquals("odps", StmtExecutor.toCatalogType(Table.TableType.ODPS));
         assertEquals("kudu", StmtExecutor.toCatalogType(Table.TableType.KUDU));
         assertEquals("elasticsearch", StmtExecutor.toCatalogType(Table.TableType.ELASTICSEARCH));

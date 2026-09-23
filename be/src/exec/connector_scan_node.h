@@ -14,16 +14,11 @@
 
 #pragma once
 
-#include <algorithm>
 #include <atomic>
 #include <memory>
-#include <mutex>
-#include <vector>
 
-#include "base/concurrency/blocking_queue.hpp"
 #include "column/vectorized_fwd.h"
-#include "common/statusor.h"
-#include "connector_primitive/connector.h"
+#include "connector/connector.h"
 #include "exec/scan_node.h"
 #include "fs/fs.h"
 
@@ -51,7 +46,8 @@ public:
     bool accept_empty_scan_ranges() const override;
 
     // for pipline APIs
-    StatusOr<pipeline::OpFactories> decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
+    std::vector<std::shared_ptr<pipeline::OperatorFactory>> decompose_to_pipeline(
+            pipeline::PipelineBuilderContext* context) override;
 
     connector::DataSourceProvider* data_source_provider() { return _data_source_provider.get(); }
     connector::ConnectorType connector_type() { return _connector_type; }
@@ -62,14 +58,12 @@ public:
     bool use_stream_load_thread_pool() { return _use_stream_load_thread_pool; };
 #endif
 
-    StatusOr<pipeline::MorselQueueBuilderPtr> convert_scan_range_to_morsel_queue_builder(
+    StatusOr<pipeline::MorselQueuePtr> convert_scan_range_to_morsel_queue(
             const std::vector<TScanRangeParams>& scan_ranges, int node_id, int32_t pipeline_dop,
             bool enable_tablet_internal_parallel, TTabletInternalParallelMode::type tablet_internal_parallel_mode,
             size_t num_total_scan_ranges) override;
 
     size_t estimated_scan_row_bytes() const { return _estimated_scan_row_bytes; }
-
-    void set_filtered_above_iterator(bool value) override;
 
     int io_tasks_per_scan_operator() const override;
     bool output_chunk_by_bucket() const override { return _data_source_provider->output_chunk_by_bucket(); }
@@ -146,8 +140,7 @@ private:
 private:
     // pipeline fields and methods.
     connector::DataSourceProviderPtr _data_source_provider = nullptr;
-    Status _connector_status = Status::OK();
-    connector::ConnectorType _connector_type = connector::ConnectorType::HIVE;
+    connector::ConnectorType _connector_type;
     std::string _catalog_type;
     void _estimate_scan_row_bytes();
     void _estimate_data_source_mem_bytes();

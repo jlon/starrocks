@@ -15,23 +15,23 @@
 #pragma once
 
 #include <memory>
-#include <ostream>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include "base/string/c_string.h"
 #include "column/column.h"
 #include "column/vectorized_fwd.h"
-#include "common/column_id.h"
-#include "common/storage_aggregate_type.h"
-#include "types/type_info.h"
+#include "storage/aggregate_type.h"
+#include "storage/olap_common.h"
+#include "storage/types.h"
+#include "util/c_string.h"
 
 namespace starrocks {
 
+class Datum;
 class AggStateDesc;
+class SlotDescriptor;
 
 class Field {
 public:
@@ -90,8 +90,7 @@ public:
               _length(rhs._length),
               _short_key_length(rhs._short_key_length),
               _flags(rhs._flags),
-              _uid(rhs._uid),
-              _is_virtual(rhs._is_virtual) {}
+              _uid(rhs._uid) {}
 
     Field(Field&& rhs) noexcept
             : _id(rhs._id),
@@ -103,8 +102,7 @@ public:
               _length(rhs._length),
               _short_key_length(rhs._short_key_length),
               _flags(rhs._flags),
-              _uid(rhs._uid),
-              _is_virtual(rhs._is_virtual) {
+              _uid(rhs._uid) {
         rhs._sub_fields = nullptr;
     }
 
@@ -121,7 +119,6 @@ public:
             _flags = rhs._flags;
             _sub_fields = rhs._sub_fields ? new std::vector<Field>(*rhs._sub_fields) : nullptr;
             _uid = rhs._uid;
-            _is_virtual = rhs._is_virtual;
         }
         return *this;
     }
@@ -137,7 +134,6 @@ public:
             _short_key_length = rhs._short_key_length;
             _flags = rhs._flags;
             _uid = rhs._uid;
-            _is_virtual = rhs._is_virtual;
             std::swap(_sub_fields, rhs._sub_fields);
         }
         return *this;
@@ -166,11 +162,14 @@ public:
     int32_t length() const { return _length; }
     void set_length(int32_t l) { _length = l; }
 
-    bool is_virtual() const { return _is_virtual; }
-    void set_is_virtual(bool is_virtual) { _is_virtual = is_virtual; }
-
     uint8_t short_key_length() const { return _short_key_length; }
     void set_short_key_length(uint8_t n) { _short_key_length = n; }
+
+    // Encode the first |short_key_length| bytes.
+    void encode_ascending(const Datum& value, std::string* buf) const;
+
+    // Encode the full field.
+    void full_encode_ascending(const Datum& value, std::string* buf) const;
 
     // Status decode_ascending(Slice* encoded_key, uint8_t* cell_ptr, MemPool* pool) const;
 
@@ -192,6 +191,8 @@ public:
 
     bool has_sub_fields() const { return _sub_fields != nullptr; }
 
+    MutableColumnPtr create_column() const;
+
     void set_uid(ColumnUID uid) { _uid = uid; }
     const ColumnUID& uid() const { return _uid; }
 
@@ -200,7 +201,12 @@ public:
 
     static FieldPtr convert_to_dict_field(const Field& field);
 
+    static FieldPtr convert_from_slot_desc(const SlotDescriptor& slot);
+
 private:
+    static FieldPtr _build_field_from_type_desc(const TypeDescriptor& type_desc, const std::string& name, int32_t id,
+                                                bool nullable);
+
     constexpr static int kIsKeyShift = 0;
     constexpr static int kNullableShift = 1;
 
@@ -215,7 +221,6 @@ private:
     uint8_t _short_key_length;
     uint8_t _flags;
     ColumnUID _uid = -1;
-    bool _is_virtual = false;
 };
 
 inline bool Field::is_nullable() const {
@@ -271,7 +276,7 @@ inline FieldPtr Field::with_nullable(bool nullable) {
 inline std::ostream& operator<<(std::ostream& os, const Field& field) {
     os << field.id() << ":" << field.name() << " " << field.type()->type() << " "
        << (field.is_nullable() ? "NULL" : "NOT NULL") << (field.is_key() ? " KEY" : "") << " "
-       << static_cast<int>(field.aggregate_method()) << " uid:" << field.uid();
+       << field.aggregate_method() << " uid:" << field.uid();
     return os;
 }
 

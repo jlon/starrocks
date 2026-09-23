@@ -14,13 +14,10 @@
 
 package com.starrocks.connector;
 
-import com.starrocks.connector.benchmark.BenchmarkConfig;
-import com.starrocks.connector.benchmark.BenchmarkConnector;
 import com.starrocks.connector.config.ConnectorConfig;
 import com.starrocks.connector.delta.DeltaLakeConnector;
 import com.starrocks.connector.elasticsearch.ElasticsearchConnector;
 import com.starrocks.connector.elasticsearch.EsConfig;
-import com.starrocks.connector.fluss.FlussConnector;
 import com.starrocks.connector.hive.HiveConnector;
 import com.starrocks.connector.hudi.HudiConnector;
 import com.starrocks.connector.iceberg.IcebergConnector;
@@ -45,10 +42,7 @@ public enum ConnectorType {
     PAIMON("paimon", PaimonConnector.class, null),
     ODPS("odps", OdpsConnector.class, null),
     KUDU("kudu", KuduConnector.class, null),
-    FLUSS("fluss", FlussConnector.class, null),
-    UNIFIED("unified", UnifiedConnector.class, null),
-    BENCHMARK("benchmark", BenchmarkConnector.class, BenchmarkConfig.class),
-    LANCE("lance", com.starrocks.connector.lance.LanceConnector.class, null);
+    UNIFIED("unified", UnifiedConnector.class, null);
 
     public static final Set<ConnectorType> SUPPORT_TYPE_SET = EnumSet.of(
             ES,
@@ -60,10 +54,7 @@ public enum ConnectorType {
             PAIMON,
             ODPS,
             KUDU,
-            FLUSS,
-            UNIFIED,
-            BENCHMARK,
-            LANCE
+            UNIFIED
     );
 
     ConnectorType(String name, Class connectorClass, Class configClass) {

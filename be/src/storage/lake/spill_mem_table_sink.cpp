@@ -14,17 +14,21 @@
 
 #include "storage/lake/spill_mem_table_sink.h"
 
-#include "base/testutil/sync_point.h"
-#include "common/config_ingest_fwd.h"
-#include "common/config_primary_key_fwd.h"
-#include "common/runtime_profile.h"
-#include "compute_env/spill/spiller.h"
-#include "runtime/current_thread.h"
-#include "runtime/runtime_env.h"
-#include "storage/lake/load_spill_pipeline_merge_context.h"
-#include "storage/lake/load_spill_pipeline_merge_iterator.h"
+#include "exec/spill/options.h"
+#include "exec/spill/serde.h"
+#include "exec/spill/spiller.h"
+#include "exec/spill/spiller_factory.h"
+#include "runtime/runtime_state.h"
+#include "storage/aggregate_iterator.h"
+#include "storage/chunk_helper.h"
 #include "storage/lake/tablet_internal_parallel_merge_task.h"
 #include "storage/lake/tablet_writer.h"
+#include "storage/load_spill_block_manager.h"
+#include "storage/load_spill_pipeline_merge_context.h"
+#include "storage/load_spill_pipeline_merge_iterator.h"
+#include "storage/merge_iterator.h"
+#include "storage/storage_engine.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks::lake {
 
@@ -38,7 +42,7 @@ SpillMemTableSink::SpillMemTableSink(LoadSpillBlockManager* block_manager, Table
     std::string tracker_label =
             "LoadSpillMerge-" + std::to_string(writer->tablet_id()) + "-" + std::to_string(writer->txn_id());
     _merge_mem_tracker = std::make_unique<MemTracker>(MemTrackerType::COMPACTION_TASK, -1, std::move(tracker_label),
-                                                      RuntimeEnv::GetInstance()->compaction_mem_tracker());
+                                                      GlobalEnv::GetInstance()->compaction_mem_tracker());
 }
 
 SpillMemTableSink::~SpillMemTableSink() {

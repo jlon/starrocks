@@ -16,11 +16,8 @@
 
 #include <string>
 
-#include "base/simd/simd.h"
-#include "base/types/int128.h"
-#include "base/types/uint24.h"
 #include "column/column_helper.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "column/vectorized_fwd.h"
 #include "common/object_pool.h"
 #include "common/status.h"
@@ -30,10 +27,14 @@
 #include "formats/parquet/encoding_plain.h"
 #include "formats/parquet/schema.h"
 #include "gutil/casts.h"
-#include "storage_primitive/column_predicate_factory.h"
+#include "runtime/types.h"
+#include "simd/simd.h"
+#include "storage/column_predicate.h"
+#include "storage/types.h"
+#include "storage/uint24.h"
 #include "types/date_value.h"
+#include "types/large_int_value.h"
 #include "types/logical_type.h"
-#include "types/type_descriptor.h"
 
 namespace starrocks::parquet {
 
@@ -170,7 +171,7 @@ void translate_to_string_value(const ColumnPtr& col, size_t i, std::string& valu
                                          std::is_same_v<T, int32_t> || std::is_same_v<T, int64_t>) {
                         value = std::to_string(arg);
                     } else if constexpr (std::is_same_v<T, int128_t>) {
-                        value = int128_to_string(arg);
+                        value = LargeIntValue::to_string(arg);
                     } else {
                         // not supported, and should be denied in can_be_used_for_statistics_filter
                         DCHECK(false) << "Unsupported type";

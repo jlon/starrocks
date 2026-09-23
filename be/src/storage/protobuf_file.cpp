@@ -17,12 +17,11 @@
 #include <fmt/format.h>
 #include <google/protobuf/message.h>
 
-#include "base/container/raw_container.h"
-#include "base/testutil/sync_point.h"
-#include "common/storage_define.h"
 #include "fs/fs.h"
-#include "fs/fs_factory.h"
+#include "storage/olap_define.h"
 #include "storage/utils.h"
+#include "testutil/sync_point.h"
+#include "util/raw_container.h"
 
 namespace starrocks {
 
@@ -60,7 +59,7 @@ Status ProtobufFileWithHeader::save(const ::google::protobuf::Message& message, 
     if (_fs) {
         fs = _fs;
     } else {
-        ASSIGN_OR_RETURN(fs, FileSystemFactory::CreateSharedFromString(_path));
+        ASSIGN_OR_RETURN(fs, FileSystem::CreateSharedFromString(_path));
     }
     WritableFileOptions opts{.sync_on_close = sync, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
     ASSIGN_OR_RETURN(auto output_file, fs->new_writable_file(opts, _path));
@@ -76,7 +75,7 @@ Status ProtobufFileWithHeader::load(::google::protobuf::Message* message, bool f
     if (_fs) {
         fs = _fs;
     } else {
-        ASSIGN_OR_RETURN(fs, FileSystemFactory::CreateSharedFromString(_path));
+        ASSIGN_OR_RETURN(fs, FileSystem::CreateSharedFromString(_path));
     }
 
     // When legacy fallback is enabled we cannot stream the file: a legacy headerless file may be
@@ -194,7 +193,7 @@ Status ProtobufFile::save(const ::google::protobuf::Message& message, bool sync)
     if (_fs) {
         fs = _fs;
     } else {
-        ASSIGN_OR_RETURN(fs, FileSystemFactory::CreateSharedFromString(_path));
+        ASSIGN_OR_RETURN(fs, FileSystem::CreateSharedFromString(_path));
     }
     WritableFileOptions opts{.sync_on_close = sync, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
     ASSIGN_OR_RETURN(auto output_file, fs->new_writable_file(opts, _path));
@@ -209,7 +208,7 @@ Status ProtobufFile::load(::google::protobuf::Message* message, bool fill_cache)
     if (_fs) {
         fs = _fs;
     } else {
-        ASSIGN_OR_RETURN(fs, FileSystemFactory::CreateSharedFromString(_path));
+        ASSIGN_OR_RETURN(fs, FileSystem::CreateSharedFromString(_path));
     }
     ASSIGN_OR_RETURN(auto input_file, fs->new_random_access_file(opts, _path));
     ASSIGN_OR_RETURN(auto serialized_string, input_file->read_all());

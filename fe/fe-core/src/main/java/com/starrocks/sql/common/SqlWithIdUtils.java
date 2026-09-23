@@ -194,11 +194,6 @@ public class SqlWithIdUtils {
                         .append(")");
             }
             sqlBuilder.append(" AS (").append(visit(relation.getCteQueryStatement())).append(") ");
-            if (relation.getMaterializationHint() == CTERelation.CTEMaterializationHint.MATERIALIZED) {
-                sqlBuilder.append("[materialized] ");
-            } else if (relation.getMaterializationHint() == CTERelation.CTEMaterializationHint.NOT_MATERIALIZED) {
-                sqlBuilder.append("[not_materialized] ");
-            }
             return sqlBuilder.toString();
         }
 

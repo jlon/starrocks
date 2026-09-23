@@ -100,13 +100,6 @@ public abstract class TabletMetadataUpdateAgentTask extends AgentTask {
         }
     }
 
-    @Override
-    public void cancelPendingWaiter(Status status) {
-        if (this.latch != null) {
-            latch.countDownToZero(status);
-        }
-    }
-
     public abstract Set<Long> getTablets();
 
     public abstract List<TTabletMetaInfo> getTTabletMetaInfoList();

@@ -41,12 +41,10 @@ import com.starrocks.common.util.concurrent.lock.AutoCloseableLock;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.lake.LakeTableHelper;
 import com.starrocks.lake.Utils;
-import com.starrocks.lake.vector.VectorIndexBuildScheduler;
 import com.starrocks.persist.OriginStatementInfo;
 import com.starrocks.proto.AggregatePublishVersionRequest;
 import com.starrocks.proto.TxnInfoPB;
 import com.starrocks.proto.TxnTypePB;
-import com.starrocks.proto.VectorIndexBuildInfoPB;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.ast.KeysType;
@@ -69,11 +67,9 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import javax.validation.constraints.NotNull;
 
@@ -129,22 +125,6 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
     // save all create rollup tasks
     protected AgentBatchTask rollupBatchTask = new AgentBatchTask();
 
-    @Override
-    protected void resetTransientState() {
-        // WAITING_TXN -> RUNNING is deliberately not journaled; map it back so the re-elected
-        // leader re-enters runWaitingTxnJob and re-sends the tasks.
-        if (jobState == JobState.RUNNING) {
-            jobState = JobState.WAITING_TXN;
-        }
-        // Same normalization replay() performs: start from an empty batch - runWaitingTxnJob
-        // appends directly to the field (double-add hazard). No AgentTaskQueue cleanup needed:
-        // the demotion drain (abandonInFlightAgentTasks) already emptied the queue.
-        rollupBatchTask = new AgentBatchTask();
-        // whereClause deliberately KEPT: this class has no gsonPostProcess restore, so a real
-        // reload silently loses the sync-MV filter (pre-existing reload bug); keep the
-        // strictly-better in-memory value.
-    }
-
     public LakeRollupJob(long jobId, long dbId, long tableId, String tableName, long timeoutMs,
                          long baseIndexMetaId, long rollupIndexMetaId, String baseIndexName, String rollupIndexName,
                          int rollupSchemaVersion, List<Column> rollupSchema, Expr whereClause, int baseSchemaHash,
@@ -169,47 +149,6 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
         this.isColocateMVIndex = isColocateMVIndex;
     }
 
-    protected LakeRollupJob(LakeRollupJob job) {
-        super(job);
-        if (job.commitVersionMap != null) {
-            this.commitVersionMap = Maps.newHashMap();
-            this.commitVersionMap.putAll(job.commitVersionMap);
-        } else {
-            this.commitVersionMap = null;
-        }
-        if (job.physicalPartitionIdToBaseRollupTabletIdMap != null) {
-            this.physicalPartitionIdToBaseRollupTabletIdMap = Maps.newHashMap();
-            for (Map.Entry<Long, Map<Long, Long>> entry : job.physicalPartitionIdToBaseRollupTabletIdMap.entrySet()) {
-                Map<Long, Long> tabletIdMap = Maps.newHashMap();
-                if (entry.getValue() != null) {
-                    tabletIdMap.putAll(entry.getValue());
-                }
-                this.physicalPartitionIdToBaseRollupTabletIdMap.put(entry.getKey(), tabletIdMap);
-            }
-        } else {
-            this.physicalPartitionIdToBaseRollupTabletIdMap = null;
-        }
-        if (job.physicalPartitionIdToRollupIndex != null) {
-            this.physicalPartitionIdToRollupIndex = Maps.newHashMap();
-            this.physicalPartitionIdToRollupIndex.putAll(job.physicalPartitionIdToRollupIndex);
-        } else {
-            this.physicalPartitionIdToRollupIndex = null;
-        }
-        this.baseIndexMetaId = job.baseIndexMetaId;
-        this.rollupIndexMetaId = job.rollupIndexMetaId;
-        this.baseIndexName = job.baseIndexName;
-        this.rollupIndexName = job.rollupIndexName;
-        this.rollupSchema = job.rollupSchema == null ? null : new ArrayList<>(job.rollupSchema);
-        this.rollupSchemaVersion = job.rollupSchemaVersion;
-        this.baseSchemaHash = job.baseSchemaHash;
-        this.rollupSchemaHash = job.rollupSchemaHash;
-        this.rollupKeysType = job.rollupKeysType;
-        this.rollupShortKeyColumnCount = job.rollupShortKeyColumnCount;
-        this.origStmt = job.origStmt;
-        this.viewDefineSql = job.viewDefineSql;
-        this.isColocateMVIndex = job.isColocateMVIndex;
-    }
-
     // for deserialization
     public LakeRollupJob() {
         super(JobType.ROLLUP);
@@ -221,12 +160,10 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
         long numTablets = 0;
         AgentBatchTask batchTask = new AgentBatchTask();
         MarkedCountDownLatch<Long, Long> countDownLatch;
-        boolean lightWeight;
         final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
         try (AutoCloseableLock ignore = new AutoCloseableLock(dbId, List.of(tableId), LockType.READ)) {
             OlapTable table = getTableOrThrow();
             Preconditions.checkState(table.getState() == OlapTable.OlapTableState.ROLLUP);
-            lightWeight = table.isLightWeightTabletCreation();
 
             // disable tablet creation optimaization to avoid overwriting files with the same name.
             if (table.isFileBundling()) {
@@ -241,13 +178,7 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
             countDownLatch = new MarkedCountDownLatch<>((int) numTablets);
 
             long gtid = getNextGtid();
-            // Light-weight tablet creation skips CreateReplicaTask; the rollup tablet's
-            // version 1 metadata is materialized on demand by the CN-side fallback when
-            // the first read or publish hits it.
-            Set<Map.Entry<Long, MaterializedIndex>> rollupEntries = lightWeight
-                    ? Collections.<Map.Entry<Long, MaterializedIndex>>emptySet()
-                    : this.physicalPartitionIdToRollupIndex.entrySet();
-            for (Map.Entry<Long, MaterializedIndex> entry : rollupEntries) {
+            for (Map.Entry<Long, MaterializedIndex> entry : this.physicalPartitionIdToRollupIndex.entrySet()) {
                 long partitionId = entry.getKey();
                 PhysicalPartition partition = table.getPhysicalPartition(partitionId);
                 if (partition == null) {
@@ -266,7 +197,6 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
                         .setStorageType(TStorageType.COLUMN)
                         .setBloomFilterColumnNames(table.getBfColumnIds())
                         .setBloomFilterFpp(table.getBfFpp())
-                        .setZstdCompressionColumns(table.getZstdCompressionColumnIds(), table.getZstdCompressionPageSizes())
                         .setIndexes(OlapTable.getIndexesBySchema(table.getCopiedIndexes(), rollupSchema))
                         .setSortKeyIndexes(null) // Rollup tablets does not have sort key
                         .setSortKeyUniqueIds(null)
@@ -323,9 +253,7 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
             }
         }
 
-        if (!lightWeight) {
-            sendAgentTaskAndWait(batchTask, countDownLatch, Config.tablet_create_timeout_second * numTablets);
-        }
+        sendAgentTaskAndWait(batchTask, countDownLatch, Config.tablet_create_timeout_second * numTablets);
 
         // Add shadow indexes to table.
         try (AutoCloseableLock ignore = new AutoCloseableLock(dbId, List.of(tableId), LockType.WRITE)) {
@@ -352,14 +280,13 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
                     "concurrent transaction detected while adding shadow index, please re-run the alter table command");
         }
 
+        jobState = JobState.WAITING_TXN;
         if (span != null) {
             span.setAttribute("watershedTxnId", this.watershedTxnId);
             span.addEvent("setWaitingTxn");
         }
 
-        // can't add addRollIndexToCatalog into the applier, because of the nextTxnId check.
-        // But addRollIndexToCatalog is idempotent, so it's ok to re-add if Leader transferred.
-        persistStateChange(this, JobState.WAITING_TXN);
+        writeEditLog(this);
 
         LOG.info("transfer roll up job {} state to {}, watershed txn_id: {}", jobId, this.jobState,
                 watershedTxnId);
@@ -472,12 +399,13 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
                 commitVersionMap.put(physicalPartitionId, commitVersion);
                 LOG.debug("commit version of partition {} is {}. jobId={}", physicalPartitionId, commitVersion, jobId);
             }
+            this.jobState = JobState.FINISHED_REWRITING;
             this.finishedTimeMs = System.currentTimeMillis();
 
-            persistStateChange(this, JobState.FINISHED_REWRITING, () -> {
-                // NOTE: !!! below this point, this roll up job must success unless the database or table been dropped. !!!
-                updateNextVersion(table);
-            });
+            writeEditLog(this);
+
+            // NOTE: !!! below this point, this roll up job must success unless the database or table been dropped. !!!
+            updateNextVersion(table);
         }
 
         if (span != null) {
@@ -506,13 +434,15 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
                 return;
             }
 
+            visualiseRollupIndex(table);
+
+            this.jobState = JobState.FINISHED;
             this.finishedTimeMs = System.currentTimeMillis();
             // There is no need to set the table state to normal,
             // because it will be set in MaterializedViewHandler `onJobDone`
-
-            persistStateChange(this, JobState.FINISHED, () -> visualiseRollupIndex(table));
         }
 
+        writeEditLog(this);
         if (span != null) {
             span.end();
         }
@@ -534,21 +464,22 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
             AgentTaskQueue.removeBatchTask(rollupBatchTask, TTaskType.ALTER);
         }
 
+        try (AutoCloseableLock ignore = new AutoCloseableLock(dbId, List.of(tableId), LockType.WRITE)) {
+            OlapTable table = getTable();
+            if (table != null) {
+                removeRollupIndex(table);
+            }
+        }
+
+        this.jobState = JobState.CANCELLED;
         this.errMsg = errMsg;
         this.finishedTimeMs = System.currentTimeMillis();
-        persistStateChange(this, JobState.CANCELLED, () -> {
-            try (AutoCloseableLock ignore = new AutoCloseableLock(dbId, List.of(tableId), LockType.WRITE)) {
-                OlapTable table = getTable();
-                if (table != null) {
-                    removeRollupIndex(table);
-                }
-            }
-        });
-
         if (span != null) {
             span.setStatus(StatusCode.ERROR, errMsg);
             span.end();
         }
+
+        writeEditLog(this);
         LOG.info("Lake Rollup job canceled, jobId: {}, error: {}", jobId, errMsg);
 
         return true;
@@ -667,6 +598,11 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
             }
             throw new AlterCancelException("Create tablet failed. Error: " + errMsg);
         }
+    }
+
+    @VisibleForTesting
+    public static void writeEditLog(LakeRollupJob job) {
+        GlobalStateMgr.getCurrentState().getEditLog().logAlterJob(job);
     }
 
     @VisibleForTesting
@@ -795,10 +731,7 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
                 }
 
                 if (useAggregatePublish) {
-                    List<VectorIndexBuildInfoPB> vectorIndexBuildInfos = new ArrayList<>();
-                    Utils.sendAggregatePublishVersionRequest(request, 1, computeResource, null, null,
-                            vectorIndexBuildInfos);
-                    VectorIndexBuildScheduler.onPublishComplete(vectorIndexBuildInfos, /* fromCompaction= */ false);
+                    Utils.sendAggregatePublishVersionRequest(request, 1, computeResource, null, null);
                 }
             }
             return true;
@@ -866,11 +799,6 @@ public class LakeRollupJob extends LakeTableSchemaChangeJobBase {
         Map<Long, Long> tabletIdMap =
                 physicalPartitionIdToBaseRollupTabletIdMap.computeIfAbsent(partitionId, k -> Maps.newHashMap());
         tabletIdMap.put(rollupTabletId, baseTabletId);
-    }
-
-    @Override
-    public AlterJobV2 copyForPersist() {
-        return new LakeRollupJob(this);
     }
 
     public String getRollupIndexName() {

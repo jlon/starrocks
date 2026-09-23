@@ -64,16 +64,12 @@ import com.starrocks.sql.ast.KeysType;
 import com.starrocks.sql.common.StarRocksPlannerException;
 import com.starrocks.sql.optimizer.CachingMvPlanContextBuilder;
 import com.starrocks.sql.optimizer.OptExpression;
-import com.starrocks.sql.optimizer.base.ColumnIdentifier;
 import com.starrocks.sql.optimizer.dump.QueryDumper;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.rewrite.ConstantFunction;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.MvUtils;
 import com.starrocks.sql.optimizer.statistics.CacheDictManager;
 import com.starrocks.sql.optimizer.statistics.ColumnDict;
-import com.starrocks.sql.optimizer.statistics.IMinMaxStatsMgr;
-import com.starrocks.sql.optimizer.statistics.StatsVersion;
-import com.starrocks.statistic.StatisticUtils;
 import com.starrocks.thrift.TResultBatch;
 import com.starrocks.type.VarcharType;
 import io.netty.buffer.ByteBuf;
@@ -97,7 +93,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static com.starrocks.type.PrimitiveType.BOOLEAN;
@@ -254,45 +249,25 @@ public class MetaFunctions {
             LOG.warn("Failed to get mvToRefreshPartitions for mv [{}], using empty set", mv.getName(), e);
             mvToRefreshPartitions = Sets.newHashSet();
         }
-        // Same reason, for the rest of the remote IO this method does. The lock taken below is
-        // (db, mv); external base tables are not in its protection domain -- the FE has no identity to
-        // lock them by and does not mutate their metadata -- so resolving them and reading their
-        // partition state inside it would buy a connector round trip in exchange for no protection at
-        // all. Internal base tables stay inside, where the lock does cover the partition state read.
-        // Same shape as MVRefreshProcessor#resolveExternalBaseTables.
-        //
-        // The MV's own refresh state, however, IS in that protection domain, and this gathering reads
-        // it: getUpdatedPartitionNamesOfExternalTable compares the connector's partitions against the
-        // MV's AsyncRefreshContext. MVVersionManager replaces the whole MvRefreshScheme object under
-        // the MV WRITE lock, so a refresh committing while we are off the lock would leave the
-        // comparison describing the previous refresh state while the visible-version maps assembled
-        // below describe the new one -- one JSON document reporting two different moments. The scheme
-        // is swapped wholesale, so reference identity is enough to detect that; on a mismatch the
-        // gathering is redone here, where the lock now pins the state it compares against. That costs
-        // a connector call inside the lock, but only in the window where a refresh actually committed,
-        // and a report that describes one moment is worth it.
-        MaterializedView.MvRefreshScheme schemeGatheredAgainst = mv.getRefreshScheme();
-        Map<BaseTableInfo, BaseTableRefreshInfo> externalBaseTables = collectExternalBaseTableRefreshInfos(mv);
-
         locker.lockTableWithIntensiveDbLock(db.getId(), mv.getId(), LockType.READ);
         try {
-            if (mv.getRefreshScheme() != schemeGatheredAgainst) {
-                externalBaseTables = collectExternalBaseTableRefreshInfos(mv);
-            }
             Map<String, Set<String>> tableToUpdatePartitions = Maps.newHashMap();
             Map<Long, String> tableIdToTableNameMap = Maps.newHashMap();
             Map<String, String> tablePartitionInfos = Maps.newHashMap();
             for (BaseTableInfo baseTableInfo : mv.getBaseTableInfos()) {
-                BaseTableRefreshInfo refreshInfo = externalBaseTables.get(baseTableInfo);
-                if (refreshInfo == null) {
-                    refreshInfo = collectBaseTableRefreshInfo(mv, baseTableInfo);
+                Table baseTable = MvUtils.getTableChecked(baseTableInfo);
+                Set<String> toUpdatePartitions = null;
+                if (baseTable instanceof OlapTable) {
+                    toUpdatePartitions = mv.getUpdatedPartitionNamesOfOlapTable((OlapTable) baseTable, false);
+                } else {
+                    toUpdatePartitions = mv.getUpdatedPartitionNamesOfExternalTable(baseTable, false);
                 }
-                Table baseTable = refreshInfo.table();
-                if (CollectionUtils.isNotEmpty(refreshInfo.toUpdatePartitions())) {
-                    tableToUpdatePartitions.put(baseTable.getName(), refreshInfo.toUpdatePartitions());
+                if (CollectionUtils.isNotEmpty(toUpdatePartitions)) {
+                    tableToUpdatePartitions.put(baseTable.getName(), toUpdatePartitions);
                 }
                 tableIdToTableNameMap.put(baseTable.getId(), baseTable.getName());
-                tablePartitionInfos.put(baseTable.getName(), refreshInfo.partitionInfo());
+                String partitionInfo = getTablePartitionInfo(baseTable);
+                tablePartitionInfos.put(baseTable.getName(), partitionInfo);
             }
             Map<Long, Map<String, MaterializedView.BasePartitionInfo>> olapVisibleVersionMap =
                     mv.getRefreshScheme().getAsyncRefreshContext().getBaseTableVisibleVersionMap();
@@ -341,33 +316,6 @@ public class MetaFunctions {
         } finally {
             locker.unLockTableWithIntensiveDbLock(db.getId(), table.getId(), LockType.READ);
         }
-    }
-
-    /**
-     * Everything {@link #inspectMVRefreshInfo(Database, MaterializedView)} needs about one base table.
-     * For a base table in an external catalog all three fields cost a connector round trip, so they are
-     * gathered up front rather than one field at a time inside the loop.
-     */
-    private record BaseTableRefreshInfo(Table table, Set<String> toUpdatePartitions, String partitionInfo) {
-    }
-
-    private static BaseTableRefreshInfo collectBaseTableRefreshInfo(MaterializedView mv, BaseTableInfo baseTableInfo) {
-        Table baseTable = MvUtils.getTableChecked(baseTableInfo);
-        Set<String> toUpdatePartitions = baseTable instanceof OlapTable
-                ? mv.getUpdatedPartitionNamesOfOlapTable((OlapTable) baseTable, false)
-                : mv.getUpdatedPartitionNamesOfExternalTable(baseTable, false);
-        return new BaseTableRefreshInfo(baseTable, toUpdatePartitions, getTablePartitionInfo(baseTable));
-    }
-
-    private static Map<BaseTableInfo, BaseTableRefreshInfo> collectExternalBaseTableRefreshInfos(MaterializedView mv) {
-        Map<BaseTableInfo, BaseTableRefreshInfo> externalBaseTables = Maps.newHashMap();
-        for (BaseTableInfo baseTableInfo : mv.getBaseTableInfos()) {
-            if (baseTableInfo.isInternalCatalog()) {
-                continue;
-            }
-            externalBaseTables.put(baseTableInfo, collectBaseTableRefreshInfo(mv, baseTableInfo));
-        }
-        return externalBaseTables;
     }
 
     private static String getTablePartitionInfo(Table table) {
@@ -537,6 +485,7 @@ public class MetaFunctions {
      */
     @ConstantFunction(name = "inspect_task_runs", argTypes = {}, returnType = VARCHAR, isMetaFunction = true)
     public static ConstantOperator inspectTaskRuns() {
+        ConnectContext connectContext = ConnectContext.get();
         authOperatorPrivilege();
         TaskRunManager trm = GlobalStateMgr.getCurrentState().getTaskManager().getTaskRunManager();
         return ConstantOperator.createVarchar(trm.inspect());
@@ -827,10 +776,7 @@ public class MetaFunctions {
         String sql = String.format("select cast(`%s` as string) from %s where `%s` = '%s' limit 1",
                 returnColumn.getVarchar(), tableNameValue.toString(), keyColumn.getName(), lookupKey.getVarchar());
         try {
-            // lookup_string is folded in the optimizer during the outer query's planning; bound the
-            // internal point-lookup by the outer query's remaining query_timeout (not the 1h default).
-            int remaining = SimpleExecutor.outerRemainingQueryTimeoutS();
-            List<TResultBatch> result = SimpleExecutor.getRepoExecutor().executeDQL(sql, Math.max(1, remaining));
+            List<TResultBatch> result = SimpleExecutor.getRepoExecutor().executeDQL(sql);
             return deserializeLookupResult(result);
         } catch (Throwable e) {
             final String notFoundMessage = "query failed if record not exist in dict table";
@@ -849,25 +795,19 @@ public class MetaFunctions {
     }
 
     /**
-     * Resolve an OLAP table for the global-dict / min-max meta functions. Goes through
-     * {@link #inspectTable} so table-level privileges are enforced -- these functions must not
-     * disclose or mutate metadata for tables the caller has no access to.
-     */
-    private static OlapTable inspectOlapTable(ConstantOperator tableName) {
-        Table table = inspectTable(TableName.fromString(tableName.getVarchar())).getRight();
-        if (!(table instanceof OlapTable)) {
-            ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_PARAMETER, "must be OLAP_TABLE");
-        }
-        return (OlapTable) table;
-    }
-
-    /**
      * Inspect global dictionary table, and return the content in JSON format.
      */
     @ConstantFunction(name = "inspect_global_dict", argTypes = {VARCHAR,
             VARCHAR}, returnType = VARCHAR, isMetaFunction = true)
     public static ConstantOperator inspectGlobalDict(ConstantOperator tableName, ConstantOperator columnName) {
-        OlapTable table = inspectOlapTable(tableName);
+        TableName tableNameValue = TableName.fromString(tableName.getVarchar());
+        Optional<Table> maybeTable = GlobalStateMgr.getCurrentState().getMetadataMgr()
+                .getTable(new ConnectContext(), tableNameValue);
+        maybeTable.orElseThrow(() -> ErrorReport.buildSemanticException(ErrorCode.ERR_BAD_TABLE_ERROR, tableNameValue));
+        if (!(maybeTable.get() instanceof OlapTable)) {
+            ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_PARAMETER, "must be OLAP_TABLE");
+        }
+        OlapTable table = (OlapTable) maybeTable.get();
         String column = columnName.getVarchar();
 
         CacheDictManager instance = CacheDictManager.getInstance();
@@ -877,92 +817,6 @@ public class MetaFunctions {
         } else {
             return ConstantOperator.createVarchar(dict.get().toJson());
         }
-    }
-
-    /**
-     * Return the query ID of the last executed query in the current session.
-     */
-    @ConstantFunction(name = "last_query_id", argTypes = {}, returnType = VARCHAR, isMetaFunction = true)
-    public static ConstantOperator lastQueryId() {
-        ConnectContext connectContext = ConnectContext.get();
-        if (connectContext == null) {
-            return ConstantOperator.createNull(VarcharType.VARCHAR);
-        }
-        UUID lastQueryId = connectContext.getLastQueryId();
-        if (lastQueryId == null) {
-            return ConstantOperator.createNull(VarcharType.VARCHAR);
-        }
-        return ConstantOperator.createVarchar(lastQueryId.toString());
-    }
-
-    /**
-     * Invalidate global dictionary for a column, and return the result status.
-     */
-    @ConstantFunction(name = "invalidate_global_dict", argTypes = {VARCHAR,
-            VARCHAR}, returnType = VARCHAR, isMetaFunction = true)
-    public static ConstantOperator invalidateGlobalDict(ConstantOperator tableName, ConstantOperator columnName) {
-        authOperatorPrivilege();
-
-        OlapTable table = inspectOlapTable(tableName);
-        String column = columnName.getVarchar();
-
-        CacheDictManager instance = CacheDictManager.getInstance();
-        ColumnId columnId = ColumnId.create(column);
-
-        // Check if global dict exists before attempting to invalidate
-        if (!instance.hasGlobalDict(table.getId(), columnId)) {
-            return ConstantOperator.createVarchar("No global dictionary found for column: " + column);
-        }
-
-        try {
-            instance.removeGlobalDict(table, columnId);
-        } catch (Exception e) {
-            ErrorReport.reportSemanticException(ErrorCode.ERR_UNKNOWN_ERROR,
-                    "Failed to invalidate global dictionary: " + e.getMessage());
-        }
-        return ConstantOperator.createVarchar("invalidated column dict");
-    }
-
-    /**
-     * Inspect the MinMaxStats of a column
-     */
-    @ConstantFunction(name = "inspect_minmax",
-            argTypes = {VARCHAR, VARCHAR}, returnType = VARCHAR, isMetaFunction = true)
-    public static ConstantOperator inspectMinMax(ConstantOperator tableName, ConstantOperator columnName) {
-        OlapTable table = inspectOlapTable(tableName);
-        ColumnId columnId = ColumnId.create(columnName.getVarchar());
-        // getTableLastUpdateTimestamp may return null (table never updated); treat as version 0 to
-        // avoid an auto-unboxing NPE when constructing StatsVersion.
-        Long lastUpdateTime = StatisticUtils.getTableLastUpdateTimestamp(table);
-        long version = lastUpdateTime == null ? 0L : lastUpdateTime;
-
-        Optional<IMinMaxStatsMgr.ColumnMinMax> minMax = IMinMaxStatsMgr.internalInstance()
-                .getStatsSync(new ColumnIdentifier(table.getId(), columnId),
-                        new StatsVersion(-1, version));
-
-        return minMax.map(columnMinMax -> ConstantOperator.createVarchar(columnMinMax.toString()))
-                .orElseGet(() -> ConstantOperator.createNull(VarcharType.VARCHAR));
-    }
-
-    /**
-     * Invalidate MinMax statistics for a column, and return the result status.
-     */
-    @ConstantFunction(name = "invalidate_minmax", argTypes = {VARCHAR,
-            VARCHAR}, returnType = VARCHAR, isMetaFunction = true)
-    public static ConstantOperator invalidateMinMax(ConstantOperator tableName, ConstantOperator columnName) {
-        authOperatorPrivilege();
-
-        OlapTable table = inspectOlapTable(tableName);
-        ColumnId columnId = ColumnId.create(columnName.getVarchar());
-        ColumnIdentifier columnIdentifier = new ColumnIdentifier(table.getId(), columnId);
-
-        try {
-            IMinMaxStatsMgr.internalInstance().removeStats(columnIdentifier);
-        } catch (Exception e) {
-            ErrorReport.reportSemanticException(ErrorCode.ERR_UNKNOWN_ERROR,
-                    "Failed to invalidate MinMax statistics: " + e.getMessage());
-        }
-        return ConstantOperator.createVarchar("invalidated column minmax");
     }
 
 }

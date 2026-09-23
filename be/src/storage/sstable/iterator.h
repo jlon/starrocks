@@ -4,9 +4,9 @@
 
 #pragma once
 
-#include "base/string/slice.h"
 #include "common/status.h"
 #include "storage/del_vector.h"
+#include "util/slice.h"
 
 namespace starrocks::sstable {
 

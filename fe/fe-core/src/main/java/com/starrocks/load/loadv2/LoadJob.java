@@ -94,7 +94,6 @@ import com.starrocks.warehouse.Warehouse;
 import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.parquet.Strings;
 
 import java.util.List;
 import java.util.Map;
@@ -539,20 +538,6 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
             if (properties.containsKey(LoadStmt.JSONROOT)) {
                 jsonOptions.jsonRoot = properties.get(LoadStmt.JSONROOT);
             }
-
-            if (properties.containsKey(LoadStmt.ENVELOPE)) {
-                String envelope = properties.get(LoadStmt.ENVELOPE);
-                if (!envelope.equalsIgnoreCase(LoadStmt.ENVELOPE_DEBEZIUM)) {
-                    throw new DdlException("Unknown envelope type: " + envelope);
-                }
-                if (!Strings.isNullOrEmpty(jsonOptions.jsonRoot)) {
-                    throw new DdlException(LoadStmt.JSONROOT + " cannot be specified when envelope is set");
-                }
-                if (jsonOptions.stripOuterArray) {
-                    throw new DdlException(LoadStmt.STRIP_OUTER_ARRAY + " cannot be specified when envelope is set");
-                }
-                jsonOptions.envelope = envelope;
-            }
         } else {
             if (RunMode.isSharedDataMode()) {
                 // if no properties set, we should still set warehouse here
@@ -655,8 +640,8 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
                 return;
             }
 
-            unprotectedExecuteCancel(new FailMsg(FailMsg.CancelType.TIMEOUT, "loading timeout to cancel"),
-                    false, true);
+            unprotectedExecuteCancel(new FailMsg(FailMsg.CancelType.TIMEOUT, "loading timeout to cancel"), false);
+            logFinalOperation();
         } finally {
             writeUnlock();
         }
@@ -716,10 +701,13 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
     }
 
     // if needLog is false, no need to write edit log.
-    public void cancelJobWithoutCheck(FailMsg failMsg, boolean abortTxn) {
+    public void cancelJobWithoutCheck(FailMsg failMsg, boolean abortTxn, boolean needLog) {
         writeLock();
         try {
-            unprotectedExecuteCancel(failMsg, abortTxn, true);
+            unprotectedExecuteCancel(failMsg, abortTxn);
+            if (needLog) {
+                logFinalOperation();
+            }
         } finally {
             writeUnlock();
         }
@@ -746,7 +734,8 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
                 throw new DdlException("Job could not be cancelled when job is finished or cancelled");
             }
 
-            unprotectedExecuteCancel(failMsg, true, true);
+            unprotectedExecuteCancel(failMsg, true);
+            logFinalOperation();
         } finally {
             writeUnlock();
         }
@@ -764,7 +753,7 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
      * @param failMsg
      * @param abortTxn true: abort txn when cancel job, false: only change the state of job and ignore abort txn
      */
-    protected void unprotectedExecuteCancel(FailMsg failMsg, boolean abortTxn, boolean needLog) {
+    protected void unprotectedExecuteCancel(FailMsg failMsg, boolean abortTxn) {
         LOG.warn(new LogBuilder(LogKey.LOAD_JOB, id).add("transaction_id", transactionId)
                 .add("error_msg", "Failed to execute load with error: " + failMsg.getMsg()).build());
 
@@ -821,14 +810,7 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
         }
 
         // change state
-        if (needLog) {
-            LoadJobFinalOperation operation = new LoadJobFinalOperation(id, loadingStatus,
-                    progress, loadStartTimestamp, finishTimestamp, JobState.CANCELLED, failMsg);
-            GlobalStateMgr.getCurrentState().getEditLog().logEndLoadJob(
-                    operation, wal -> this.state = JobState.CANCELLED);
-        } else {
-            state = JobState.CANCELLED;
-        }
+        state = JobState.CANCELLED;
     }
 
     private void executeFinish() {
@@ -858,6 +840,12 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
         }
 
         return true;
+    }
+
+    protected void logFinalOperation() {
+        GlobalStateMgr.getCurrentState().getEditLog().logEndLoadJob(
+                new LoadJobFinalOperation(id, loadingStatus, progress, loadStartTimestamp, finishTimestamp,
+                        state, failMsg));
     }
 
     public void unprotectReadEndOperation(LoadJobFinalOperation loadJobFinalOperation, boolean isReplay) {
@@ -1197,7 +1185,10 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
     }
 
     @Override
-    public void afterCommitted(TransactionState txnState) throws StarRocksException {
+    public void afterCommitted(TransactionState txnState, boolean txnOperated) throws StarRocksException {
+        if (!txnOperated) {
+            return;
+        }
         writeLock();
         try {
             unprotectUpdateLoadingStatus(txnState);
@@ -1228,10 +1219,14 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
      * The job will be cancelled by replayOnAborted when journal replay
      *
      * @param txnState
+     * @param txnOperated
      * @param txnStatusChangeReason
      */
     @Override
-    public void afterAborted(TransactionState txnState, String txnStatusChangeReason) {
+    public void afterAborted(TransactionState txnState, boolean txnOperated, String txnStatusChangeReason) {
+        if (!txnOperated) {
+            return;
+        }
         writeLock();
         try {
             if (isTxnDone()) {
@@ -1240,8 +1235,7 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
             // record attachment in load job
             unprotectUpdateLoadingStatus(txnState);
             // cancel load job
-            unprotectedExecuteCancel(new FailMsg(FailMsg.CancelType.LOAD_RUN_FAIL, txnStatusChangeReason),
-                    false, false);
+            unprotectedExecuteCancel(new FailMsg(FailMsg.CancelType.LOAD_RUN_FAIL, txnStatusChangeReason), false);
         } finally {
             writeUnlock();
         }
@@ -1271,9 +1265,13 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
      * The job will be finished by replayOnVisible when txn journal replay
      *
      * @param txnState
+     * @param txnOperated
      */
     @Override
-    public void afterVisible(TransactionState txnState) {
+    public void afterVisible(TransactionState txnState, boolean txnOperated) {
+        if (!txnOperated) {
+            return;
+        }
         GlobalStateMgr.getCurrentState().getOperationListenerBus().onLoadJobTransactionFinish(txnState);
         unprotectUpdateLoadingStatus(txnState);
         updateState(JobState.FINISHED);
@@ -1398,8 +1396,5 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback
 
         @SerializedName("jr")
         public String jsonRoot;
-
-        @SerializedName("env")
-        public String envelope;
     }
 }

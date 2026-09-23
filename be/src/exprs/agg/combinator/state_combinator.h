@@ -18,16 +18,15 @@
 #include <string>
 #include <utility>
 
-#include "base/bit/bit_util.h"
 #include "column/column.h"
 #include "column/column_helper.h"
 #include "column/column_viewer.h"
 #include "common/status.h"
 #include "exprs/agg/aggregate.h"
-#include "exprs/agg/aggregate_factory.h"
 #include "exprs/agg/aggregate_state_allocator.h"
 #include "exprs/function_context.h"
-#include "types/agg_state_desc.h"
+#include "runtime/agg_state_desc.h"
+#include "util/bit_util.h"
 
 namespace starrocks {
 
@@ -40,11 +39,11 @@ public:
             : _agg_state_desc(std::move(agg_state_desc)),
               _intermediate_type(std::move(intermediate_type)),
               _arg_nullables(std::move(arg_nullables)) {
-        _function = get_aggregate_function(_agg_state_desc);
+        _function = AggStateDesc::get_agg_state_func(&_agg_state_desc);
         VLOG_ROW << "StateCombinator constructor:" << _agg_state_desc.debug_string();
     }
 
-    virtual ~StateCombinator() = default;
+    ~StateCombinator() = default;
 
     // prepare the state combinator
     virtual Status prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope) { return Status::OK(); }
@@ -62,7 +61,7 @@ protected:
     // It is used to allocate memory for aggregate state.
     class AlignedMemoryGuard {
     public:
-        AlignedMemoryGuard(size_t alignment, size_t size) : _alignment(alignment), _size(size) {}
+        AlignedMemoryGuard(size_t alignment, size_t size) : _ptr(nullptr), _alignment(alignment), _size(size) {}
 
         ~AlignedMemoryGuard() noexcept {
             if (_ptr) {
@@ -86,7 +85,7 @@ protected:
         AlignedMemoryGuard& operator=(AlignedMemoryGuard&&) = default;
 
     private:
-        AggDataPtr _ptr{nullptr};
+        AggDataPtr _ptr;
         size_t _alignment;
         size_t _size;
     };

@@ -29,10 +29,9 @@ export STARROCKS_HOME=`cd "${ROOT}/.."; pwd`
 CLANG_FORMAT=${CLANG_FORMAT_BINARY:=$(which clang-format)}
 EXCLUDES_FILE="${STARROCKS_HOME}/build-support/excludes"
 SOURCE_DIRS=("${STARROCKS_HOME}/be/src" "${STARROCKS_HOME}/be/test")
-BASE_REF=${FORMAT_BASE_REF:-origin/main}
 
-if ! git -C "${STARROCKS_HOME}" rev-parse --verify "${BASE_REF}" >/dev/null 2>&1; then
-    echo "${BASE_REF} not found; formatting all C++ files."
+if ! git -C "${STARROCKS_HOME}" rev-parse --verify origin/main >/dev/null 2>&1; then
+    echo "origin/main not found; formatting all C++ files."
     python3 "${STARROCKS_HOME}/build-support/run_clang_format.py" --clang_format_binary="${CLANG_FORMAT}" --fix \
         --source_dirs="${SOURCE_DIRS[0]}","${SOURCE_DIRS[1]}" \
         --exclude_globs="${EXCLUDES_FILE}"
@@ -41,13 +40,13 @@ fi
 
 changed_files=$(
     {
-        git -C "${STARROCKS_HOME}" diff --name-only --diff-filter=ACMR "${BASE_REF}..HEAD"
+        git -C "${STARROCKS_HOME}" diff --name-only --diff-filter=ACMR origin/main...HEAD
         git -C "${STARROCKS_HOME}" diff --name-only --diff-filter=ACMR --cached -- be
         git -C "${STARROCKS_HOME}" diff --name-only --diff-filter=ACMR -- be
     } | sort -u
 )
 if [[ -z "${changed_files}" ]]; then
-    echo "No files changed since ${BASE_REF}."
+    echo "No files changed since origin/main."
     exit 0
 fi
 
@@ -61,7 +60,7 @@ python3 "${STARROCKS_HOME}/build-support/format_changed_files.py" \
     --null < <(printf '%s\n' "${changed_files}") > "${tmpfile}"
 
 if [[ ! -s "${tmpfile}" ]]; then
-    echo "No changed C++ files to format since ${BASE_REF}."
+    echo "No changed C++ files to format since origin/main."
     exit 0
 fi
 

@@ -15,14 +15,13 @@
 #pragma once
 
 #include <memory>
-#include <utility>
 #include <vector>
 
 #include "column/column.h"
 #include "common/global_types.h"
 #include "common/statusor.h"
 #include "gen_cpp/Exprs_types.h"
-#include "types/type_descriptor.h"
+#include "runtime/types.h"
 
 namespace starrocks {
 
@@ -83,7 +82,7 @@ class ColumnSlotIdEvaluator : public ColumnEvaluator {
 public:
     static std::vector<std::unique_ptr<ColumnEvaluator>> from_types(const std::vector<TypeDescriptor>& types);
 
-    ColumnSlotIdEvaluator(SlotId slot_id, TypeDescriptor type) : _slot_id(slot_id), _type(std::move(type)) {}
+    ColumnSlotIdEvaluator(SlotId slot_id, TypeDescriptor type) : _slot_id(slot_id), _type(type) {}
 
     ~ColumnSlotIdEvaluator() override = default;
 

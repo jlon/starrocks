@@ -1,5 +1,4 @@
 ---
-sidebar_position: 80
 displayed_sidebar: docs
 description: "StarRocks で複数の DML ステートメント（INSERT、UPDATE、DELETE）を複数テーブル間で原子的にコミットする SQL トランザクションの使用方法。"
 ---

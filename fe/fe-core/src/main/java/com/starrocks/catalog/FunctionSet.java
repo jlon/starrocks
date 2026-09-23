@@ -51,8 +51,6 @@ import com.starrocks.catalog.combinator.StateMergeCombinator;
 import com.starrocks.catalog.combinator.StateUnionCombinator;
 import com.starrocks.sql.analyzer.PolymorphicFunctionAnalyzer;
 import com.starrocks.sql.ast.expression.ArithmeticExpr;
-import com.starrocks.thrift.TAIModelSource;
-import com.starrocks.thrift.TFunctionBinaryType;
 import com.starrocks.type.AnyArrayType;
 import com.starrocks.type.AnyElementType;
 import com.starrocks.type.AnyMapType;
@@ -112,7 +110,6 @@ public class FunctionSet {
     public static final String DAYNAME = "dayname";
     public static final String DAYOFMONTH = "dayofmonth";
     public static final String DAYOFWEEK = "dayofweek";
-    public static final String DAYOFWEEK_ISO = "dayofweek_iso";
     public static final String DAYOFYEAR = "dayofyear";
     public static final String FROM_DAYS = "from_days";
     public static final String FROM_UNIXTIME = "from_unixtime";
@@ -144,7 +141,6 @@ public class FunctionSet {
     public static final String LOCALTIMESTAMP = "localtimestamp";
 
     public static final String WEEK = "week";
-    public static final String WEEK_ISO = "week_iso";
     public static final String WEEKOFYEAR = "weekofyear";
     public static final String YEAR = "year";
     public static final String MINUTES_DIFF = "minutes_diff";
@@ -188,16 +184,15 @@ public class FunctionSet {
     public static final String MD5_SUM_NUMERIC = "md5sum_numeric";
     public static final String SHA2 = "sha2";
     public static final String SM3 = "sm3";
-    public static final String BLAKE3 = "blake3";
     public static final String FROM_BINARY = "from_binary";
     public static final String TO_BINARY = "to_binary";
     // NOTE: those functions are used to encode the fingerprint of the data, it is used to identify the data in the database.
     // Don't change the implementation of these functions, otherwise it may cause compatibility issues for incrmental mvs.
+    public static final String ENCODE_ROW_ID = "encode_row_id";
     public static final String ENCODE_FINGERPRINT_SHA256 = "encode_fingerprint_sha256";
 
     // Vector Index functions:
     public static final String APPROX_COSINE_SIMILARITY = "approx_cosine_similarity";
-    public static final String APPROX_INNER_PRODUCT = "approx_inner_product";
     public static final String APPROX_L2_DISTANCE = "approx_l2_distance";
 
     // Geo functions:
@@ -226,7 +221,6 @@ public class FunctionSet {
     public static final String ENDS_WITH = "ends_with";
     public static final String FIND_IN_SET = "find_in_set";
     public static final String GROUP_CONCAT = "group_concat";
-    public static final String STRING_AGG = "string_agg";
     public static final String FORMAT_BYTES = "format_bytes";
     public static final String INSTR = "instr";
     public static final String LCASE = "lcase";
@@ -241,7 +235,6 @@ public class FunctionSet {
     public static final String NULL_OR_EMPTY = "null_or_empty";
     public static final String REGEXP_EXTRACT = "regexp_extract";
     public static final String REGEXP_REPLACE = "regexp_replace";
-    public static final String REGEXP_POSITION = "regexp_position";
     public static final String REPEAT = "repeat";
     public static final String REPLACE = "replace";
     public static final String REVERSE = "reverse";
@@ -260,15 +253,10 @@ public class FunctionSet {
     public static final String SPACE = "space";
     public static final String PARSE_URL = "parse_url";
     public static final String TRIM = "trim";
-    public static final String TRIM_STRING = "trim_string";
-    public static final String LTRIM_STRING = "ltrim_string";
-    public static final String RTRIM_STRING = "rtrim_string";
     public static final String UPPER = "upper";
     public static final String INITCAP = "initcap";
     public static final String SUBSTRING_INDEX = "substring_index";
     public static final String FIELD = "field";
-    public static final String HTTP_REQUEST = "http_request";
-    public static final String AI_COMPLETE = "ai_complete";
 
     // Json functions:
     public static final String JSON_ARRAY = "json_array";
@@ -287,7 +275,6 @@ public class FunctionSet {
     public static final String JSON_REMOVE = "json_remove";
     public static final String JSON_SET = "json_set";
     public static final String JSON_PRETTY = "json_pretty";
-    public static final String IS_JSON_SCALAR = "is_json_scalar";
 
     // Variant functions:
     public static final String VARIANT_QUERY = "variant_query";
@@ -317,10 +304,6 @@ public class FunctionSet {
     public static final String ISNOTNULL = "isnotnull";
     public static final String ASSERT_TRUE = "assert_true";
     public static final String HOST_NAME = "host_name";
-    // materialize: identity function that acts as an optimization barrier.
-    // Returns the input unchanged but is opaque to the FE optimizer,
-    // preventing constant folding, partition pruning, and other rewrites.
-    public static final String MATERIALIZE = "materialize";
     // NOTE: those functions are used to encode the fingerprint of the data, it is used to identify the data in the database.
     // Don't change the implementation of these functions, otherwise it may cause compatibility issues for incrmental mvs.
     public static final String ENCODE_SORT_KEY = "encode_sort_key";
@@ -332,13 +315,6 @@ public class FunctionSet {
     public static final String DS_HLL_ACCUMULATE = "ds_hll_accumulate";
     public static final String DS_HLL_COMBINE = "ds_hll_combine";
     public static final String DS_HLL_ESTIMATE = "ds_hll_estimate";
-    public static final String DS_THETA_ACCUMULATE = "ds_theta_accumulate";
-    public static final String DS_THETA_COMBINE = "ds_theta_combine";
-    public static final String DS_THETA_ESTIMATE = "ds_theta_estimate";
-    public static final String DS_THETA_UNION = "ds_theta_union";
-    public static final String DS_THETA_INTERSECT = "ds_theta_intersect";
-    public static final String DS_THETA_A_NOT_B = "ds_theta_a_not_b";
-    public static final String DS_THETA_INTERSECT_COND_AGG = "ds_theta_intersect_cond_agg";
     public static final String APPROX_TOP_K = "approx_top_k";
     public static final String AVG = "avg";
     public static final String COUNT = "count";
@@ -350,8 +326,6 @@ public class FunctionSet {
     public static final String MIN_BY = "min_by";
     public static final String MIN_BY_V2 = "min_by_v2";
     public static final String MIN = "min";
-    public static final String MIN_N = "min_n";
-    public static final String MAX_N = "max_n";
     public static final String PERCENTILE_APPROX = "percentile_approx";
     public static final String PERCENTILE_APPROX_WEIGHTED = "percentile_approx_weighted";
     public static final String PERCENTILE_CONT = "percentile_cont";
@@ -470,8 +444,6 @@ public class FunctionSet {
     // Hash functions:
     public static final String MURMUR_HASH3_32 = "murmur_hash3_32";
     public static final String CRC32_HASH = "crc32_hash";
-    public static final String XX_HASH32 = "xx_hash32";
-    public static final String XX_HASH64 = "xx_hash64";
     public static final String XX_HASH3_64 = "xx_hash3_64";
     public static final String XX_HASH3_128 = "xx_hash3_128";
 
@@ -601,11 +573,6 @@ public class FunctionSet {
     public static final String NGRAM_SEARCH = "ngram_search";
     public static final String NGRAM_SEARCH_CASE_INSENSITIVE = "ngram_search_case_insensitive";
 
-    public static final String TOKENIZE = "tokenize";
-    // Tokenizers GinFunctions::tokenize() implements on the BE. Matching is case-sensitive there.
-    public static final Set<String> SUPPORTED_TOKENIZERS =
-            ImmutableSet.of("english", "standard", "chinese");
-
     // JSON functions
     public static final Function JSON_QUERY_FUNC = new Function(
             new FunctionName(JSON_QUERY), new Type[] {JsonType.JSON, VarcharType.VARCHAR}, JsonType.JSON, false);
@@ -619,9 +586,6 @@ public class FunctionSet {
 
     //user and role function
     public static final String IS_ROLE_IN_SESSION = "is_role_in_session";
-
-    // query profile function
-    public static final String GET_QUERY_PROFILE = "get_query_profile";
 
     public static final String QUARTERS_ADD = "quarters_add";
     public static final String QUARTERS_SUB = "quarters_sub";
@@ -758,13 +722,10 @@ public class FunctionSet {
 
     // This contains the nullable functions, which cannot return NULL result directly for the NULL parameter.
     // This does not contain any user defined functions. All UDFs handle null values by themselves.
-    // AI functions with options treat a top-level NULL map as an empty option set.
-    // ai_translate accepts a NULL source language for automatic detection.
     private final ImmutableSet<String> notAlwaysNullResultWithNullParamFunctions =
             ImmutableSet.of(IF, CONCAT_WS, IFNULL, NULLIF, NULL_OR_EMPTY, COALESCE, BITMAP_HASH, BITMAP_HASH64,
                     PERCENTILE_HASH, HLL_HASH, JSON_ARRAY, JSON_OBJECT, ROW, STRUCT, NAMED_STRUCT, AES_ENCRYPT, AES_DECRYPT,
-                    ENCODE_FINGERPRINT_SHA256, ENCODE_SORT_KEY, AI_COMPLETE,
-                    "ai_embed", "ai_custom_query", "ai_custom_embedding", "ai_translate");
+                    ENCODE_FINGERPRINT_SHA256, ENCODE_SORT_KEY);
 
     // If low cardinality string column with global dict, for some string functions,
     // we could evaluate the function only with the dict content, not all string column data.
@@ -822,14 +783,11 @@ public class FunctionSet {
                     .add(UUID_V7_NUMERIC)
                     .add(QUERY_ID)
                     .add(SLEEP)
-                    .add(HTTP_REQUEST)
-                    .addAll(VectorizedBuiltinFunctions.AI_FUNCTION_NAMES)
                     .build();
 
     public static final Set<String> VECTOR_COMPUTE_FUNCTIONS =
             ImmutableSet.<String>builder()
                     .add(APPROX_COSINE_SIMILARITY)
-                    .add(APPROX_INNER_PRODUCT)
                     .add(APPROX_L2_DISTANCE)
                     .build();
 
@@ -972,9 +930,6 @@ public class FunctionSet {
                     .add(DS_HLL_ACCUMULATE)
                     .add(DS_HLL_COMBINE)
                     .add(DS_HLL_ESTIMATE)
-                    .add(DS_THETA_ACCUMULATE)
-                    .add(DS_THETA_COMBINE)
-                    .add(DS_THETA_INTERSECT_COND_AGG)
                     // Functions with constant contexts in be are not supported.
                     .add(WINDOW_FUNNEL)
                     .add(APPROX_TOP_K)
@@ -1230,6 +1185,7 @@ public class FunctionSet {
     }
 
     private void addBuiltInFunction(Function fn) {
+        Preconditions.checkArgument(!fn.getReturnType().isPseudoType() || fn.isPolymorphic(), fn.toString());
         if (!fn.isPolymorphic() && getFunction(fn, Function.CompareMode.IS_INDISTINGUISHABLE) != null) {
             return;
         }
@@ -1249,17 +1205,6 @@ public class FunctionSet {
 
         List<Type> argsType = Arrays.stream(args).collect(Collectors.toList());
         addVectorizedBuiltin(ScalarFunction.createVectorizedBuiltin(fid, fnName, argsType, varArgs, retType));
-    }
-
-    public void addVectorizedAIScalarBuiltin(long fid, String fnName, boolean varArgs,
-                                             TAIModelSource modelSource, Type retType, Type... args) {
-        Preconditions.checkState(nonDeterministicFunctions.contains(fnName),
-                "AI function %s must be non-deterministic", fnName);
-        List<Type> argsType = Arrays.stream(args).collect(Collectors.toList());
-        ScalarFunction fn = ScalarFunction.createVectorizedBuiltin(fid, fnName, argsType, varArgs, retType);
-        fn.setBinaryType(TFunctionBinaryType.AI);
-        fn.setAiModelSource(modelSource);
-        addVectorizedBuiltin(fn);
     }
 
     private void addVectorizedBuiltin(Function fn) {
@@ -1382,17 +1327,6 @@ public class FunctionSet {
             addBuiltin(AggregateFunction.createBuiltin(MAX,
                     Lists.newArrayList(t), t, t, true, true, false));
 
-            // min_n(value, n) - returns an array of n minimum values
-            Type arrayType = new ArrayType(t);
-            addBuiltin(AggregateFunction.createBuiltin(MIN_N,
-                    Lists.newArrayList(t, IntegerType.INT), arrayType, VarbinaryType.VARBINARY,
-                    false, false, false));
-
-            // max_n(value, n) - returns an array of n maximum values
-            addBuiltin(AggregateFunction.createBuiltin(MAX_N,
-                    Lists.newArrayList(t, IntegerType.INT), arrayType, VarbinaryType.VARBINARY,
-                    false, false, false));
-
             // MAX_BY
             for (Type t1 : SUPPORTED_TYPES) {
                 if (t1.isFunctionType() || t1.isNull() || t1.isChar()) {
@@ -1451,11 +1385,6 @@ public class FunctionSet {
                     Lists.newArrayList(t), IntegerType.BIGINT, VarbinaryType.VARBINARY,
                     true, false, true));
 
-            // ds_theta_accumulate(col) — emits serialized compact theta sketch
-            addBuiltin(AggregateFunction.createBuiltin(DS_THETA_ACCUMULATE,
-                    Lists.newArrayList(t), VarbinaryType.VARBINARY, VarbinaryType.VARBINARY,
-                    true, false, true));
-
             // HLL_RAW
             addBuiltin(AggregateFunction.createBuiltin(HLL_RAW,
                     Lists.newArrayList(t), HLLType.HLL, VarbinaryType.VARBINARY,
@@ -1503,16 +1432,6 @@ public class FunctionSet {
         addBuiltin(AggregateFunction.createBuiltin(DS_HLL_ESTIMATE,
                 Lists.newArrayList(VarbinaryType.VARBINARY), IntegerType.BIGINT, VarbinaryType.VARBINARY,
                 true, false, true));
-
-        addBuiltin(AggregateFunction.createBuiltin(DS_THETA_COMBINE,
-                Lists.newArrayList(VarbinaryType.VARBINARY), VarbinaryType.VARBINARY, VarbinaryType.VARBINARY,
-                true, false, true));
-
-        addBuiltin(AggregateFunction.createBuiltin(DS_THETA_INTERSECT_COND_AGG,
-                Lists.newArrayList(VarbinaryType.VARBINARY, IntegerType.INT), FloatType.DOUBLE, VarbinaryType.VARBINARY,
-                true, false, true));
-        // DS_THETA_ESTIMATE is registered as a scalar function via gensrc/script/functions.py.
-        // It deserializes a compact theta sketch row-by-row and returns the estimate as DOUBLE.
 
         // Sum
         registerBuiltinSumAggFunction(SUM);

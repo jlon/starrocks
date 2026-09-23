@@ -40,9 +40,6 @@ public class AlterViewInfo implements Writable {
     private String comment;
     @SerializedName(value = "security")
     private boolean security;
-    // Whether replay should apply `security` to the view.
-    @SerializedName(value = "updateSecurity")
-    private boolean updateSecurity;
     @SerializedName(value = "originalViewDef")
     private String originalViewDef;
 
@@ -95,18 +92,6 @@ public class AlterViewInfo implements Writable {
 
     public boolean getSecurity() {
         return security;
-    }
-
-    public void setSecurity(boolean security) {
-        this.security = security;
-    }
-
-    public boolean isUpdateSecurity() {
-        return updateSecurity;
-    }
-
-    public void setUpdateSecurity(boolean updateSecurity) {
-        this.updateSecurity = updateSecurity;
     }
 
     public String getOriginalViewDef() {

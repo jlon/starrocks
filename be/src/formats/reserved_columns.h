@@ -25,8 +25,6 @@ inline constexpr const char* kIcebergRowPositionColumnName = "_pos";
 inline constexpr const char* kRowSourceIdColumnName = "_row_source_id";
 inline constexpr const char* kScanRangeIdColumnName = "_scan_range_id";
 
-// Iceberg v3 spec reserved field IDs for row lineage columns.
-// See: https://iceberg.apache.org/spec/#reserved-field-ids
 inline constexpr int32_t kIcebergRowIdColumnId = 2147483540;
 inline constexpr int32_t kIcebergLastUpdatedSequenceNumberColumnId = 2147483539;
 

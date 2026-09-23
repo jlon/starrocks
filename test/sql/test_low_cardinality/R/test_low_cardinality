@@ -1,3 +1,4 @@
+-- name: test_low_cardinality
 -- name: test_split_or
 CREATE TABLE `common_duplicate` (
   `c0` int(11) NOT NULL COMMENT "",

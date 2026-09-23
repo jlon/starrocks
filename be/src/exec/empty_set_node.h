@@ -34,18 +34,18 @@
 
 #pragma once
 
-#include "common/statusor.h"
-#include "exec/pipeline_node.h"
+#include "exec/exec_node.h"
 
 namespace starrocks {
 
 /// Node that returns an empty result set, i.e., just sets eos_ in GetNext().
 /// Corresponds to EmptySetNode.java in the FE.
-class EmptySetNode final : public PipelineNode {
+class EmptySetNode final : public ExecNode {
 public:
     EmptySetNode(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs);
+    Status get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos) override;
 
-    StatusOr<pipeline::OpFactories> decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
+    pipeline::OpFactories decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
 };
 
 } // namespace starrocks

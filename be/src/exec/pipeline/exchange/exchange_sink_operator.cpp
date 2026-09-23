@@ -21,29 +21,22 @@
 #include <random>
 #include <utility>
 
-#include "base/compression/block_compression.h"
-#include "base/compression/compression_utils.h"
-#include "common/brpc/brpc_stub_cache.h"
-#include "common/brpc/internal_service_recoverable_stub.h"
-#include "common/config_compression_fwd.h"
-#include "common/config_exec_flow_fwd.h"
-#include "common/config_network_fwd.h"
-#include "common/system/backend_options.h"
-#include "compute_env/data_stream/data_stream_mgr.h"
-#include "compute_env/data_stream/local_pass_through_buffer.h"
-#include "exec/exec_env.h"
-#include "exec/pipeline/exchange/exchange_compression_strategy.h"
+#include "common/config.h"
+#include "exec/partition/bucket_aware_partition.h"
 #include "exec/pipeline/exchange/shuffler.h"
 #include "exec/pipeline/exchange/sink_buffer.h"
-#include "exec/pipeline/fragment_context.h"
-#include "exec/pipeline/query_context.h"
 #include "exprs/expr.h"
-#include "exprs/expr_executor.h"
-#include "runtime/bucket_aware_partition.h"
-#include "runtime/current_thread.h"
+#include "runtime/data_stream_mgr.h"
 #include "runtime/descriptors.h"
+#include "runtime/exec_env.h"
+#include "runtime/local_pass_through_buffer.h"
 #include "runtime/runtime_state.h"
-#include "runtime/serde/protobuf_chunk_serde.h"
+#include "serde/compress_strategy.h"
+#include "serde/protobuf_serde.h"
+#include "util/brpc_stub_cache.h"
+#include "util/compression/block_compression.h"
+#include "util/compression/compression_utils.h"
+#include "util/internal_service_recoverable_stub.h"
 
 namespace starrocks::pipeline {
 
@@ -182,8 +175,7 @@ Status ExchangeSinkOperator::Channel::init(RuntimeState* state) {
         _is_inited = true;
         return Status::OK();
     }
-    auto* query_execution_services = state->query_execution_services();
-    _brpc_stub = query_execution_services->rpc->brpc_stub_cache->get_stub(_brpc_dest_addr);
+    _brpc_stub = state->exec_env()->brpc_stub_cache()->get_stub(_brpc_dest_addr);
 
     if (_brpc_stub == nullptr) {
         auto msg = fmt::format("The brpc stub of {}:{} is null.", _brpc_dest_addr.hostname, _brpc_dest_addr.port);
@@ -312,7 +304,7 @@ Status ExchangeSinkOperator::Channel::_close_internal(RuntimeState* state, Fragm
         }
     });
 
-    if (!fragment_ctx->runtime_state()->is_cancelled()) {
+    if (!fragment_ctx->is_canceled()) {
         for (auto driver_sequence = 0; driver_sequence < _chunks.size(); ++driver_sequence) {
             if (_chunks[driver_sequence] != nullptr) {
                 RETURN_IF_ERROR(res = send_one_chunk(state, _chunks[driver_sequence].get(), driver_sequence, false));
@@ -352,7 +344,7 @@ ExchangeSinkOperator::ExchangeSinkOperator(
     RuntimeState* state = fragment_ctx->runtime_state();
 
     PassThroughChunkBuffer* pass_through_chunk_buffer =
-            state->query_execution_services()->runtime->stream_mgr->get_pass_through_chunk_buffer(state->query_id());
+            state->exec_env()->stream_mgr()->get_pass_through_chunk_buffer(state->query_id());
 
     _channels.reserve(destinations.size());
     std::vector<int> driver_sequence_per_channel(destinations.size(), 0);
@@ -393,9 +385,9 @@ ExchangeSinkOperator::ExchangeSinkOperator(
 
     _is_pipeline_level_shuffle = is_pipeline_level_shuffle && (_num_shuffles > 1);
 
-    _shuffler = std::make_unique<Shuffler>(get_factory()->runtime_state()->func_version() <= 3,
-                                           !_is_channel_bound_driver_sequence, _part_type, _channels.size(),
-                                           _num_shuffles_per_channel, !bucket_properties.empty());
+    _shuffler = std::make_unique<Shuffler>(runtime_state()->func_version() <= 3, !_is_channel_bound_driver_sequence,
+                                           _part_type, _channels.size(), _num_shuffles_per_channel,
+                                           !bucket_properties.empty());
 }
 
 Status ExchangeSinkOperator::prepare(RuntimeState* state) {
@@ -422,7 +414,7 @@ Status ExchangeSinkOperator::prepare_local_state(RuntimeState* state) {
         TCompressionType::type type = state->query_options().transmission_compression_type;
         if (type == TCompressionType::AUTO) {
             _compress_type = CompressionTypePB::LZ4;
-            _compress_strategy = std::make_shared<ExchangeCompressionStrategy>();
+            _compress_strategy = std::make_shared<serde::CompressStrategy>();
         } else {
             _compress_type = CompressionUtils::to_compression_pb(state->query_options().transmission_compression_type);
         }
@@ -671,7 +663,6 @@ Status ExchangeSinkOperator::push_chunk(RuntimeState* state, const ChunkPtr& chu
 
 void ExchangeSinkOperator::_calc_hash_values_and_bucket_ids() {
     std::vector<const Column*> partitions_columns;
-    partitions_columns.reserve(_partitions_columns.size());
     for (size_t i = 0; i < _partitions_columns.size(); i++) {
         partitions_columns.emplace_back(_partitions_columns[i].get());
     }
@@ -752,32 +743,24 @@ Status ExchangeSinkOperator::serialize_chunk(const Chunk* src, ChunkPB* dst, boo
     const size_t serialized_size = dst->uncompressed_size();
     COUNTER_UPDATE(_serialized_bytes_counter, serialized_size * num_receivers);
 
-    bool use_compression = true;
-    // TODO: Better split the large chunk to smaller size and then compress.
     if (_compress_codec != nullptr && _compress_codec->exceed_max_input_size(serialized_size)) {
-        if (config::enable_rpc_compress_overflow_skip) {
-            LOG(WARNING) << "Serialized size " << serialized_size << " exceeds compression codec max input size "
-                         << _compress_codec->max_input_size() << ", skipping compression";
-            use_compression = false;
-        } else {
-            return Status::InternalError(strings::Substitute("The input size for compression should be less than $0",
-                                                             _compress_codec->max_input_size()));
-        }
-    } else if (_compress_strategy) {
-        // try compress the ChunkPB data
-        use_compression = _compress_strategy->decide();
+        return Status::InternalError(strings::Substitute("The input size for compression should be less than $0",
+                                                         _compress_codec->max_input_size()));
     }
 
-    if (use_compression && _compress_codec != nullptr && serialized_size > 0) {
+    // try compress the ChunkPB data
+    bool use_compression = true;
+    if (_compress_strategy) {
+        use_compression = _compress_strategy->decide();
+    }
+    if (_compress_codec != nullptr && serialized_size > 0 && use_compression) {
         ScopedTimer<MonotonicStopWatch> _timer(_compress_timer);
-        BlockCompressionOptions compression_options;
-        compression_options.lz4_acceleration = config::lz4_acceleration;
 
         if (use_compression_pool(_compress_codec->type())) {
             Slice compressed_slice;
             Slice input(dst->data());
             RETURN_IF_ERROR(_compress_codec->compress(input, &compressed_slice, true, serialized_size, nullptr,
-                                                      &_compression_scratch, compression_options));
+                                                      &_compression_scratch));
         } else {
             int max_compressed_size = _compress_codec->max_compressed_len(serialized_size);
 
@@ -788,7 +771,7 @@ Status ExchangeSinkOperator::serialize_chunk(const Chunk* src, ChunkPB* dst, boo
             Slice compressed_slice{_compression_scratch.data(), _compression_scratch.size()};
 
             Slice input(dst->data());
-            RETURN_IF_ERROR(_compress_codec->compress(input, &compressed_slice, compression_options));
+            RETURN_IF_ERROR(_compress_codec->compress(input, &compressed_slice));
             _compression_scratch.resize(compressed_slice.size);
         }
         if (_compress_strategy) {
@@ -878,15 +861,15 @@ Status ExchangeSinkOperatorFactory::prepare(RuntimeState* state) {
 
     if (_part_type == TPartitionType::HASH_PARTITIONED ||
         _part_type == TPartitionType::BUCKET_SHUFFLE_HASH_PARTITIONED) {
-        RETURN_IF_ERROR(ExprExecutor::prepare(_partition_expr_ctxs, state));
-        RETURN_IF_ERROR(ExprExecutor::open(_partition_expr_ctxs, state));
+        RETURN_IF_ERROR(Expr::prepare(_partition_expr_ctxs, state));
+        RETURN_IF_ERROR(Expr::open(_partition_expr_ctxs, state));
     }
     return Status::OK();
 }
 
 void ExchangeSinkOperatorFactory::close(RuntimeState* state) {
     _buffer.reset();
-    ExprExecutor::close(_partition_expr_ctxs, state);
+    Expr::close(_partition_expr_ctxs, state);
     OperatorFactory::close(state);
 }
 

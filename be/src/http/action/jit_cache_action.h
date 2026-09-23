@@ -23,13 +23,14 @@
 #include <mutex>
 #include <unordered_map>
 
-#include "platform/http/http_handler.h"
+#include "http/http_handler.h"
+#include "runtime/exec_env.h"
 
 namespace starrocks {
 
 class JITCacheAction : public HttpHandler {
 public:
-    explicit JITCacheAction() = default;
+    explicit JITCacheAction() {}
     ~JITCacheAction() override = default;
 
     void handle(HttpRequest* req) override;

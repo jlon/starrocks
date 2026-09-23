@@ -16,9 +16,8 @@
 
 #include <gtest/gtest.h>
 
-#include "base/testutil/assert.h"
 #include "column/chunk.h"
-#include "column/chunk_factory.h"
+#include "column/datum.h"
 #include "column/fixed_length_column.h"
 #include "runtime/descriptor_helper.h"
 #include "storage/chunk_helper.h"
@@ -28,7 +27,7 @@
 #include "storage/storage_engine.h"
 #include "storage/tablet_manager.h"
 #include "storage/tablet_updates.h"
-#include "types/datum.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 
@@ -102,7 +101,7 @@ protected:
         EXPECT_TRUE(RowsetFactory::create_rowset_writer(writer_context, &writer).ok());
 
         auto schema = ChunkHelper::convert_schema(tablet->thread_safe_get_tablet_schema());
-        auto chunk = ChunkFactory::new_chunk(schema, keys.size());
+        auto chunk = ChunkHelper::new_chunk(schema, keys.size());
         auto cols = chunk->columns();
 
         for (int64_t key : keys) {
@@ -138,7 +137,7 @@ protected:
 
         auto schema = ChunkHelper::convert_schema(tablet->thread_safe_get_tablet_schema());
         for (const auto& keys : keys_by_segment) {
-            auto chunk = ChunkFactory::new_chunk(schema, keys.size());
+            auto chunk = ChunkHelper::new_chunk(schema, keys.size());
             auto cols = chunk->columns();
 
             for (int64_t key : keys) {

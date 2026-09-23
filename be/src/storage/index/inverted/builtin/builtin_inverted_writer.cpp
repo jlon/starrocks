@@ -29,15 +29,15 @@
 #include "storage/index/inverted/inverted_index_option.h"
 #include "storage/rowset/bitmap_index_writer.h"
 #include "storage/tablet_index.h"
+#include "storage/type_traits.h"
 #include "types/logical_type.h"
-#include "types/storage_type_traits.h"
 
 namespace starrocks {
 
 template <LogicalType field_type>
 class BuiltinInvertedWriterImpl : public BuiltinInvertedWriter {
 public:
-    using CppType = StorageCppType<field_type>;
+    using CppType = typename CppTypeTraits<field_type>::CppType;
 
     explicit BuiltinInvertedWriterImpl(std::unique_ptr<BitmapIndexWriter>& writer, const TabletIndex* inverted_index)
             : _builtin_writer(std::move(writer)) {
@@ -45,7 +45,6 @@ public:
         _parser_type = get_inverted_index_parser_type_from_string(
                 get_parser_string_from_properties(inverted_index->index_properties()));
         DCHECK(_parser_type != InvertedIndexParserType::PARSER_UNKNOWN);
-        _lower_case = get_lower_case_from_properties(inverted_index->index_properties());
     }
 
     Status init() override;
@@ -66,7 +65,6 @@ private:
     std::unique_ptr<SimpleAnalyzer> _builtin_analyzer{};
 
     InvertedIndexParserType _parser_type;
-    bool _lower_case = true;
 };
 
 template <LogicalType field_type>
@@ -76,7 +74,7 @@ Status BuiltinInvertedWriterImpl<field_type>::init() {
     if (_parser_type == InvertedIndexParserType::PARSER_STANDARD) {
         _analyzer = std::make_unique<lucene::analysis::standard::StandardAnalyzer>();
     } else if (_parser_type == InvertedIndexParserType::PARSER_ENGLISH) {
-        _builtin_analyzer = std::make_unique<SimpleAnalyzer>(_lower_case);
+        _builtin_analyzer = std::make_unique<SimpleAnalyzer>();
     } else if (_parser_type == InvertedIndexParserType::PARSER_CHINESE) {
         auto chinese_analyzer = _CLNEW lucene::analysis::LanguageBasedAnalyzer();
         chinese_analyzer->setLanguage(L"cjk");

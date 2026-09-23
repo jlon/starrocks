@@ -17,7 +17,6 @@
 #include <vector>
 
 #include "common/statusor.h"
-#include "gen_cpp/lake_service.pb.h"
 #include "storage/compaction_utils.h"
 
 namespace starrocks {
@@ -43,7 +42,7 @@ public:
 
     static StatusOr<CompactionPolicyPtr> create(TabletManager* tablet_mgr,
                                                 std::shared_ptr<const TabletMetadataPB> tablet_metadata,
-                                                bool force_base_compaction, bool is_unshare = false);
+                                                bool force_base_compaction);
 
     static bool is_real_time_compaction_strategy(const std::shared_ptr<const TabletMetadataPB>& metadata);
 

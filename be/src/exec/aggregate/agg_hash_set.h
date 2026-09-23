@@ -16,19 +16,19 @@
 
 #include <any>
 
-#include "base/container/fixed_hash_map.h"
-#include "base/failpoint/fail_point.h"
-#include "base/phmap/phmap.h"
-#include "base/utility/defer_op.h"
 #include "column/column_hash.h"
 #include "column/hash_set.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "column/vectorized_fwd.h"
-#include "common/config_exec_flow_fwd.h"
-#include "common/system/cpu_info.h"
+#include "common/config.h"
 #include "exec/aggregate/agg_profile.h"
 #include "gutil/casts.h"
 #include "runtime/mem_pool.h"
+#include "util/cpu_info.h"
+#include "util/defer_op.h"
+#include "util/failpoint/fail_point.h"
+#include "util/fixed_hash_map.h"
+#include "util/phmap/phmap.h"
 
 namespace starrocks {
 DECLARE_FAIL_POINT(agg_hash_set_bad_alloc);
@@ -83,7 +83,7 @@ inline size_t agg_hash_map_default_prefetch_dist() {
 template <PhmapSeed seed>
 using Int8AggHashSet = SmallFixedSizeHashSet<int8_t, seed>;
 template <PhmapSeed seed>
-using Int16AggHashSet = SmallFixedSizeHashSet<int16_t, seed>;
+using Int16AggHashSet = phmap::flat_hash_set<int16_t, StdHashWithSeed<int16_t, seed>>;
 template <PhmapSeed seed>
 using Int32AggHashSet = phmap::flat_hash_set<int32_t, StdHashWithSeed<int32_t, seed>>;
 template <PhmapSeed seed>

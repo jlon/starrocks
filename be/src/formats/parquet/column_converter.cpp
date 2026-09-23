@@ -26,30 +26,28 @@
 #include <utility>
 #include <vector>
 
-#include "base/bit/bit_util.h"
-#include "base/decimal_types.h"
-#include "base/time/timezone_utils.h"
-#include "base/types/int96.h"
 #include "column/binary_column.h"
 #include "column/column.h"
 #include "column/column_helper.h"
 #include "column/fixed_length_column.h"
-#include "column/geo_column.h"
 #include "column/nullable_column.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "column/vectorized_fwd.h"
-#include "common/compiler_util.h"
-#include "common/config_scan_io_fwd.h"
 #include "formats/parquet/schema.h"
 #include "formats/parquet/types.h"
 #include "gutil/casts.h"
 #include "gutil/integral_types.h"
 #include "gutil/strings/substitute.h"
+#include "runtime/time_types.h"
+#include "runtime/types.h"
+#include "storage/olap_common.h"
 #include "types/date_value.h"
 #include "types/logical_type.h"
-#include "types/time_types.h"
 #include "types/timestamp_value.h"
-#include "types/type_descriptor.h"
+#include "util/bit_util.h"
+#include "util/decimal_types.h"
+#include "util/int96.h"
+#include "util/timezone_utils.h"
 
 namespace starrocks::parquet {
 
@@ -95,22 +93,13 @@ public:
     Int96ToDateTimeConverter() = default;
     ~Int96ToDateTimeConverter() override = default;
 
-    Status init(const std::string& timezone, bool as_timestamp_ntz);
+    Status init(const std::string& timezone);
     // convert column from int96 to timestamp
     Status convert(const Column* src, Column* dst) override;
 
 private:
     int _offset = 0;
     cctz::time_zone _ctz;
-    bool _as_timestamp_ntz = false;
-};
-
-class FixedLenByteArrayToUUIDConverter final : public ColumnConverter {
-public:
-    FixedLenByteArrayToUUIDConverter() = default;
-    ~FixedLenByteArrayToUUIDConverter() override = default;
-
-    Status convert(const Column* src, Column* dst) override;
 };
 
 class Int64ToDateTimeConverter final : public ColumnConverter {
@@ -179,11 +168,7 @@ class PrimitiveToDecimalConverter final : public ColumnConverter {
 public:
     using DestDecimalType = typename RunTimeTypeTraits<DestType>::CppType;
     using DestColumnType = typename RunTimeTypeTraits<DestType>::ColumnType;
-    // Valid decimal data always fits DestDecimalType, so the scaled intermediate only needs to be as
-    // wide as DestDecimalType itself (min int64, since decimal32/64 arithmetic on a plain int64 is much
-    // cheaper than always widening to int128: multiply/divide compile to native instructions instead of
-    // calls to __multi3/__divti3, and the loop is far more friendly to the compiler/CPU pipeline).
-    using DestPrimitiveType = std::conditional_t<(sizeof(DestDecimalType) <= sizeof(int64_t)), int64_t, int128_t>;
+    using DestPrimitiveType = typename RunTimeTypeTraits<TYPE_DECIMAL128>::CppType;
 
     PrimitiveToDecimalConverter(int32_t src_scale, int32_t dst_scale) {
         if (src_scale < dst_scale) {
@@ -192,29 +177,6 @@ public:
         } else if (src_scale > dst_scale) {
             _scale_type = DecimalScaleType::kScaleDown;
             _scale_factor = get_scale_factor<DestPrimitiveType>(src_scale - dst_scale);
-        }
-    }
-
-    // _scale_type is loop-invariant but was previously re-checked on every element, which both adds a
-    // per-row branch and defeats vectorization/ILP. Dispatch on it once via a template parameter instead,
-    // matching the pattern already used by BinaryToDecimalConverter::t_convert below.
-    template <DecimalScaleType ST>
-    void t_convert(size_t size, DestDecimalType* dst_data, const SourceType* src_data) {
-        for (size_t i = 0; i < size; i++) {
-            DestPrimitiveType value;
-            if constexpr (kSourceUnsigned && std::is_integral_v<SourceType>) {
-                // Reinterpret the source through its unsigned bit pattern so a high-bit
-                // unsigned value is zero-extended instead of sign-extended.
-                value = static_cast<std::make_unsigned_t<SourceType>>(src_data[i]);
-            } else {
-                value = src_data[i];
-            }
-            if constexpr (ST == DecimalScaleType::kScaleUp) {
-                value *= _scale_factor;
-            } else if constexpr (ST == DecimalScaleType::kScaleDown) {
-                value /= _scale_factor;
-            }
-            dst_data[i] = DestDecimalType(value);
         }
     }
 
@@ -234,25 +196,30 @@ public:
         auto& src_null_data = src_nullable_column->null_column()->get_data();
         auto& dst_null_data = dst_nullable_column->null_column_raw_ptr()->get_data();
 
+        bool has_null = false;
         size_t size = src_column->size();
-        memcpy(dst_null_data.data(), src_null_data.data(), size);
-
-        // Computing the scaled value for null rows is harmless (the row is masked out by the null flag
-        // regardless), so we no longer branch per-row on nullness either — same tradeoff already made by
-        // NumericToNumericConverter::convert above.
-        switch (_scale_type) {
-        case DecimalScaleType::kScaleUp:
-            t_convert<DecimalScaleType::kScaleUp>(size, dst_data.data(), src_data.data());
-            break;
-        case DecimalScaleType::kScaleDown:
-            t_convert<DecimalScaleType::kScaleDown>(size, dst_data.data(), src_data.data());
-            break;
-        default:
-            t_convert<DecimalScaleType::kNoScale>(size, dst_data.data(), src_data.data());
-            break;
+        for (size_t i = 0; i < size; i++) {
+            dst_null_data[i] = src_null_data[i];
+            if (dst_null_data[i]) {
+                has_null = true;
+                continue;
+            }
+            DestPrimitiveType value;
+            if constexpr (kSourceUnsigned && std::is_integral_v<SourceType>) {
+                // Reinterpret the source through its unsigned bit pattern so a high-bit
+                // unsigned value is zero-extended instead of sign-extended.
+                value = static_cast<std::make_unsigned_t<SourceType>>(src_data[i]);
+            } else {
+                value = src_data[i];
+            }
+            if (_scale_type == DecimalScaleType::kScaleUp) {
+                value *= _scale_factor;
+            } else if (_scale_type == DecimalScaleType::kScaleDown) {
+                value /= _scale_factor;
+            }
+            dst_data[i] = DestDecimalType(value);
         }
-
-        dst_nullable_column->set_has_null(src_nullable_column->has_null());
+        dst_nullable_column->set_has_null(has_null);
         return Status::OK();
     }
 
@@ -403,69 +370,6 @@ private:
     int32_t _type_length = 0;
 };
 
-// UUID is stored as 16 raw bytes; the canonical string form is 36 characters:
-// xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-static constexpr int kUUIDByteLength = 16;
-static constexpr int kUUIDStringLength = 36;
-
-Status FixedLenByteArrayToUUIDConverter::convert(const Column* src, Column* dst) {
-    auto* src_nullable = ColumnHelper::as_raw_column<NullableColumn>(src);
-    auto* dst_nullable = down_cast<NullableColumn*>(dst);
-    auto* src_col = ColumnHelper::as_raw_column<BinaryColumn>(src_nullable->data_column());
-    auto* dst_col = ColumnHelper::as_raw_column<BinaryColumn>(dst_nullable->data_column_raw_ptr());
-
-    const auto& src_null = src_nullable->null_column()->get_data();
-    auto& dst_null = dst_nullable->null_column_raw_ptr()->get_data();
-
-    size_t n = src_col->size();
-    dst_null.resize(n);
-    memcpy(dst_null.data(), src_null.data(), n);
-
-    static constexpr char HEX[] = "0123456789abcdef";
-    char buf[kUUIDStringLength];
-
-    for (size_t i = 0; i < n; i++) {
-        if (src_null[i]) {
-            dst_col->append_default();
-            continue;
-        }
-        Slice s = src_col->get_slice(i);
-        if (UNLIKELY(s.size != kUUIDByteLength)) {
-            return Status::Corruption(strings::Substitute(
-                    "parquet UUID column has unexpected byte length $0, expected $1", s.size, kUUIDByteLength));
-        }
-        const auto* bytes = reinterpret_cast<const uint8_t*>(s.data);
-        int pos = 0;
-        for (int j = 0; j < 4; j++) {
-            buf[pos++] = HEX[bytes[j] >> 4];
-            buf[pos++] = HEX[bytes[j] & 0xf];
-        }
-        buf[pos++] = '-';
-        for (int j = 4; j < 6; j++) {
-            buf[pos++] = HEX[bytes[j] >> 4];
-            buf[pos++] = HEX[bytes[j] & 0xf];
-        }
-        buf[pos++] = '-';
-        for (int j = 6; j < 8; j++) {
-            buf[pos++] = HEX[bytes[j] >> 4];
-            buf[pos++] = HEX[bytes[j] & 0xf];
-        }
-        buf[pos++] = '-';
-        for (int j = 8; j < 10; j++) {
-            buf[pos++] = HEX[bytes[j] >> 4];
-            buf[pos++] = HEX[bytes[j] & 0xf];
-        }
-        buf[pos++] = '-';
-        for (int j = 10; j < kUUIDByteLength; j++) {
-            buf[pos++] = HEX[bytes[j] >> 4];
-            buf[pos++] = HEX[bytes[j] & 0xf];
-        }
-        dst_col->append(Slice(buf, kUUIDStringLength));
-    }
-    dst_nullable->set_has_null(src_nullable->has_null());
-    return Status::OK();
-}
-
 template <typename DestType>
 static std::unique_ptr<ColumnConverter> make_int32_numeric_converter(bool src_unsigned) {
     if (src_unsigned) {
@@ -482,11 +386,6 @@ static std::unique_ptr<ColumnConverter> make_int32_decimal_converter(bool src_un
     }
     return std::make_unique<PrimitiveToDecimalConverter<int32_t, DestType, false>>(src_scale, dst_scale);
 }
-
-class BinaryToGeographyConverter final : public ColumnConverter {
-public:
-    Status convert(const Column* src, Column* dst) override;
-};
 
 Status ColumnConverterFactory::create_converter(const ParquetField& field, const TypeDescriptor& typeDescriptor,
                                                 const std::string& timezone,
@@ -611,16 +510,11 @@ Status ColumnConverterFactory::create_converter(const ParquetField& field, const
             col_type != LogicalType::TYPE_VARBINARY) {
             need_convert = true;
         }
-        if (col_type == TYPE_GEOGRAPHY) {
-            *converter = std::make_unique<BinaryToGeographyConverter>();
-        }
         break;
     }
     case tparquet::Type::type::FIXED_LEN_BYTE_ARRAY: {
         int32_t type_length = field.type_length;
-        bool is_uuid = schema_element.__isset.logicalType && schema_element.logicalType.__isset.UUID;
-        if (col_type != LogicalType::TYPE_VARCHAR && col_type != LogicalType::TYPE_CHAR &&
-            col_type != LogicalType::TYPE_VARBINARY) {
+        if (col_type != LogicalType::TYPE_VARCHAR && col_type != LogicalType::TYPE_CHAR) {
             need_convert = true;
         }
         switch (col_type) {
@@ -640,13 +534,6 @@ Status ColumnConverterFactory::create_converter(const ParquetField& field, const
             *converter = std::make_unique<BinaryToDecimalConverter<TYPE_DECIMAL128>>(field.scale, typeDescriptor.scale,
                                                                                      type_length);
             break;
-        case LogicalType::TYPE_VARCHAR:
-        case LogicalType::TYPE_CHAR:
-            if (is_uuid) {
-                need_convert = true;
-                *converter = std::make_unique<FixedLenByteArrayToUUIDConverter>();
-            }
-            break;
         default:
             break;
         }
@@ -656,7 +543,7 @@ Status ColumnConverterFactory::create_converter(const ParquetField& field, const
         need_convert = true;
         if (col_type == LogicalType::TYPE_DATETIME) {
             auto _converter = std::make_unique<Int96ToDateTimeConverter>();
-            RETURN_IF_ERROR(_converter->init(timezone, typeDescriptor.datetime_is_ntz));
+            RETURN_IF_ERROR(_converter->init(timezone));
             *converter = std::move(_converter);
         }
         break;
@@ -684,9 +571,9 @@ Status ColumnConverterFactory::create_converter(const ParquetField& field, const
     }
 
     if (need_convert && *converter == nullptr) {
-        return Status::NotSupported(strings::Substitute(
-                "parquet column reader: not supported convert from parquet `$0` to `$1`, field=$2",
-                ::tparquet::to_string(parquet_type), type_to_string(col_type), field.debug_string()));
+        return Status::NotSupported(
+                strings::Substitute("parquet column reader: not supported convert from parquet `$0` to `$1`",
+                                    ::tparquet::to_string(parquet_type), type_to_string(col_type)));
     }
 
     if (!need_convert) {
@@ -742,14 +629,8 @@ Status parquet::Int32ToDateConverter::convert(const Column* src, Column* dst) {
 
     size_t size = dst_null_data.size();
     memcpy(dst_null_data.data(), src_null_data.data(), size);
-    // DateValue's storage is a single int32_t (_julian), so we can stride through
-    // dst_data as raw int32 and add the epoch with SIMD.
-    const int32_t* src_ptr = src_data.data();
-    int32_t* dst_ptr = reinterpret_cast<int32_t*>(dst_data.data());
-    const int32_t epoch = date::UNIX_EPOCH_JULIAN;
-    // Compiler auto-vectorises the broadcast-add.
     for (size_t i = 0; i < size; i++) {
-        dst_ptr[i] = src_ptr[i] + epoch;
+        dst_data[i]._julian = src_data[i] + date::UNIX_EPOCH_JULIAN;
     }
     dst_nullable_column->set_has_null(src_nullable_column->has_null());
     return Status::OK();
@@ -811,8 +692,7 @@ Status parquet::Int32ToDateTimeConverter::convert(const Column* src, Column* dst
     return Status::OK();
 }
 
-Status Int96ToDateTimeConverter::init(const std::string& timezone, bool as_timestamp_ntz) {
-    _as_timestamp_ntz = as_timestamp_ntz;
+Status Int96ToDateTimeConverter::init(const std::string& timezone) {
     if (!TimezoneUtils::find_cctz_time_zone(timezone, _ctz)) {
         return Status::InternalError(strings::Substitute("can not find cctz time zone $0", timezone));
     }
@@ -845,12 +725,6 @@ Status Int96ToDateTimeConverter::convert(const Column* src, Column* dst) {
             if (!src_null_data[i]) {
                 Timestamp timestamp =
                         (static_cast<uint64_t>(src_data[i].hi) << TIMESTAMP_BITS) | (src_data[i].lo / 1000);
-                if (_as_timestamp_ntz) {
-                    // Paimon TIMESTAMP (NTZ): the INT96 stores the wall clock, so keep it as-is
-                    // instead of shifting by the session timezone the way Hive/Spark INT96 needs.
-                    dst_data[i].set_timestamp(timestamp);
-                    continue;
-                }
                 int offset = _offset;
                 if constexpr (!FAST_TZ) {
                     offset = timestamp::get_timezone_offset_by_timestamp(timestamp, _ctz);
@@ -1013,26 +887,6 @@ Status Int64ToTimeConverter::convert(const Column* src, Column* dst) {
         }
     }
     dst_nullable_column->set_has_null(src_nullable_column->has_null());
-    return Status::OK();
-}
-
-Status BinaryToGeographyConverter::convert(const Column* src, Column* dst) {
-    const auto* input = down_cast<const NullableColumn*>(src);
-    const auto* binary = down_cast<const BinaryColumn*>(input->data_column().get());
-    auto* geo = down_cast<GeoColumn*>(ColumnHelper::get_data_column(dst));
-    if (!dst->is_nullable() && input->has_null()) {
-        return Status::InvalidArgument("Cannot write NULL Parquet GEOGRAPHY values to a non-nullable column");
-    }
-    geo->reset_column();
-    geo->append_wkb_column(*binary);
-    if (!dst->is_nullable()) {
-        return Status::OK();
-    }
-    auto* output = down_cast<NullableColumn*>(dst);
-    auto* nulls = output->null_column_raw_ptr();
-    nulls->reset_column();
-    nulls->append(*input->null_column(), 0, input->size());
-    output->set_has_null(input->has_null());
     return Status::OK();
 }
 

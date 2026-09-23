@@ -125,11 +125,8 @@ public class PartitionProjectionService {
                 table.getStorageFormat() != com.starrocks.connector.hive.HiveStorageFormat.TEXTFILE) {
             return null;
         }
-        // Reuse the converter method for consistency with other Hive metadata handling.
-        // Pass the SerDe library so OpenCSVSerde tables pick up quote/escape (see toPartition).
-        return HiveMetastoreApiConverter.toTextFileFormatDesc(
-                table.getSerdeProperties(),
-                table.getProperties().get(HiveTable.HIVE_TABLE_SERDE_LIB));
+        // Reuse the converter method for consistency with other Hive metadata handling
+        return HiveMetastoreApiConverter.toTextFileFormatDesc(table.getSerdeProperties());
     }
 
     private ColumnProjection createColumnProjection(String columnName,

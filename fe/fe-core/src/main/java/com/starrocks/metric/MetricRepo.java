@@ -37,8 +37,6 @@ package com.starrocks.metric;
 import com.codahale.metrics.Histogram;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.SlidingTimeWindowArrayReservoir;
-import com.github.benmanes.caffeine.cache.LoadingCache;
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
@@ -61,13 +59,10 @@ import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.ThreadPoolManager;
-import com.starrocks.common.ThriftServer;
-import com.starrocks.common.Version;
 import com.starrocks.common.util.KafkaUtil;
 import com.starrocks.common.util.NetUtils;
 import com.starrocks.http.HttpMetricRegistry;
 import com.starrocks.http.rest.MetricsAction;
-import com.starrocks.journal.JournalType;
 import com.starrocks.lake.StarOSAgent;
 import com.starrocks.load.EtlJobType;
 import com.starrocks.load.batchwrite.MergeCommitMetricRegistry;
@@ -90,13 +85,9 @@ import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.service.ExecuteEnv;
-import com.starrocks.sql.optimizer.statistics.CacheDictManager;
-import com.starrocks.sql.optimizer.statistics.CachedStatisticStorage;
-import com.starrocks.sql.optimizer.statistics.IDictManager;
 import com.starrocks.staros.StarMgrServer;
 import com.starrocks.system.Backend;
 import com.starrocks.system.ComputeNode;
-import com.starrocks.system.Frontend;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.transaction.DatabaseTransactionMgr;
 import com.starrocks.transaction.TransactionMetricRegistry;
@@ -115,7 +106,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 import javax.management.Attribute;
 import javax.management.AttributeList;
@@ -135,20 +125,6 @@ public final class MetricRepo {
     public static final String TABLET_MAX_COMPACTION_SCORE = "tablet_max_compaction_score";
     private static final String ICEBERG_TIME_TRAVEL_QUERY_TOTAL_METRIC_NAME = "iceberg_time_travel_query_total";
     private static final String ICEBERG_TIME_TRAVEL_QUERY_TOTAL_METRIC_DESC = "total iceberg time travel query";
-    private static final String PLAN_ADVISOR_GUIDE_GENERATED_TOTAL_METRIC_NAME = "plan_advisor_guide_generated_total";
-    private static final String PLAN_ADVISOR_GUIDE_GENERATED_TOTAL_METRIC_DESC =
-            "total generated plan advisor guides";
-    private static final String PLAN_ADVISOR_GUIDE_APPLIED_TOTAL_METRIC_NAME = "plan_advisor_guide_applied_total";
-    private static final String PLAN_ADVISOR_GUIDE_APPLIED_TOTAL_METRIC_DESC =
-            "total applied plan advisor guides";
-    private static final String PLAN_ADVISOR_OPTIMIZATION_DURATION_MS_TOTAL_METRIC_NAME =
-            "plan_advisor_optimization_duration_ms_total";
-    private static final String PLAN_ADVISOR_OPTIMIZATION_DURATION_MS_TOTAL_METRIC_DESC =
-            "total execution time saved by plan advisor in milliseconds";
-
-    private static final String SPM_BASELINE_COUNT_METRIC_NAME = "spm_baseline_count";
-    private static final String SPM_REWRITE_TOTAL_METRIC_NAME = "spm_rewrite_total";
-    private static final String SPM_CAPTURE_CANDIDATE_TOTAL_METRIC_NAME = "spm_capture_candidate_total";
 
     public static LongCounterMetric COUNTER_REQUEST_ALL;
     public static LongCounterMetric COUNTER_QUERY_ALL;
@@ -157,7 +133,7 @@ public final class MetricRepo {
     public static LongCounterMetric COUNTER_QUERY_SUCCESS;
     public static LongCounterMetric COUNTER_SLOW_QUERY;
     public static LongCounterMetric COUNTER_ICEBERG_TIME_TRAVEL_QUERY_TOTAL;
-    public static LongCounterMetric COUNTER_PLAN_ADVISOR_OPTIMIZATION_DURATION_MS_TOTAL;
+
     public static LongCounterMetric COUNTER_QUERY_QUEUE_PENDING;
     public static LongCounterMetric COUNTER_QUERY_QUEUE_TOTAL;
     public static LongCounterMetric COUNTER_QUERY_QUEUE_TIMEOUT;
@@ -168,10 +144,6 @@ public final class MetricRepo {
     public static LongCounterMetric COUNTER_QUERY_ANALYSIS_ERR;
     public static LongCounterMetric COUNTER_QUERY_INTERNAL_ERR;
 
-    public static final MetricWithLabelGroup<LongCounterMetric> COUNTER_SPM_REWRITE_TOTAL =
-            new MetricWithLabelGroup<>("result",
-                    () -> new LongCounterMetric(SPM_REWRITE_TOTAL_METRIC_NAME, MetricUnit.REQUESTS,
-                            "total SPM rewrite attempts by result"));
     public static final MetricWithLabelGroup<LongCounterMetric> COUNTER_MV_GLOBAL_QUERY_REWRITE =
             new MetricWithLabelGroup<>("state",
                     () -> new LongCounterMetric("mv_global_query_rewrite_queries_total", MetricUnit.REQUESTS,
@@ -188,18 +160,6 @@ public final class MetricRepo {
             new MetricWithLabelGroup<>("warehouse_name",
                     () -> new LongCounterMetric("mv_global_refresh_failed_jobs_total", MetricUnit.REQUESTS,
                             "total failed materialized view refresh jobs by warehouse"));
-    public static final MetricWithLabelGroup<LongCounterMetric> COUNTER_SPM_CAPTURE_CANDIDATE_TOTAL =
-            new MetricWithLabelGroup<>("result",
-                    () -> new LongCounterMetric(SPM_CAPTURE_CANDIDATE_TOTAL_METRIC_NAME, MetricUnit.REQUESTS,
-                            "total SPM auto-capture candidate processing results"));
-    public static final MetricWithLabelGroup<LongCounterMetric> COUNTER_PLAN_ADVISOR_GUIDE_GENERATED_TOTAL =
-            new MetricWithLabelGroup<>("operator_type",
-                    () -> new LongCounterMetric(PLAN_ADVISOR_GUIDE_GENERATED_TOTAL_METRIC_NAME, MetricUnit.REQUESTS,
-                            PLAN_ADVISOR_GUIDE_GENERATED_TOTAL_METRIC_DESC));
-    public static final MetricWithLabelGroup<LongCounterMetric> COUNTER_PLAN_ADVISOR_GUIDE_APPLIED_TOTAL =
-            new MetricWithLabelGroup<>("operator_type",
-                    () -> new LongCounterMetric(PLAN_ADVISOR_GUIDE_APPLIED_TOTAL_METRIC_NAME, MetricUnit.REQUESTS,
-                            PLAN_ADVISOR_GUIDE_APPLIED_TOTAL_METRIC_DESC));
 
     public static final MetricWithLabelGroup<LongCounterMetric> COUNTER_ICEBERG_TIME_TRAVEL_QUERY_TOTAL_BY_TYPE =
             new MetricWithLabelGroup<>("time_travel_type",
@@ -289,10 +249,6 @@ public final class MetricRepo {
             new LongCounterMetric("publish_version_daemon_loop_total",
                     MetricUnit.OPERATIONS, "counter of publish version daemon loop runs");
 
-    public static final LongCounterMetric SYNC_STATS_LOAD_BUDGET_EXHAUSTED_TOTAL =
-            new LongCounterMetric("sync_stats_load_budget_exhausted_total", Metric.MetricUnit.OPERATIONS,
-                    "Times we have exhausted the budget");
-
     /**
      * Histogram tracking the lock held time (in milliseconds) when slow locks are detected.
      * Updated when lock hold time exceeds the slow_lock_threshold_ms configuration.
@@ -324,8 +280,6 @@ public final class MetricRepo {
     public static LongCounterMetric COUNTER_SQL_BLOCK_HIT_COUNT;
 
     public static LongCounterMetric COUNTER_UNFINISHED_BACKUP_JOB;
-    public static LongCounterMetric COUNTER_BACKUP_SNAPSHOT_CLEAN_SUCCESS;
-    public static LongCounterMetric COUNTER_BACKUP_SNAPSHOT_CLEAN_FAILED;
     public static LongCounterMetric COUNTER_UNFINISHED_RESTORE_JOB;
 
     public static LongCounterMetric COUNTER_LOAD_ADD;
@@ -333,9 +287,6 @@ public final class MetricRepo {
     public static LongCounterMetric COUNTER_EDIT_LOG_WRITE;
     public static LongCounterMetric COUNTER_EDIT_LOG_READ;
     public static LongCounterMetric COUNTER_EDIT_LOG_SIZE_BYTES;
-    private static final Map<JournalType, RetainedJournalState> RETAINED_JOURNAL_STATES = Map.of(
-            JournalType.FE_META, new RetainedJournalState(),
-            JournalType.STAR_MGR, new RetainedJournalState());
     public static LongCounterMetric COUNTER_IMAGE_WRITE;
     public static LongCounterMetric COUNTER_IMAGE_PUSH;
     public static LeaderAwareCounterMetricLong COUNTER_TXN_REJECT;
@@ -369,11 +320,6 @@ public final class MetricRepo {
     public static LongCounterMetric COUNTER_TABLET_RESHARD_MERGE_JOB_FINISHED;
     public static LongCounterMetric COUNTER_TABLET_RESHARD_SPLIT_JOB_ABORTED;
     public static LongCounterMetric COUNTER_TABLET_RESHARD_MERGE_JOB_ABORTED;
-    // A reshard publish is retried until it succeeds (its transaction is already committed, so there is
-    // no rollback path), which means a deterministic failure never shows up as an aborted job. This
-    // counter is the only signal that a reshard job is stuck retrying, so alert on its rate.
-    public static LongCounterMetric COUNTER_TABLET_RESHARD_PUBLISH_FAILED;
-    public static LongCounterMetric COUNTER_TABLET_RESHARD_MERGE_CANDIDATE_BLOCKED;
 
     // Sample-Based Tablet Pre-Split metrics. The coordinator wires the eligibility-skip,
     // post-submit hard-cap, load-abort counters and the two wait-time histograms. The
@@ -476,14 +422,10 @@ public final class MetricRepo {
     public static GaugeMetricImpl<Double> GAUGE_QUERY_LATENCY_P95;
     public static GaugeMetricImpl<Double> GAUGE_QUERY_LATENCY_P99;
     public static GaugeMetricImpl<Double> GAUGE_QUERY_LATENCY_P999;
-    public static LeaderAwareGaugeMetricLong GAUGE_SPM_BASELINE_COUNT;
-    public static LeaderAwareGaugeMetricLong GAUGE_MAX_JOURNAL_REPLAY_LAG;
     public static LeaderAwareGaugeMetric<Long> GAUGE_MAX_TABLET_COMPACTION_SCORE;
     public static GaugeMetricImpl<Long> GAUGE_STACKED_JOURNAL_NUM;
 
     public static GaugeMetricImpl<Long> GAUGE_ENCRYPTION_KEY_NUM;
-
-    public static GaugeMetric<Long> GAUGE_LOW_CARDINALITY_DICT_CACHE_BYTES;
 
     public static List<LeaderAwareGaugeMetric<Long>> GAUGE_ROUTINE_LOAD_LAGS;
 
@@ -498,10 +440,6 @@ public final class MetricRepo {
 
     // Currently, we use gauge for safe mode metrics, since we do not have unTyped metrics till now
     public static GaugeMetricImpl<Integer> GAUGE_SAFE_MODE;
-    public static GaugeMetric<Long> GAUGE_THRIFT_SERVER_ACCEPTOR_STALL_MS;
-    public static LongCounterMetric COUNTER_THRIFT_SERVER_REJECTED_CONNECTIONS;
-    public static LongCounterMetric COUNTER_THRIFT_SERVER_EXPIRED_CONNECTIONS;
-    public static Histogram HISTO_THRIFT_SERVER_QUEUE_WAIT_MS;
 
     private static final ScheduledThreadPoolExecutor METRIC_TIMER =
             ThreadPoolManager.newDaemonScheduledThreadPool(1, "Metric-Timer-Pool", true);
@@ -528,35 +466,7 @@ public final class MetricRepo {
         GAUGE_MEMORY_USAGE_STATS = new ArrayList<>();
         GAUGE_OBJECT_COUNT_STATS = new ArrayList<>();
 
-        GAUGE_THRIFT_SERVER_ACCEPTOR_STALL_MS = new GaugeMetric<>(
-                "thrift_server_acceptor_stall_ms", MetricUnit.MILLISECONDS,
-                "milliseconds since the thrift accept loop last made progress") {
-            @Override
-            public Long getValue() {
-                return ThriftServer.getAcceptorStallTimeMs();
-            }
-        };
-        STARROCKS_METRIC_REGISTER.addMetric(GAUGE_THRIFT_SERVER_ACCEPTOR_STALL_MS);
-
-        COUNTER_THRIFT_SERVER_REJECTED_CONNECTIONS = new LongCounterMetric(
-                "thrift_server_rejected_connections_total", MetricUnit.REQUESTS,
-                "total connections the thrift server closed because its worker pool was saturated");
-        STARROCKS_METRIC_REGISTER.addMetric(COUNTER_THRIFT_SERVER_REJECTED_CONNECTIONS);
-
-        COUNTER_THRIFT_SERVER_EXPIRED_CONNECTIONS = new LongCounterMetric(
-                "thrift_server_expired_connections_total", MetricUnit.REQUESTS,
-                "total connections the thrift server closed unserved because they waited in the pending "
-                        + "queue longer than thrift_server_queue_timeout_ms");
-        STARROCKS_METRIC_REGISTER.addMetric(COUNTER_THRIFT_SERVER_EXPIRED_CONNECTIONS);
-
         // 1. gauge
-        // build info
-        GaugeMetricImpl<Long> buildInfo = new GaugeMetricImpl<>("build_info",
-                MetricUnit.NOUNIT, "StarRocks FE build information", 1L);
-        buildInfo.addLabel(new MetricLabel("version", Version.STARROCKS_VERSION))
-                .addLabel(new MetricLabel("commit_hash", Version.STARROCKS_COMMIT_HASH));
-        STARROCKS_METRIC_REGISTER.addMetric(buildInfo);
-
         // load jobs
         LoadMgr loadManger = GlobalStateMgr.getCurrentState().getLoadMgr();
         for (EtlJobType jobType : EtlJobType.values()) {
@@ -654,43 +564,6 @@ public final class MetricRepo {
             }
         };
         STARROCKS_METRIC_REGISTER.addMetric(maxJournalId);
-
-        // metadata freshness of this node. Reported by every node, and unlike max_journal_replay_lag
-        // below it is visible on the lagging node itself; it keeps growing while a single journal entry
-        // is stuck in the applier, which is precisely when the node is serving frozen metadata.
-        GaugeMetric<Long> metaReplayLagSecond = (GaugeMetric<Long>) new GaugeMetric<Long>(
-                "meta_replay_lag_second", MetricUnit.SECONDS,
-                "seconds by which the metadata replayed by this frontend lags behind the leader's clock") {
-            @Override
-            public Long getValue() {
-                return GlobalStateMgr.getCurrentState().getMetaReplayLagSecond();
-            }
-        };
-        STARROCKS_METRIC_REGISTER.addMetric(metaReplayLagSecond);
-
-        // journal replay lag of the slowest follower/observer.
-        // Leader-only: it is the only node that knows both the write frontier and, via heartbeat,
-        // every other node's replayed journal id.
-        GAUGE_MAX_JOURNAL_REPLAY_LAG = new LeaderAwareGaugeMetricLong(
-                "max_journal_replay_lag", MetricUnit.NOUNIT,
-                "max number of journals any alive follower/observer is behind the leader") {
-            @Override
-            public Long getValueLeader() {
-                return getMaxJournalReplayLag();
-            }
-        };
-        STARROCKS_METRIC_REGISTER.addMetric(GAUGE_MAX_JOURNAL_REPLAY_LAG);
-
-        GAUGE_SPM_BASELINE_COUNT = new LeaderAwareGaugeMetricLong(
-                SPM_BASELINE_COUNT_METRIC_NAME,
-                MetricUnit.NOUNIT,
-                "current number of global SPM baselines") {
-            @Override
-            public Long getValueLeader() {
-                return GlobalStateMgr.getCurrentState().getSqlPlanStorage().getBaselineCount();
-            }
-        };
-        STARROCKS_METRIC_REGISTER.addMetric(GAUGE_SPM_BASELINE_COUNT);
 
         // meta log total count
         GaugeMetric<Long> metaLogCount = new GaugeMetric<Long>(
@@ -843,20 +716,6 @@ public final class MetricRepo {
         GAUGE_ENCRYPTION_KEY_NUM.setValue(0L);
         STARROCKS_METRIC_REGISTER.addMetric(GAUGE_ENCRYPTION_KEY_NUM);
 
-        // Per-FE dict cache size, so not leader-aware.
-        GAUGE_LOW_CARDINALITY_DICT_CACHE_BYTES = new GaugeMetric<Long>("low_cardinality_dict_cache_bytes", MetricUnit.BYTES,
-                "total bytes of cached dictionary data in the low-cardinality global dictionary cache") {
-            @Override
-            public Long getValue() {
-                IDictManager dictManager = IDictManager.getInstance();
-                if (dictManager instanceof CacheDictManager) {
-                    return ((CacheDictManager) dictManager).getCacheWeightedBytes();
-                }
-                return 0L;
-            }
-        };
-        STARROCKS_METRIC_REGISTER.addMetric(GAUGE_LOW_CARDINALITY_DICT_CACHE_BYTES);
-
         GAUGE_QUERY_LATENCY_MEAN =
                 new GaugeMetricImpl<>("query_latency", MetricUnit.MILLISECONDS, "mean of query latency");
         GAUGE_QUERY_LATENCY_MEAN.addLabel(new MetricLabel("type", "mean"));
@@ -964,11 +823,6 @@ public final class MetricRepo {
         COUNTER_ICEBERG_TIME_TRAVEL_QUERY_TOTAL = new LongCounterMetric(ICEBERG_TIME_TRAVEL_QUERY_TOTAL_METRIC_NAME,
                 MetricUnit.REQUESTS, ICEBERG_TIME_TRAVEL_QUERY_TOTAL_METRIC_DESC);
         STARROCKS_METRIC_REGISTER.addMetric(COUNTER_ICEBERG_TIME_TRAVEL_QUERY_TOTAL);
-        COUNTER_PLAN_ADVISOR_OPTIMIZATION_DURATION_MS_TOTAL = new LongCounterMetric(
-                PLAN_ADVISOR_OPTIMIZATION_DURATION_MS_TOTAL_METRIC_NAME,
-                MetricUnit.MILLISECONDS,
-                PLAN_ADVISOR_OPTIMIZATION_DURATION_MS_TOTAL_METRIC_DESC);
-        STARROCKS_METRIC_REGISTER.addMetric(COUNTER_PLAN_ADVISOR_OPTIMIZATION_DURATION_MS_TOTAL);
         COUNTER_QUERY_QUEUE_PENDING = new LongCounterMetric("query_queue_pending", MetricUnit.REQUESTS,
                 "total pending query");
         STARROCKS_METRIC_REGISTER.addMetric(COUNTER_QUERY_QUEUE_PENDING);
@@ -1002,9 +856,6 @@ public final class MetricRepo {
         COUNTER_EDIT_LOG_SIZE_BYTES =
                 new LongCounterMetric("edit_log_size_bytes", MetricUnit.BYTES, "size of edit log");
         STARROCKS_METRIC_REGISTER.addMetric(COUNTER_EDIT_LOG_SIZE_BYTES);
-        for (JournalType journalType : JournalType.values()) {
-            registerEditLogRetainedMetrics(journalType);
-        }
         COUNTER_IMAGE_WRITE = new LongCounterMetric("image_write", MetricUnit.OPERATIONS, "counter of image generated");
         STARROCKS_METRIC_REGISTER.addMetric(COUNTER_IMAGE_WRITE);
         COUNTER_IMAGE_PUSH = new LongCounterMetric("image_push", MetricUnit.OPERATIONS,
@@ -1100,12 +951,6 @@ public final class MetricRepo {
         COUNTER_UNFINISHED_BACKUP_JOB = new LongCounterMetric("unfinished_backup_job", MetricUnit.REQUESTS,
                 "current unfinished backup job");
         STARROCKS_METRIC_REGISTER.addMetric(COUNTER_UNFINISHED_BACKUP_JOB);
-        COUNTER_BACKUP_SNAPSHOT_CLEAN_SUCCESS = new LongCounterMetric("backup_snapshot_clean_success",
-                MetricUnit.REQUESTS, "total backup snapshots deleted by ttl cleanup or DROP SNAPSHOT");
-        STARROCKS_METRIC_REGISTER.addMetric(COUNTER_BACKUP_SNAPSHOT_CLEAN_SUCCESS);
-        COUNTER_BACKUP_SNAPSHOT_CLEAN_FAILED = new LongCounterMetric("backup_snapshot_clean_failed",
-                MetricUnit.REQUESTS, "total failed attempts to delete a backup snapshot");
-        STARROCKS_METRIC_REGISTER.addMetric(COUNTER_BACKUP_SNAPSHOT_CLEAN_FAILED);
         COUNTER_UNFINISHED_RESTORE_JOB = new LongCounterMetric("unfinished_restore_job", MetricUnit.REQUESTS,
                 "current unfinished restore job");
         STARROCKS_METRIC_REGISTER.addMetric(COUNTER_UNFINISHED_RESTORE_JOB);
@@ -1165,17 +1010,6 @@ public final class MetricRepo {
         COUNTER_TABLET_RESHARD_MERGE_JOB_ABORTED.addLabel(new MetricLabel("type", "merge"));
         STARROCKS_METRIC_REGISTER.addMetric(COUNTER_TABLET_RESHARD_MERGE_JOB_ABORTED);
 
-        COUNTER_TABLET_RESHARD_PUBLISH_FAILED = new LongCounterMetric("tablet_reshard_publish_failed",
-                MetricUnit.REQUESTS, "total tablet reshard publish attempts that failed and will be retried");
-        STARROCKS_METRIC_REGISTER.addMetric(COUNTER_TABLET_RESHARD_PUBLISH_FAILED);
-
-        COUNTER_TABLET_RESHARD_MERGE_CANDIDATE_BLOCKED = new LongCounterMetric(
-                "tablet_reshard_merge_candidate_blocked", MetricUnit.NOUNIT,
-                "cumulative count of tablet-exclusion events from merge planning (monitor the rate of "
-                        + "increase, not the raw value); a tablet is excluded because it still holds "
-                        + "merge-blocking shared data files, or has not yet been proven free of them");
-        STARROCKS_METRIC_REGISTER.addMetric(COUNTER_TABLET_RESHARD_MERGE_CANDIDATE_BLOCKED);
-
         COUNTER_TABLET_PRE_SPLIT_POST_SUBMIT_HARD_CAP = new LongCounterMetric(
                 "tablet_pre_split_post_submit_hard_cap", MetricUnit.REQUESTS,
                 "total Sample-Based Tablet Pre-Split post-submit hard-cap events (load transaction aborted)");
@@ -1214,12 +1048,6 @@ public final class MetricRepo {
         HISTO_JOURNAL_WRITE_BYTES =
                 METRIC_REGISTER.histogram(MetricRegistry.name("journal", "write", "bytes"));
         HISTO_SHORTCIRCUIT_RPC_LATENCY = METRIC_REGISTER.histogram(MetricRegistry.name("shortcircuit", "latency", "ms"));
-        // How long connections sat in the thrift server pending queue before a worker reached them,
-        // sampled whether the connection was then served or dropped as expired. This is the leading
-        // indicator of thrift saturation: it rises while the pool is still keeping up, well before
-        // rejections start.
-        HISTO_THRIFT_SERVER_QUEUE_WAIT_MS = METRIC_REGISTER.histogram(
-                MetricRegistry.name("thrift_server", "queue_wait", "ms"));
         HISTO_DEPLOY_PLAN_FRAGMENTS_LATENCY = METRIC_REGISTER.histogram(
                 MetricRegistry.name("deploy_plan_fragments", "latency", "ms"));
         HISTO_TABLET_RESHARD_JOB_DURATION = METRIC_REGISTER.histogram(
@@ -1244,18 +1072,11 @@ public final class MetricRepo {
         };
         STARROCKS_METRIC_REGISTER.addMetric(GAUGE_LAKE_COMPACTION_SCORE_AT_TRIGGER);
 
-        STARROCKS_METRIC_REGISTER.addMetric(SYNC_STATS_LOAD_BUDGET_EXHAUSTED_TOTAL);
-
         // init system metrics
         initSystemMetrics();
 
         // init clone metrics
         initCloneMetrics();
-
-        // init statistics cache metrics
-        if (Config.enable_statistic_cache_metrics) {
-            initStatisticsCacheMetrics();
-        }
 
         updateMetrics();
         hasInit = true;
@@ -1263,88 +1084,6 @@ public final class MetricRepo {
         if (Config.enable_metric_calculator) {
             METRIC_TIMER.scheduleAtFixedRate(METRIC_CALCULATOR, 0, 15 * 1000L, TimeUnit.MILLISECONDS);
         }
-    }
-
-    /**
-     * Max number of journals that any alive follower/observer still has to replay to catch up
-     * with the leader.
-     *
-     * The leader's own journal id is the write frontier; every other node's replayed journal id
-     * arrives with its heartbeat (see Frontend#handleHbResponse). Dead nodes are skipped, because
-     * their reported id is frozen at the last successful heartbeat: counting them would pin this
-     * gauge at an ever growing value that says nothing about replay speed, and liveness is already
-     * reported separately through SHOW FRONTENDS.
-     *
-     * Returns 0 when no other node is alive, and never returns a negative value.
-     */
-    @VisibleForTesting
-    static long getMaxJournalReplayLag() {
-        GlobalStateMgr globalStateMgr = GlobalStateMgr.getCurrentState();
-        long leaderJournalId = globalStateMgr.getMaxJournalId();
-        long maxLag = 0;
-        for (Frontend fe : globalStateMgr.getNodeMgr().getOtherFrontends()) {
-            if (!fe.isAlive()) {
-                continue;
-            }
-            maxLag = Math.max(maxLag, leaderJournalId - fe.getReplayedJournalId());
-        }
-        return maxLag;
-    }
-
-    private static void initStatisticsCacheMetrics() {
-        final var storage = GlobalStateMgr.getCurrentState().getStatisticStorage();
-        if (storage instanceof CachedStatisticStorage cachedStatisticStorage) {
-            for (var nameCachePair : cachedStatisticStorage.getNamedCacheMap().entrySet()) {
-                final var cacheName = nameCachePair.getKey();
-                final var cache = nameCachePair.getValue();
-                addStatisticsCacheCounter(cacheName, cache, "statistics_cache_hit_count",
-                        "Cumulative number of statistics cache hits", c -> c.stats().hitCount());
-                addStatisticsCacheCounter(cacheName, cache, "statistics_cache_miss_count",
-                        "Cumulative number of statistics cache misses", c -> c.stats().missCount());
-                addStatisticsCacheCounter(cacheName, cache, "statistics_cache_eviction_count",
-                        "Cumulative number of statistics cache evictions", c -> c.stats().evictionCount());
-                addStatisticsCacheCounter(cacheName, cache, "statistics_cache_load_success_count",
-                        "Cumulative number of successful statistics cache loads",
-                        c -> c.stats().loadSuccessCount());
-                addStatisticsCacheCounter(cacheName, cache, "statistics_cache_load_failure_count",
-                        "Cumulative number of failed statistics cache loads",
-                        c -> c.stats().loadFailureCount());
-                // Current cache occupancy — a point-in-time value, so it stays a GAUGE.
-                addStatisticsCacheGauge(cacheName, cache, "statistics_cache_entries",
-                        "Number of entries currently held in the statistics cache",
-                        LoadingCache::estimatedSize);
-            }
-        }
-
-    }
-
-    private static void addStatisticsCacheGauge(String cacheName, LoadingCache<?, ?> cache, String metricName, String description,
-                                                Function<LoadingCache<?, ?>, Long> cacheMetricFun) {
-        final var gauge = new GaugeMetric<>(metricName, MetricUnit.NOUNIT, description) {
-            @Override
-            public Long getValue() {
-                return cache == null ? 0L : cacheMetricFun.apply(cache);
-            }
-        };
-        gauge.addLabel(new MetricLabel("cache", cacheName));
-        STARROCKS_METRIC_REGISTER.addMetric(gauge);
-    }
-
-    private static void addStatisticsCacheCounter(String cacheName, LoadingCache<?, ?> cache, String metricName,
-                                                  String description, Function<LoadingCache<?, ?>, Long> cacheMetricFun) {
-        final var counter = new CounterMetric<Long>(metricName, MetricUnit.NOUNIT, description) {
-            @Override
-            public void increase(Long delta) {
-                // No-op: the value is pulled on demand from Caffeine's cumulative stats
-            }
-
-            @Override
-            public Long getValue() {
-                return cache == null ? 0L : cacheMetricFun.apply(cache);
-            }
-        };
-        counter.addLabel(new MetricLabel("cache", cacheName));
-        STARROCKS_METRIC_REGISTER.addMetric(counter);
     }
 
     private static void initSystemMetrics() {
@@ -1466,98 +1205,6 @@ public final class MetricRepo {
                 stat.counterCloneTaskIntraNodeCopyDurationMs);
         cloneTaskIntraNodeCopyDurationMs.addLabel(new MetricLabel("type", BalanceStat.INTRA_NODE));
         STARROCKS_METRIC_REGISTER.addMetric(cloneTaskIntraNodeCopyDurationMs);
-    }
-
-    private static void registerEditLogRetainedMetrics(JournalType journalType) {
-        RetainedJournalState state = RETAINED_JOURNAL_STATES.get(journalType);
-        Metric<Long> count = new LeaderAwareGaugeMetricLong(
-                "edit_log_retained", MetricUnit.OPERATIONS, "number of retained edit logs") {
-            @Override
-            public Long getValueLeader() {
-                return state.getCount();
-            }
-        };
-        count.addLabel(new MetricLabel("journal", journalType.getMetricLabel()));
-        STARROCKS_METRIC_REGISTER.addMetric(count);
-
-        Metric<Long> bytes = new LeaderAwareGaugeMetricLong(
-                "edit_log_retained_bytes_estimate", MetricUnit.BYTES, "estimated retained edit log bytes") {
-            @Override
-            public Long getValueLeader() {
-                return state.getEstimatedBytes();
-            }
-        };
-        bytes.addLabel(new MetricLabel("journal", journalType.getMetricLabel()));
-        STARROCKS_METRIC_REGISTER.addMetric(bytes);
-    }
-
-    public static void initializeEditLogRetained(
-            JournalType journalType, long minJournalId, long maxJournalId) {
-        RETAINED_JOURNAL_STATES.get(journalType).initialize(minJournalId, maxJournalId);
-    }
-
-    public static void recordEditLogBatch(
-            JournalType journalType, long lastJournalId, long count, long bytes) {
-        RETAINED_JOURNAL_STATES.get(journalType).record(lastJournalId, count, bytes);
-    }
-
-    public static void updateEditLogRetainedMinJournalId(JournalType journalType, long minJournalId) {
-        RETAINED_JOURNAL_STATES.get(journalType).updateMinJournalId(minJournalId);
-    }
-
-    public static long getEditLogRetainedCount(JournalType journalType) {
-        return RETAINED_JOURNAL_STATES.get(journalType).getCount();
-    }
-
-    public static long getEditLogRetainedBytesEstimate(JournalType journalType) {
-        return RETAINED_JOURNAL_STATES.get(journalType).getEstimatedBytes();
-    }
-
-    private static final class RetainedJournalState {
-        private long minJournalId = -1L;
-        private long maxJournalId = -1L;
-        private long observedCount;
-        private long observedBytes;
-
-        private synchronized void initialize(long minJournalId, long maxJournalId) {
-            this.minJournalId = minJournalId;
-            this.maxJournalId = maxJournalId;
-            observedCount = 0L;
-            observedBytes = 0L;
-        }
-
-        private synchronized void record(long lastJournalId, long count, long bytes) {
-            if (count <= 0L) {
-                return;
-            }
-            if (minJournalId < 0L) {
-                minJournalId = lastJournalId - count + 1L;
-            }
-            maxJournalId = Math.max(maxJournalId, lastJournalId);
-            observedCount += count;
-            observedBytes += bytes;
-        }
-
-        private synchronized void updateMinJournalId(long minJournalId) {
-            this.minJournalId = minJournalId;
-        }
-
-        private synchronized long getCount() {
-            return minJournalId < 0L || maxJournalId < minJournalId
-                    ? 0L : maxJournalId - minJournalId + 1L;
-        }
-
-        private synchronized long getEstimatedBytes() {
-            long count = getCount();
-            if (count == 0L) {
-                return 0L;
-            }
-            if (observedCount == 0L) {
-                return -1L;
-            }
-            double estimate = (double) count * observedBytes / observedCount;
-            return estimate >= Long.MAX_VALUE ? Long.MAX_VALUE : Math.round(estimate);
-        }
     }
 
     // to generate the metrics related to tablets of each backend
@@ -1846,6 +1493,7 @@ public final class MetricRepo {
 
         // collect http metrics
         HttpMetricRegistry.getInstance().visit(visitor);
+
 
         // collect connection metrics
         collectConnectionMetrics(visitor, requestParams.isCollectUserConnMetrics());

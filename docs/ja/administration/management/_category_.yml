@@ -1,7 +1,0 @@
-position: 20
-label: 'Management'
-collapsible: true
-collapsed: true
-link:
-  id: management
-  type: doc

@@ -53,21 +53,11 @@ public class ClusterSnapshotJob implements Writable {
     @SerializedName(value = "detailInfo")
     private String detailInfo;
 
-    private ClusterSnapshotJob() {
-    }
-
     public ClusterSnapshotJob(long id, String snapshotName, String storageVolumeName, long createdTimeMs) {
         this.snapshot = createClusterSnapshot(id, snapshotName, storageVolumeName, createdTimeMs);
         this.state = ClusterSnapshotJobState.INITIALIZING;
         this.errMsg = "";
         this.detailInfo = "";
-    }
-
-    private ClusterSnapshotJob(ClusterSnapshotJob job) {
-        this.snapshot = job.snapshot == null ? null : job.snapshot.copyForPersist();
-        this.state = job.state;
-        this.errMsg = job.errMsg;
-        this.detailInfo = job.detailInfo;
     }
 
     protected ClusterSnapshot createClusterSnapshot(long id, String snapshotName, String storageVolumeName, long createdTimeMs) {
@@ -184,6 +174,12 @@ public class ClusterSnapshotJob implements Writable {
         snapshot.setClusterSnapshotInfo(clusterSnapshotInfo);
     }
 
+    public void logJob() {
+        ClusterSnapshotLog log = new ClusterSnapshotLog();
+        log.setSnapshotJob(this);
+        GlobalStateMgr.getCurrentState().getEditLog().logClusterSnapshotLog(log);
+    }
+
     public TClusterSnapshotJobsItem getInfo() {
         TClusterSnapshotJobsItem item = new TClusterSnapshotJobsItem();
         item.setSnapshot_name(getSnapshotName());
@@ -194,10 +190,6 @@ public class ClusterSnapshotJob implements Writable {
         item.setDetail_info(detailInfo);
         item.setError_message(errMsg);
         return item;
-    }
-
-    public ClusterSnapshotJob copyForPersist() {
-        return new ClusterSnapshotJob(this);
     }
 
     /**
@@ -217,7 +209,8 @@ public class ClusterSnapshotJob implements Writable {
                 "Successful capture consistent journal id, FE checkpoint journal Id: {}, StarMgr checkpoint journal Id: {}",
                 consistentIds.first, consistentIds.second);
 
-        persistStateChange(this, ClusterSnapshotJobState.SNAPSHOTING);
+        setState(ClusterSnapshotJobState.SNAPSHOTING);
+        logJob();
     }
 
     /**
@@ -256,7 +249,8 @@ public class ClusterSnapshotJob implements Writable {
             throw new StarRocksException("checkpoint journal id for starMgr is smaller than image version");
         }
         setClusterSnapshotInfo(feController.getClusterSnapshotInfo());
-        persistStateChange(this, ClusterSnapshotJobState.UPLOADING);
+        setState(ClusterSnapshotJobState.UPLOADING);
+        logJob();
         LOG.info("Finished create image for starMgr image, version: {}", starMgrCheckpointJournalId);
     }
 
@@ -273,7 +267,8 @@ public class ClusterSnapshotJob implements Writable {
         } catch (StarRocksException e) {
             throw new StarRocksException("upload image failed, err msg: " + e.getMessage());
         }
-        persistStateChange(this, ClusterSnapshotJobState.FINISHED);
+        setState(ClusterSnapshotJobState.FINISHED);
+        logJob();
         LOG.info(
                 "Finish upload image for Cluster Snapshot, FE checkpoint journal Id: {}, StarMgr checkpoint journal Id: {}",
                 getFeJournalId(), getStarMgrJournalId());
@@ -312,19 +307,11 @@ public class ClusterSnapshotJob implements Writable {
             }
         } catch (Exception e) {
             LOG.warn("failed to run cluster snapshot job {}", getId(), e);
+            setState(ClusterSnapshotJobState.ERROR);
             setErrMsg(e.getMessage());
-            persistStateChange(this, ClusterSnapshotJobState.ERROR);
+            logJob();
+            return;
         }
-    }
-
-    public static void persistStateChange(ClusterSnapshotJob job, ClusterSnapshotJobState newState) {
-        ClusterSnapshotJob persistJob = job.copyForPersist();
-        persistJob.setState(newState);
-        ClusterSnapshotLog log = new ClusterSnapshotLog();
-        log.setSnapshotJob(persistJob);
-        GlobalStateMgr.getCurrentState().getEditLog().logClusterSnapshotLog(log, wal -> {
-            job.setState(newState);
-        });
     }
 
 }

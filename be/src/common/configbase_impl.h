@@ -29,8 +29,8 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <set>
 
-#include "gutil/strings/ascii_ctype.h"
 #include "gutil/strings/join.h"
 #include "gutil/strings/split.h"
 #include "gutil/strings/strip.h"
@@ -64,10 +64,7 @@ public:
     const char* defval() const { return _defval; }
     bool valmutable() const { return _valmutable; }
 
-    // allow_fallback lets a field whose declaration opted into it replace a value it cannot accept
-    // with the value it was declared with, instead of failing. Only the config file is parsed that
-    // way; a value set at runtime is rejected so the caller sees the error.
-    bool set_value(std::string value, bool allow_fallback);
+    bool set_value(std::string value);
     bool rollback();
     virtual std::string value() const = 0;
 
@@ -78,7 +75,7 @@ public:
 protected:
     inline static std::map<std::string, Field*> _s_field_map{};
 
-    virtual bool parse_value(const std::string& value, bool allow_fallback) = 0;
+    virtual bool parse_value(const std::string& value) = 0;
 
     const char* _type;
     const char* _name;
@@ -100,9 +97,7 @@ public:
 
     std::string value() const override { return fmt::format("{}", *reinterpret_cast<T*>(_storage)); }
 
-    bool parse_value(const std::string& valstr, bool /*allow_fallback*/) override {
-        return strtox(valstr, *reinterpret_cast<T*>(_storage));
-    }
+    bool parse_value(const std::string& valstr) override { return strtox(valstr, *reinterpret_cast<T*>(_storage)); }
 };
 
 template <typename T>
@@ -117,7 +112,7 @@ public:
         return JoinMapped(v, as_str, ",");
     }
 
-    bool parse_value(const std::string& valstr, bool /*allow_fallback*/) override {
+    bool parse_value(const std::string& valstr) override {
         std::vector<T> tmp;
         std::vector<std::string> parts = strings::Split(valstr, ",");
         for (auto& part : parts) {
@@ -156,75 +151,41 @@ class EnumField : public FieldImpl<T> {
 
 public:
     EnumField(const char* type, const char* name, void* storage, const char* defval, bool valmutable,
-              std::string enums_, bool fallback_to_default)
-            : FieldImpl<T>(type, name, storage, defval, valmutable), _fallback_to_default(fallback_to_default) {
-        std::vector<std::string> parts = strings::Split(enums_, ",");
-        for (auto& part : parts) {
-            StripWhiteSpace(&part);
-            // An empty part declares the empty string as an accepted value, e.g. ",enabled".
-            auto [it, inserted] = _enums.emplace(normalize(part), part);
-            // A value repeated verbatim is harmless, but two values that only differ in case cannot
-            // both be matched, so the declaration is rejected outright.
-            if (!inserted && it->second != part) {
-                std::cerr << fmt::format("Config '{}' declares enum values '{}' and '{}' that differ only in case\n",
-                                         name, it->second, part);
-                std::abort();
+              std::string enums_)
+            : FieldImpl<T>(type, name, storage, defval, valmutable), raw_enum_values(std::move(enums_)) {}
+
+    bool parse_value(const std::string& valstr) override {
+        if (enums.empty()) {
+            std::vector<std::string> parts = strings::Split(raw_enum_values, ",");
+            for (auto& part : parts) {
+                StripWhiteSpace(&part);
+                if (!Base::parse_value(part)) {
+                    return false;
+                }
+                auto v = *reinterpret_cast<T*>(Field::_storage);
+                enums.emplace(std::move(v));
             }
         }
-    }
-
-    // Values are matched case-insensitively, but what gets written to the config variable is always
-    // the spelling declared in the CONF_*_enum macro, so consumers can keep comparing it exactly.
-    bool parse_value(const std::string& valstr, bool allow_fallback) override {
-        if (auto it = _enums.find(normalize(valstr)); it != _enums.end()) {
-            return Base::parse_value(it->second, allow_fallback);
-        }
-        // Reject before assigning, so a rejected value never lands in the config variable.
-        if (!allow_fallback || !_fallback_to_default) {
+        if (!Base::parse_value(valstr)) {
             return false;
         }
-        auto def = _enums.find(normalize(Field::_defval));
-        if (def == _enums.end()) {
-            // The declared default is not one of the declared values; there is nothing to fall back
-            // on, so report it the same way an undeclarable default is reported.
-            return false;
-        }
-        record_config_fallback({Field::_name, valstr, def->second, allowed_values()});
-        return Base::parse_value(def->second, allow_fallback);
+        auto value = *reinterpret_cast<T*>(Field::_storage);
+        return enums.find(value) != enums.end();
     }
 
 private:
-    std::string allowed_values() const {
-        std::vector<std::string> declared;
-        declared.reserve(_enums.size());
-        for (const auto& entry : _enums) {
-            declared.emplace_back(entry.second);
-        }
-        return JoinStrings(declared, ",");
-    }
-
-    static std::string normalize(const std::string& value) {
-        std::string normalized = value;
-        for (auto& c : normalized) {
-            c = ascii_tolower(c);
-        }
-        return normalized;
-    }
-
-    // Normalized spelling -> the spelling declared in the CONF_*_enum macro.
-    std::map<std::string, std::string> _enums;
-    // Whether a value from the config file that matches nothing falls back to the declared default.
-    bool _fallback_to_default;
+    std::set<T> enums;
+    std::string raw_enum_values;
 };
 
 #define DEFINE_FIELD(FIELD_TYPE, FIELD_NAME, FIELD_DEFAULT, VALMUTABLE, TYPE_NAME) \
     FIELD_TYPE FIELD_NAME;                                                         \
     static FieldImpl<FIELD_TYPE> field_##FIELD_NAME(TYPE_NAME, #FIELD_NAME, &FIELD_NAME, FIELD_DEFAULT, VALMUTABLE);
 
-#define DEFINE_ENUM_FIELD(FIELD_TYPE, FIELD_NAME, FIELD_DEFAULT, VALMUTABLE, TYPE_NAME, ENUM_SET, FALLBACK)         \
+#define DEFINE_ENUM_FIELD(FIELD_TYPE, FIELD_NAME, FIELD_DEFAULT, VALMUTABLE, TYPE_NAME, ENUM_SET)                   \
     FIELD_TYPE FIELD_NAME;                                                                                          \
     static EnumField<FIELD_TYPE> field_##FIELD_NAME(TYPE_NAME, #FIELD_NAME, &FIELD_NAME, FIELD_DEFAULT, VALMUTABLE, \
-                                                    ENUM_SET, FALLBACK);
+                                                    ENUM_SET);
 
 #define DEFINE_ALIAS(REAL_NAME, ALIAS_NAME) static Alias alias_##ALIAS_NAME(#ALIAS_NAME, &(field_##REAL_NAME));
 
@@ -248,8 +209,6 @@ private:
 #undef CONF_mInt64
 #undef CONF_mDouble
 #undef CONF_mString
-#undef CONF_mString_enum
-#undef CONF_mString_enum_or_default
 
 // NOTE: alias configs must be defined after the true config, otherwise there will be a compile error
 #define CONF_Alias(name, alias) DEFINE_ALIAS(name, alias)
@@ -260,7 +219,7 @@ private:
 #define CONF_Double(name, defaultstr) DEFINE_FIELD(double, name, defaultstr, false, "double")
 #define CONF_String(name, defaultstr) DEFINE_FIELD(std::string, name, defaultstr, false, "string")
 #define CONF_String_enum(name, defaultstr, enums) \
-    DEFINE_ENUM_FIELD(std::string, name, defaultstr, false, "string", enums, false)
+    DEFINE_ENUM_FIELD(std::string, name, defaultstr, false, "string", enums)
 #define CONF_Bools(name, defaultstr) DEFINE_FIELD(std::vector<bool>, name, defaultstr, false, "list<bool>")
 #define CONF_Int16s(name, defaultstr) DEFINE_FIELD(std::vector<int16_t>, name, defaultstr, false, "list<int16>")
 #define CONF_Int32s(name, defaultstr) DEFINE_FIELD(std::vector<int32_t>, name, defaultstr, false, "list<int32>")
@@ -273,9 +232,5 @@ private:
 #define CONF_mInt64(name, defaultstr) DEFINE_FIELD(int64_t, name, defaultstr, true, "int64")
 #define CONF_mDouble(name, defaultstr) DEFINE_FIELD(double, name, defaultstr, true, "double")
 #define CONF_mString(name, defaultstr) DEFINE_FIELD(MutableString, name, defaultstr, true, "string")
-#define CONF_mString_enum(name, defaultstr, enums) \
-    DEFINE_ENUM_FIELD(MutableString, name, defaultstr, true, "string", enums, false)
-#define CONF_mString_enum_or_default(name, defaultstr, enums) \
-    DEFINE_ENUM_FIELD(MutableString, name, defaultstr, true, "string", enums, true)
 
 } // namespace starrocks::config

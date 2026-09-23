@@ -1,7 +1,0 @@
-position: 20
-label: 'Load from Object Storage'
-collapsible: true
-collapsed: true
-link:
-  id: objectstorage
-  type: doc

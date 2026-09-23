@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <base/testutil/assert.h>
 #include <benchmark/benchmark.h>
+#include <testutil/assert.h>
 
 #include <memory>
 #include <random>
 
 #include "column/chunk.h"
 #include "column/column_helper.h"
-#include "column/segmented_chunk.h"
 #include "column/vectorized_fwd.h"
+#include "runtime/types.h"
+#include "storage/chunk_helper.h"
 #include "types/logical_type.h"
-#include "types/type_descriptor.h"
 
 namespace starrocks {
 

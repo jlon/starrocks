@@ -17,11 +17,11 @@
 #include <limits>
 
 #include "column/column_helper.h"
+#include "column/datum.h"
 #include "formats/parquet/predicate_filter_evaluator.h"
 #include "formats/parquet/scalar_column_reader.h"
-#include "storage_primitive/range.h"
-#include "types/datum.h"
-#include "types/type_descriptor.h"
+#include "runtime/types.h"
+#include "storage/range.h"
 
 namespace starrocks::parquet {
 
@@ -45,7 +45,7 @@ void IcebergRowLineageReader::set_need_parse_levels(bool need_parse_levels) {
     }
 }
 
-void IcebergRowLineageReader::collect_column_io_range(std::vector<SharedBufferedInputStream::IORange>* ranges,
+void IcebergRowLineageReader::collect_column_io_range(std::vector<io::SharedBufferedInputStream::IORange>* ranges,
                                                       int64_t* end_offset, ColumnIOTypeFlags types, bool active) {
     if (_delegate != nullptr) {
         _delegate->collect_column_io_range(ranges, end_offset, types, active);

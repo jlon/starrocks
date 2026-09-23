@@ -14,21 +14,19 @@
 
 #pragma once
 
-#include "base/types/decimal12.h"
-#include "base/types/int96.h"
-#include "base/types/uint24.h"
 #include "column/vectorized_fwd.h"
 #include "common/status.h"
-#include "types/decimalv2_value.h"
+#include "runtime/decimalv2_value.h"
+#include "storage/decimal12.h"
+#include "storage/uint24.h"
+#include "util/int96.h"
 
 namespace starrocks {
-class GeoColumn;
 class ColumnVisitorMutable {
 public:
     virtual ~ColumnVisitorMutable() = default;
 
     // The default implementation of `visit` will return `Status::NotSupported`
-    virtual Status visit(AdaptiveNullableColumn* column);
     virtual Status visit(NullableColumn* column);
     virtual Status visit(ConstColumn* column);
     virtual Status visit(ArrayColumn* column);
@@ -87,6 +85,5 @@ public:
     virtual Status visit(ObjectColumn<VariantRowValue>* column);
     virtual Status visit(ArrayViewColumn* column) { return Status::NotSupported("ArrayViewColumn is not supported"); }
     virtual Status visit(ColumnView* column) { return Status::NotSupported("ColumnView is not supported"); }
-    virtual Status visit(GeoColumn* column);
 };
 } // namespace starrocks

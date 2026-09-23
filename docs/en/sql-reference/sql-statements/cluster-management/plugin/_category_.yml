@@ -3,5 +3,4 @@ label: 'Plugin'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: plugin
+  type: generated-index

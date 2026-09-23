@@ -17,11 +17,10 @@
 #include <future>
 #include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 
-#include "column/global_dict/types_fwd_decl.h"
 #include "gutil/macros.h"
+#include "runtime/global_dict/types_fwd_decl.h"
 #include "storage/lake/persistent_index_sstable.h"
 #include "storage/lake/tablet_writer.h"
 #include "storage/sstable/table_builder.h"
@@ -55,12 +54,7 @@ public:
                                     const std::shared_ptr<FileSystem>& fs) {
         return Status::OK();
     }
-    // Only meaningful for writers that actually produce an SST; callers must gate the call on
-    // has_file_info(), which is false here, so the default is unreachable. Never return Status::OK()
-    // from a StatusOr: it is rewritten into an opaque InternalError instead of carrying a value.
-    virtual StatusOr<std::pair<FileInfo, PersistentIndexSstableRangePB>> flush_sst_writer() {
-        return Status::NotSupported("flush_sst_writer() called on a writer that produces no SST file");
-    }
+    virtual StatusOr<std::pair<FileInfo, PersistentIndexSstableRangePB>> flush_sst_writer() { return Status::OK(); }
     virtual bool has_file_info() const { return false; }
     // Rowids (within the just-flushed segment) that lost primary-key dedup and must be masked by a
     // delete vector at publish. Non-empty only for the unsort writer; the caller moves them out once
@@ -75,8 +69,8 @@ public:
 
 class PkTabletSSTWriter : public DefaultSSTWriter {
 public:
-    PkTabletSSTWriter(TabletSchemaCSPtr tablet_schema_ptr, TabletManager* tablet_mgr, int64_t tablet_id)
-            : _tablet_schema_ptr(std::move(tablet_schema_ptr)), _tablet_mgr(tablet_mgr), _tablet_id(tablet_id) {}
+    PkTabletSSTWriter(const TabletSchemaCSPtr& tablet_schema_ptr, TabletManager* tablet_mgr, int64_t tablet_id)
+            : _tablet_schema_ptr(tablet_schema_ptr), _tablet_mgr(tablet_mgr), _tablet_id(tablet_id) {}
     ~PkTabletSSTWriter() override = default;
     Status append_sst_record(const Chunk& data, const std::vector<uint64_t>* rssid_rowids = nullptr,
                              const std::vector<uint32_t>* column_indexes = nullptr) override;
@@ -90,7 +84,7 @@ protected:
     // index SST. On success returns a pointer to `data.num_rows()` contiguous key slices; the slices
     // are backed by `keys` and `owned_column`, both of which the caller must keep alive until the
     // slices are consumed.
-    StatusOr<const Slice*> encode_pk_keys(const Chunk& data, Buffer<Slice>* keys, MutableColumnPtr* owned_column);
+    StatusOr<const Slice*> encode_pk_keys(const Chunk& data, std::vector<Slice>* keys, MutableColumnPtr* owned_column);
 
     // An empty column in the encoded-PK (del-file binary) format, i.e. the same column type
     // encode_pk_keys fills, so an encoded key slice can be appended straight back as one del-file cell.

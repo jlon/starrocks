@@ -110,9 +110,6 @@ public class StatsConstants {
     public static final String SPM_BASELINE_TABLE_NAME = "spm_baselines";
     public static final String QUERY_HISTORY_TABLE_NAME = "query_history";
 
-    // Durable per-partition LAST_ACCESS_TIME table
-    public static final String PARTITION_ACCESS_TIME_TABLE_NAME = "partition_access_time";
-
     /**
      * Deprecated stats properties
      */
@@ -141,8 +138,7 @@ public class StatsConstants {
             EXTERNAL_FULL_STATISTICS_TABLE_NAME,
             MULTI_COLUMN_STATISTICS_TABLE_NAME,
             HISTOGRAM_STATISTICS_TABLE_NAME,
-            EXTERNAL_HISTOGRAM_STATISTICS_TABLE_NAME,
-            PARTITION_ACCESS_TIME_TABLE_NAME
+            EXTERNAL_HISTOGRAM_STATISTICS_TABLE_NAME
     );
 
     public enum AnalyzeType {

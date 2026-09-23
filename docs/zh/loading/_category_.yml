@@ -1,8 +1,0 @@
-position: 80
-label: 'Data Loading'
-key: 'root-loading'
-collapsible: true
-collapsed: true
-link:
-  id: loading
-  type: doc

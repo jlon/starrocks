@@ -85,6 +85,7 @@ public class ExtractRangePredicateFromScalarApplyRule extends TransformationRule
             return false;
         }
         Map.Entry<ColumnRefOperator, ScalarOperator> entry = projectOp.getColumnRefMap().entrySet().iterator().next();
+        ColumnRefOperator columRef = entry.getKey();
         ScalarOperator scalarOp = entry.getValue();
 
         LogicalFilterOperator filterOp = input.getOp().cast();

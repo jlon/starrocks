@@ -20,10 +20,9 @@
 #include <vector>
 
 #include "column/chunk.h"
-#include "column/chunk_factory.h"
 #include "column/fixed_length_column.h"
 #include "column/schema.h"
-#include "common/config_exec_fwd.h"
+#include "common/config.h"
 #include "storage/chunk_helper.h"
 
 namespace starrocks {
@@ -75,7 +74,7 @@ TEST_F(UniqueIteratorTest, single_int) {
         ChunkIteratorPtr iter = new_unique_iterator(sub);
         ASSERT_TRUE(iter->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
 
-        ChunkPtr chunk = ChunkFactory::new_chunk(iter->schema(), config::vector_chunk_size);
+        ChunkPtr chunk = ChunkHelper::new_chunk(iter->schema(), config::vector_chunk_size);
         Status st = iter->get_next(chunk.get());
         ASSERT_TRUE(st.is_end_of_file());
     }
@@ -85,7 +84,7 @@ TEST_F(UniqueIteratorTest, single_int) {
         ChunkIteratorPtr iter = new_unique_iterator(sub);
         ASSERT_TRUE(iter->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
 
-        ChunkPtr chunk = ChunkFactory::new_chunk(iter->schema(), config::vector_chunk_size);
+        ChunkPtr chunk = ChunkHelper::new_chunk(iter->schema(), config::vector_chunk_size);
         std::vector<int32_t> fetched;
         while (iter->get_next(chunk.get()).ok()) {
             auto c = const_cast<FixedLengthColumn<int32_t>*>(
@@ -106,7 +105,7 @@ TEST_F(UniqueIteratorTest, single_int) {
         ChunkIteratorPtr iter = new_unique_iterator(sub);
         ASSERT_TRUE(iter->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
 
-        ChunkPtr chunk = ChunkFactory::new_chunk(iter->schema(), config::vector_chunk_size);
+        ChunkPtr chunk = ChunkHelper::new_chunk(iter->schema(), config::vector_chunk_size);
         std::vector<int32_t> fetched;
         while (iter->get_next(chunk.get()).ok()) {
             auto c = const_cast<FixedLengthColumn<int32_t>*>(
@@ -127,7 +126,7 @@ TEST_F(UniqueIteratorTest, single_int) {
         ChunkIteratorPtr iter = new_unique_iterator(sub);
         ASSERT_TRUE(iter->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
 
-        ChunkPtr chunk = ChunkFactory::new_chunk(iter->schema(), config::vector_chunk_size);
+        ChunkPtr chunk = ChunkHelper::new_chunk(iter->schema(), config::vector_chunk_size);
         std::vector<int32_t> fetched;
         while (iter->get_next(chunk.get()).ok()) {
             auto c = const_cast<FixedLengthColumn<int32_t>*>(
@@ -148,7 +147,7 @@ TEST_F(UniqueIteratorTest, single_int) {
         ChunkIteratorPtr iter = new_unique_iterator(sub);
         ASSERT_TRUE(iter->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
 
-        ChunkPtr chunk = ChunkFactory::new_chunk(iter->schema(), config::vector_chunk_size);
+        ChunkPtr chunk = ChunkHelper::new_chunk(iter->schema(), config::vector_chunk_size);
         std::vector<int32_t> fetched;
         while (iter->get_next(chunk.get()).ok()) {
             auto c = const_cast<FixedLengthColumn<int32_t>*>(
@@ -169,7 +168,7 @@ TEST_F(UniqueIteratorTest, single_int) {
         ChunkIteratorPtr iter = new_unique_iterator(sub);
         ASSERT_TRUE(iter->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
 
-        ChunkPtr chunk = ChunkFactory::new_chunk(iter->schema(), config::vector_chunk_size);
+        ChunkPtr chunk = ChunkHelper::new_chunk(iter->schema(), config::vector_chunk_size);
         std::vector<int32_t> fetched;
         while (iter->get_next(chunk.get()).ok()) {
             auto c = const_cast<FixedLengthColumn<int32_t>*>(
@@ -190,7 +189,7 @@ TEST_F(UniqueIteratorTest, single_int) {
         ChunkIteratorPtr iter = new_unique_iterator(sub);
         ASSERT_TRUE(iter->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
 
-        ChunkPtr chunk = ChunkFactory::new_chunk(iter->schema(), config::vector_chunk_size);
+        ChunkPtr chunk = ChunkHelper::new_chunk(iter->schema(), config::vector_chunk_size);
         std::vector<int32_t> fetched;
         while (iter->get_next(chunk.get()).ok()) {
             auto c = const_cast<FixedLengthColumn<int32_t>*>(

@@ -22,28 +22,20 @@ import com.staros.proto.StarStatus;
 import com.staros.proto.StatusCode;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.MaterializedIndex;
-import com.starrocks.catalog.MvId;
 import com.starrocks.catalog.OlapTable;
-import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PhysicalPartition;
-import com.starrocks.catalog.Tablet;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ExceptionChecker;
 import com.starrocks.common.MetaNotFoundException;
-import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.common.util.ListComparator;
 import com.starrocks.common.util.PropertyAnalyzer;
 import com.starrocks.common.util.concurrent.MarkedCountDownLatch;
 import com.starrocks.lake.LakeTable;
 import com.starrocks.lake.StarOSAgent;
-import com.starrocks.lake.Utils;
-import com.starrocks.mv.MVRepairHandler;
-import com.starrocks.proto.TxnInfoPB;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.DDLStmtExecutor;
 import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.server.LocalMetastore;
 import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.ast.AlterTableStmt;
@@ -68,7 +60,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -142,179 +133,6 @@ public class LakeTableAlterMetaJobTest {
     }
 
     @Test
-    public void testForceCancelAtFinishedRewriting() throws Exception {
-        // Phase 2: CANCEL ALTER TABLE ... FORCE must bypass the FINISHED_REWRITING
-        // guard. Lake AlterMeta has no shadow tablets to clean up — pure state
-        // transition + persisted edit log.
-        //
-        // Stub the no-op publish RPC so this unit test does not need a live
-        // BE. Production force-cancel sends publish_version(no_op=true) to
-        // advance the partition version chain past the cancelled alter; the
-        // BE-side short-circuit behaviour is exercised by integration tests.
-        new MockUp<LakeTableAlterMetaJobBase>() {
-            @Mock
-            public boolean lakePublishVersionWithSkip(String reason) {
-                return true;
-            }
-        };
-        Assertions.assertEquals(AlterJobV2.JobState.PENDING, job.getJobState());
-        job.runPendingJob();
-        job.runRunningJob();
-        Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, job.getJobState());
-
-        // Non-force cancel is a no-op in FINISHED_REWRITING (existing behavior).
-        Assertions.assertFalse(job.cancel("non-force-cancel"));
-        Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, job.getJobState());
-        Assertions.assertFalse(job.isForceSkippedAtCommitted());
-
-        // Capture each partition's commitVersion as (VisibleVersion + 1).
-        Map<Long, Long> expectedCommitVersion = new HashMap<>();
-        for (PhysicalPartition pp : table.getPhysicalPartitions()) {
-            expectedCommitVersion.put(pp.getId(), pp.getVisibleVersion() + 1);
-        }
-
-        // Force cancel succeeds; catalog reverts so the alter property does NOT
-        // take effect (operator opted-in to discard the half-applied change).
-        Assertions.assertTrue(job.cancel("force-cancel-from-stuck-publish", /*force=*/ true));
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, job.getJobState());
-        Assertions.assertTrue(job.isForceSkippedAtCommitted(),
-                "forceSkippedAtCommitted must record the force-cancel for audit");
-        Assertions.assertEquals(OlapTable.OlapTableState.NORMAL, table.getState());
-
-        // copyForPersist must propagate the marker so the edit log records it.
-        AlterJobV2 persistCopy = job.copyForPersist();
-        Assertions.assertTrue(persistCopy.isForceSkippedAtCommitted(),
-                "copyForPersist must propagate forceSkippedAtCommitted");
-
-        // Replay regression: simulate FE recovering from a pre-cancel image
-        // by replaying the persisted CANCELLED entry onto a SEPARATE in-memory
-        // job that still looks pre-cancel (state=FINISHED_REWRITING, marker
-        // cleared, VisibleVersion reset to commitVersion-1). The copy-block in
-        // replay() must propagate forceSkippedAtCommitted from the persisted
-        // entry onto `this` before the CANCELLED branch reads it — otherwise
-        // the version bump is silently skipped and FE stays stuck at
-        // commitVersion-1 against BE metadata already advanced by the no-op
-        // publish. (staleInMemory must NOT be the same object as persistCopy,
-        // else replay's `this != other` copy-block is skipped.)
-        LakeTableAlterMetaJob staleInMemory = (LakeTableAlterMetaJob) job.copyForPersist();
-        staleInMemory.forceSkippedAtCommitted = false;
-        staleInMemory.setJobState(AlterJobV2.JobState.FINISHED_REWRITING);
-        for (PhysicalPartition pp : table.getPhysicalPartitions()) {
-            pp.setVisibleVersion(expectedCommitVersion.get(pp.getId()) - 1, 0);
-        }
-        staleInMemory.replay(persistCopy);
-        Assertions.assertTrue(staleInMemory.isForceSkippedAtCommitted(),
-                "replay must copy forceSkippedAtCommitted from the persisted entry");
-        for (PhysicalPartition pp : table.getPhysicalPartitions()) {
-            Assertions.assertEquals(expectedCommitVersion.get(pp.getId()).longValue(),
-                    pp.getVisibleVersion(),
-                    "replay must bump VisibleVersion to commitVersion when forceSkippedAtCommitted=true");
-        }
-    }
-
-    @Test
-    public void testLakePublishVersionWithSkipSingleDispatch() throws Exception {
-        // Current (pre-alter) format is per-tablet (file_bundling=false), so the
-        // no-op publish must use the per-tablet (non-aggregate) publish_version
-        // path — dispatch keys off the table's CURRENT format, not the alter's
-        // target.
-        LakeTable single = createTable(connectContext,
-                "CREATE TABLE t_single(c0 INT) PRIMARY KEY(c0) DISTRIBUTED BY HASH(c0) BUCKETS 1 "
-                        + "PROPERTIES('enable_persistent_index'='true', 'file_bundling'='false')");
-        LakeTableAlterMetaJob job = new LakeTableAlterMetaJob(GlobalStateMgr.getCurrentState().getNextId(),
-                db.getId(), single.getId(), single.getName(), 60 * 1000, TTabletMetaType.ENABLE_PERSISTENT_INDEX,
-                true, "CLOUD_NATIVE");
-        runForceCancelNoOpPublishBody(job, /*expectAggregate=*/ false);
-    }
-
-    @Test
-    public void testLakePublishVersionWithSkipAggregateDispatch() throws Exception {
-        // Current (pre-alter) format is bundled (file_bundling=true), so the
-        // no-op publish must use the aggregate publish_version path (BE expects
-        // one bundle file per partition) — again keyed off the table's CURRENT
-        // format.
-        LakeTable bundled = createTable(connectContext,
-                "CREATE TABLE t_bundled(c0 INT) PRIMARY KEY(c0) DISTRIBUTED BY HASH(c0) BUCKETS 1 "
-                        + "PROPERTIES('enable_persistent_index'='true', 'file_bundling'='true')");
-        LakeTableAlterMetaJob job = new LakeTableAlterMetaJob(GlobalStateMgr.getCurrentState().getNextId(),
-                db.getId(), bundled.getId(), bundled.getName(), 60 * 1000, TTabletMetaType.ENABLE_PERSISTENT_INDEX,
-                true, "CLOUD_NATIVE");
-        runForceCancelNoOpPublishBody(job, /*expectAggregate=*/ true);
-    }
-
-    @Test
-    public void testForceCancelFileBundlingAlterDoesNotSetMetadataSwitchVersion() throws Exception {
-        // Regression for the leader/replay divergence: force-cancelling a
-        // file_bundling alter must NOT record a metadataSwitchVersion. The alter
-        // is discarded (no-op publish writes V-1 content as V), so no format
-        // switch happened at commitVersion; recording one would diverge from the
-        // replay path (which never sets it) and needlessly pin vacuum's retain
-        // version.
-        LakeTable bundled = createTable(connectContext,
-                "CREATE TABLE t_switch(c0 INT) PRIMARY KEY(c0) DISTRIBUTED BY HASH(c0) BUCKETS 1 "
-                        + "PROPERTIES('enable_persistent_index'='true', 'file_bundling'='false')");
-        // ENABLE_FILE_BUNDLING alter (enable): updateVisibleVersion's old code
-        // would have set metadataSwitchVersion for exactly this metaType.
-        LakeTableAlterMetaJob job = new LakeTableAlterMetaJob(GlobalStateMgr.getCurrentState().getNextId(),
-                db.getId(), bundled.getId(), bundled.getName(), 60 * 1000, TTabletMetaType.ENABLE_FILE_BUNDLING,
-                true, "CLOUD_NATIVE", /*enableFileBundling=*/ true, "DEFAULT");
-        new MockUp<Utils>() {
-            @Mock
-            public void publishVersion(List<Tablet> tablets, TxnInfoPB txnInfo, long baseVersion,
-                                       long newVersion, com.starrocks.warehouse.cngroup.ComputeResource computeResource,
-                                       boolean useAggregatePublish) {
-            }
-        };
-        job.runPendingJob();
-        job.runRunningJob();
-        Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, job.getJobState());
-
-        Assertions.assertTrue(job.cancel("force-cancel-switch-version", /*force=*/ true));
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, job.getJobState());
-        for (PhysicalPartition pp : bundled.getPhysicalPartitions()) {
-            Assertions.assertEquals(0L, pp.getMetadataSwitchVersion(),
-                    "force-cancel must not record a metadataSwitchVersion");
-        }
-    }
-
-    // Runs the REAL lakePublishVersionWithSkip body (the other force-cancel
-    // tests stub it out) by intercepting Utils.publishVersion, and asserts the
-    // helper builds a TxnInfoPB with noOpPublish=true and dispatches via the
-    // expected single-vs-aggregate path so BE's transactions.cpp short-circuit
-    // fires and writes V-1 content as V.
-    private void runForceCancelNoOpPublishBody(LakeTableAlterMetaJob localJob, boolean expectAggregate)
-            throws Exception {
-        java.util.concurrent.atomic.AtomicInteger publishCalls = new java.util.concurrent.atomic.AtomicInteger();
-        java.util.concurrent.atomic.AtomicBoolean lastNoOp = new java.util.concurrent.atomic.AtomicBoolean();
-        java.util.concurrent.atomic.AtomicBoolean lastAggregate = new java.util.concurrent.atomic.AtomicBoolean();
-        new MockUp<Utils>() {
-            @Mock
-            public void publishVersion(List<Tablet> tablets, TxnInfoPB txnInfo, long baseVersion,
-                                       long newVersion, com.starrocks.warehouse.cngroup.ComputeResource computeResource,
-                                       boolean useAggregatePublish) {
-                publishCalls.incrementAndGet();
-                lastNoOp.set(txnInfo.noOpPublish);
-                lastAggregate.set(useAggregatePublish);
-            }
-        };
-
-        localJob.runPendingJob();
-        localJob.runRunningJob();
-        Assertions.assertEquals(AlterJobV2.JobState.FINISHED_REWRITING, localJob.getJobState());
-
-        Assertions.assertTrue(localJob.cancel("force-cancel-meta-publish-body", /*force=*/ true));
-        Assertions.assertEquals(AlterJobV2.JobState.CANCELLED, localJob.getJobState());
-        Assertions.assertTrue(publishCalls.get() > 0,
-                "lakePublishVersionWithSkip must invoke Utils.publishVersion at least once");
-        Assertions.assertTrue(lastNoOp.get(),
-                "TxnInfoPB.noOpPublish must be set so BE short-circuits the txn-log apply");
-        Assertions.assertEquals(expectAggregate, lastAggregate.get(),
-                "no-op publish must follow the expected single-vs-aggregate dispatch");
-        Assertions.assertTrue(localJob.isForceSkippedAtCommitted(),
-                "marker must be set after the no-op publish actually ran");
-    }
-
-    @Test
     public void testJobStateEnableFileBundling() throws Exception {
         LakeTable table1 = createTable(connectContext,
                     "CREATE TABLE t1(c0 INT) PRIMARY KEY(c0) DISTRIBUTED BY HASH(c0) BUCKETS 1 " +
@@ -383,10 +201,7 @@ public class LakeTableAlterMetaJobTest {
     public void testSetDisblePersistentIndex() throws Exception {
         LakeTable table2 = createTable(connectContext,
                     "CREATE TABLE t1(c0 INT) PRIMARY KEY(c0) DISTRIBUTED BY HASH(c0) BUCKETS 1 " +
-                                "PROPERTIES('enable_persistent_index'='true')");
-        // Simulate a legacy LOCAL persistent index table: creating one with LOCAL is no longer
-        // allowed, but existing tables must still be handled by the alter-meta job path.
-        table2.setPersistentIndexType(TPersistentIndexType.LOCAL);
+                                "PROPERTIES('enable_persistent_index'='true', 'persistent_index_type'='LOCAL')");
         LakeTableAlterMetaJob job2 = new LakeTableAlterMetaJob(GlobalStateMgr.getCurrentState().getNextId(),
                     db.getId(), table2.getId(), table2.getName(), 60 * 1000,
                     TTabletMetaType.ENABLE_PERSISTENT_INDEX, false, "LOCAL");
@@ -574,9 +389,7 @@ public class LakeTableAlterMetaJobTest {
     public void testModifyPropertyWithIndexType() throws Exception {
         LakeTable table2 = createTable(connectContext,
                     "CREATE TABLE t11(c0 INT) PRIMARY KEY(c0) DISTRIBUTED BY HASH(c0) BUCKETS 1 " +
-                                "PROPERTIES('enable_persistent_index'='true')");
-        // Simulate a legacy LOCAL persistent index table; migrating it to CLOUD_NATIVE must succeed.
-        table2.setPersistentIndexType(TPersistentIndexType.LOCAL);
+                                "PROPERTIES('enable_persistent_index'='true', 'persistent_index_type'='LOCAL')");
         Map<String, String> properties = new HashMap<>();
         properties.put("persistent_index_type", "CLOUD_NATIVE");
         ModifyTablePropertiesClause modify = new ModifyTablePropertiesClause(properties);
@@ -591,43 +404,16 @@ public class LakeTableAlterMetaJobTest {
     public void testModifyPropertyWithIndexTypeFailure() throws Exception {
         LakeTable table2 = createTable(connectContext,
                     "CREATE TABLE t11(c0 INT) PRIMARY KEY(c0) DISTRIBUTED BY HASH(c0) BUCKETS 1 " +
-                                "PROPERTIES('enable_persistent_index'='true')");
+                                "PROPERTIES('enable_persistent_index'='true', 'persistent_index_type'='LOCAL')");
         Map<String, String> properties = new HashMap<>();
         properties.put("enable_persistent_index", "false");
         properties.put("persistent_index_type", "CLOUD_NATIVE");
         ModifyTablePropertiesClause modify = new ModifyTablePropertiesClause(properties);
         SchemaChangeHandler schemaChangeHandler = new SchemaChangeHandler();
-        // disabling the persistent index is no longer supported for shared-data primary key tables
+        // should throw exception
         ExceptionChecker.expectThrows(DdlException.class,
                 () -> schemaChangeHandler.createAlterMetaJob(modify, db, table2));
 
-    }
-
-    @Test
-    public void testModifyEnablePersistentIndexOnNonPkTableNoop() throws Exception {
-        LakeTable dupTable = createTable(connectContext,
-                    "CREATE TABLE t_dup(c0 INT, c1 INT) DUPLICATE KEY(c0) DISTRIBUTED BY HASH(c0) BUCKETS 1");
-        Map<String, String> properties = new HashMap<>();
-        properties.put("enable_persistent_index", "false");
-        ModifyTablePropertiesClause modify = new ModifyTablePropertiesClause(properties);
-        SchemaChangeHandler schemaChangeHandler = new SchemaChangeHandler();
-        // enable_persistent_index is a no-op for non-primary-key tables and must not be rejected by the
-        // shared-data primary key restriction.
-        AlterJobV2 job2 = schemaChangeHandler.createAlterMetaJob(modify, db, dupTable);
-        Assertions.assertNull(job2);
-
-        db.dropTable(dupTable.getName());
-    }
-
-    @Test
-    public void testModifyPropertyToLocalIndexRejected() {
-        SchemaChangeHandler schemaChangeHandler = new SchemaChangeHandler();
-
-        // switching persistent_index_type to LOCAL is deprecated for shared-data primary key tables
-        Map<String, String> typeProps = new HashMap<>();
-        typeProps.put("persistent_index_type", "LOCAL");
-        ExceptionChecker.expectThrowsWithMsg(DdlException.class, "Only cloud native persistent index",
-                () -> schemaChangeHandler.createAlterMetaJob(new ModifyTablePropertiesClause(typeProps), db, table));
     }
 
     @Test
@@ -751,7 +537,7 @@ public class LakeTableAlterMetaJobTest {
     @Test
     public void testModifyPropertyCompactionStrategy() throws Exception {
         try {
-            createTable(connectContext,
+            LakeTable nonPKTable = createTable(connectContext,
                         "CREATE TABLE non_pk(c0 INT) DUPLICATE KEY(c0) DISTRIBUTED BY HASH(c0) BUCKETS 1 " +
                         "PROPERTIES('compaction_strategy'='real_time')");
         } catch (Exception e) {
@@ -759,7 +545,7 @@ public class LakeTableAlterMetaJobTest {
         }
 
         try {
-            createTable(connectContext,
+            LakeTable nonPKTable = createTable(connectContext,
                         "CREATE TABLE non_pk(c0 INT) DUPLICATE KEY(c0) DISTRIBUTED BY HASH(c0) BUCKETS 1");
             String alterStmtStr = "alter table test.non_pk set ('compaction_strategy'='real_time')";
             AlterTableStmt alterTableStmt = (AlterTableStmt) UtFrameUtils.parseStmtWithNewParser(alterStmtStr, connectContext);
@@ -851,149 +637,5 @@ public class LakeTableAlterMetaJobTest {
         combined.add(row);
         combined.sort(new ListComparator<>(0, 1, 2, 3, 4, 5));
         Assertions.assertEquals(2, combined.size());
-    }
-
-    /**
-     * Regression: the MV version-map repair at the tail of this job family must actually run.
-     *
-     * Every LakeTableAlterMetaJobBase job advances the visible version and visible version time of every
-     * physical partition without rewriting a single row. MV staleness detection
-     * (OlapPartitionTraits#isBaseTableChanged) keys off exactly those two fields, so a dependent
-     * materialized view would re-materialize its entire history after a metadata-only ALTER. The
-     * compensation is handleMVRepair -> MVMetaVersionRepairer, which advances the MV watermark in place.
-     *
-     * commitVersionMap is keyed by PHYSICAL partition id, while MaterializedView.BasePartitionInfo is keyed
-     * on the LOGICAL partition (name + id). Feeding the physical id straight to OlapTable#getPartition(),
-     * which only resolves logical ids, returned null for every entry, so the repair list came out empty and
-     * the compensation silently never ran.
-     */
-    @Test
-    public void testMVVersionMapRepairUsesLogicalPartitionId() throws Exception {
-        // Without a dependent MV, handleMVRepair returns before building the repair list.
-        table.addRelatedMaterializedView(new MvId(db.getId(), GlobalStateMgr.getCurrentState().getNextId()));
-
-        Partition partition = table.getPartitions().iterator().next();
-        PhysicalPartition physicalPartition = partition.getDefaultPhysicalPartition();
-        // Premise: the logical partition and its physical partition carry DIFFERENT ids. If that ever stops
-        // holding, the assertions below would pass for the wrong reason.
-        Assertions.assertNotEquals(partition.getId(), physicalPartition.getId());
-        long versionBefore = physicalPartition.getVisibleVersion();
-        long versionTimeBefore = physicalPartition.getVisibleVersionTime();
-
-        List<MVRepairHandler.PartitionRepairInfo> captured = new ArrayList<>();
-        new MockUp<LocalMetastore>() {
-            @Mock
-            public void handleMVRepair(Database database, com.starrocks.catalog.Table changedTable,
-                                       List<MVRepairHandler.PartitionRepairInfo> partitionRepairInfos) {
-                captured.addAll(partitionRepairInfos);
-            }
-        };
-
-        job.runPendingJob();
-        job.runRunningJob();
-        while (job.getJobState() != AlterJobV2.JobState.FINISHED) {
-            job.runFinishedRewritingJob();
-            Thread.sleep(100);
-        }
-
-        // The metadata-only job advanced the partition version ...
-        Assertions.assertEquals(versionBefore + 1, physicalPartition.getVisibleVersion());
-        // ... so the MV watermark repair must have been handed exactly one entry, carrying the LOGICAL
-        // partition id and name, and the version the MV will read back.
-        Assertions.assertEquals(1, captured.size());
-        MVRepairHandler.PartitionRepairInfo repairInfo = captured.get(0);
-        Assertions.assertEquals(partition.getId(), repairInfo.getPartitionId());
-        Assertions.assertEquals(partition.getName(), repairInfo.getPartitionName());
-        Assertions.assertEquals(versionBefore, repairInfo.getLastVersion());
-        // The pre-alter visible version time has to be reported, otherwise MVMetaVersionRepairer cannot
-        // tell an up-to-date MV from one that is already stale through isBaseTableChanged's time disjunct.
-        Assertions.assertEquals(versionTimeBefore, repairInfo.getLastVersionTime());
-        Assertions.assertEquals(versionBefore + 1, repairInfo.getNewVersion());
-        Assertions.assertEquals(partition.getLatestPhysicalPartition().getVisibleVersion(),
-                repairInfo.getNewVersion());
-    }
-
-    /**
-     * A logical partition with several physical sub-partitions (the shape automatic bucketing produces)
-     * involves TWO different physical partitions, and the repair owes each of them something different:
-     *
-     *   * the new watermark must be the version the MV reads back, i.e. the version of whichever
-     *     sub-partition getLatestPhysicalPartition() resolves to AFTER updateVisibleVersion() gave every
-     *     sub-partition the same version time and thereby turned that call into a tie;
-     *   * the validation values handed to MVMetaVersionRepairer must describe the sub-partition that
-     *     decided staleness BEFORE the alter, because that is the one the MV's recorded watermark was
-     *     compared against. Validating against the post-alter winner accepts an MV that was already stale
-     *     on the pre-alter latest sub-partition and silently erases that change.
-     *
-     * With a single physical partition the two coincide, so only this shape can tell them apart.
-     */
-    @Test
-    public void testMVRepairValidatesPreAlterLatestAndRecordsPostAlterWinner() throws Exception {
-        // Sub-partitions can only be added to a randomly distributed table
-        // (LocalMetastore#addSubPartitions), which is exactly the shape the review finding named.
-        LakeTable multiSubTable = createTable(connectContext,
-                "CREATE TABLE t_multi_sub(c0 INT) DUPLICATE KEY(c0) DISTRIBUTED BY RANDOM BUCKETS 1");
-        multiSubTable.addRelatedMaterializedView(
-                new MvId(db.getId(), GlobalStateMgr.getCurrentState().getNextId()));
-
-        Partition partition = multiSubTable.getPartitions().iterator().next();
-        GlobalStateMgr.getCurrentState().getLocalMetastore()
-                .addSubPartitions(db, multiSubTable, partition, 1, WarehouseManager.DEFAULT_RESOURCE);
-        Assertions.assertEquals(2, partition.getSubPartitions().size());
-
-        // Distinct versions AND distinct version times, so reading either value off the wrong
-        // sub-partition is observable.
-        List<PhysicalPartition> subPartitions = new ArrayList<>(partition.getSubPartitions());
-        subPartitions.sort(Comparator.comparingLong(PhysicalPartition::getId));
-        subPartitions.get(0).updateVisibleVersion(5L, 100L);
-        subPartitions.get(1).updateVisibleVersion(7L, 200L);
-
-        // Pre-alter, staleness is decided by the sub-partition with the newest version time.
-        PhysicalPartition preAlterLatest = partition.getLatestPhysicalPartition();
-        Assertions.assertEquals(subPartitions.get(1).getId(), preAlterLatest.getId());
-        long preAlterLatestVersion = preAlterLatest.getVisibleVersion();
-        long preAlterLatestVersionTime = preAlterLatest.getVisibleVersionTime();
-
-        LakeTableAlterMetaJob multiJob = new LakeTableAlterMetaJob(
-                GlobalStateMgr.getCurrentState().getNextId(), db.getId(), multiSubTable.getId(),
-                multiSubTable.getName(), 60 * 1000, TTabletMetaType.ENABLE_PERSISTENT_INDEX, true,
-                "CLOUD_NATIVE");
-        Map<Long, Long> commitVersions = new HashMap<>();
-        for (PhysicalPartition subPartition : subPartitions) {
-            commitVersions.put(subPartition.getId(), subPartition.getVisibleVersion() + 1);
-            MaterializedIndex baseIndex = subPartition.getLatestBaseIndex();
-            multiJob.addDirtyPartitionIndex(subPartition.getId(), baseIndex.getId(), baseIndex);
-        }
-        Deencapsulation.setField(multiJob, "commitVersionMap", commitVersions);
-        Deencapsulation.setField(multiJob, "finishedTimeMs", 900L);
-
-        List<MVRepairHandler.PartitionRepairInfo> captured = new ArrayList<>();
-        new MockUp<LocalMetastore>() {
-            @Mock
-            public void handleMVRepair(Database database, com.starrocks.catalog.Table changedTable,
-                                       List<MVRepairHandler.PartitionRepairInfo> partitionRepairInfos) {
-                captured.addAll(partitionRepairInfos);
-            }
-        };
-
-        multiJob.capturePreAlterLatestPartitions(multiSubTable);
-        multiJob.updateVisibleVersion(multiSubTable);
-        // Every sub-partition now carries finishedTimeMs, so this resolves a tie.
-        PhysicalPartition postAlterLatest = partition.getLatestPhysicalPartition();
-        Assertions.assertEquals(900L, postAlterLatest.getVisibleVersionTime());
-        multiJob.handleMVRepair(db, multiSubTable);
-
-        // One slot per logical partition.
-        Assertions.assertEquals(1, captured.size());
-        MVRepairHandler.PartitionRepairInfo repairInfo = captured.get(0);
-        Assertions.assertEquals(partition.getId(), repairInfo.getPartitionId());
-        Assertions.assertEquals(partition.getName(), repairInfo.getPartitionName());
-        // Validation describes the PRE-alter latest sub-partition ...
-        Assertions.assertEquals(preAlterLatestVersion, repairInfo.getLastVersion());
-        Assertions.assertEquals(preAlterLatestVersionTime, repairInfo.getLastVersionTime());
-        // ... while the watermark carries the version the reader compares against afterwards.
-        Assertions.assertEquals(commitVersions.get(postAlterLatest.getId()).longValue(),
-                repairInfo.getNewVersion());
-        Assertions.assertEquals(900L, repairInfo.getNewVersionTime());
     }
 }

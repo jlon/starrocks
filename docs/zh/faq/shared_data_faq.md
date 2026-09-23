@@ -1,5 +1,4 @@
 ---
-sidebar_position: 20
 displayed_sidebar: docs
 description: "存算分离集群常见问题解答。"
 ---

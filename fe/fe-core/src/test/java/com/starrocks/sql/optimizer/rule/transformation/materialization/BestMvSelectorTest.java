@@ -449,7 +449,7 @@ public class BestMvSelectorTest extends MVTestBase {
         
         // Should handle exception gracefully and still return a result
         Assertions.assertDoesNotThrow(() -> {
-            selector.selectBest(true);
+            List<OptExpression> result = selector.selectBest(true);
             // Result might be empty or contain the MV expression depending on error handling
         });
     }

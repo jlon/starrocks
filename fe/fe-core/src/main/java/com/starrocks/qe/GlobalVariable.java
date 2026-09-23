@@ -85,9 +85,6 @@ public final class GlobalVariable {
     public static final String ENABLE_REDUCE_CAST_VARCHAR_EXPR_SYNC_TYPE =
             "enable_reduce_cast_varchar_expr_sync_type";
 
-    // ETL mode variables
-    public static final String ETL_EXEC_ENABLE_QUEUE_ALL_WORKLOADS = "etl_exec_enable_queue_all_workloads";
-
     // cngroup
     public static final String CNGROUP_RESOURCE_USAGE_FRESH_RATIO = "cngroup_resource_usage_fresh_ratio";
     public static final String CNGROUP_LOW_WATERMARK_RUNNING_QUERY_COUNT  = "cngroup_low_watermark_running_query_count";
@@ -253,9 +250,6 @@ public final class GlobalVariable {
 
     @VariableMgr.VarAttr(name = ENABLE_REDUCE_CAST_VARCHAR_EXPR_SYNC_TYPE, flag = VariableMgr.GLOBAL)
     private static boolean enableReduceCastVarcharExprSyncType = false;
-
-    @VariableMgr.VarAttr(name = ETL_EXEC_ENABLE_QUEUE_ALL_WORKLOADS, flag = VariableMgr.GLOBAL)
-    public static boolean enableEtlExecQueueAllWorkloads = true;
     @VariableMgr.VarAttr(name = CNGROUP_RESOURCE_USAGE_FRESH_RATIO)
     private static double cngroupResourceUsageFreshRatio = 0.5;
 
@@ -445,10 +439,6 @@ public final class GlobalVariable {
             return 64;
         }
         return maxUnknownStringMetaLength;
-    }
-
-    public static boolean isEnableEtlExecQueueAllWorkloads() {
-        return enableEtlExecQueueAllWorkloads;
     }
 
     public static void setCngroupResourceUsageFreshRatio(double value) {

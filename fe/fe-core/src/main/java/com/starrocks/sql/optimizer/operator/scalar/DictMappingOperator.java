@@ -15,7 +15,6 @@
 
 package com.starrocks.sql.optimizer.operator.scalar;
 
-import com.google.common.base.Preconditions;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.type.Type;
@@ -67,18 +66,16 @@ public class DictMappingOperator extends ScalarOperator {
 
     @Override
     public List<ScalarOperator> getChildren() {
-        return stringProvideOperator == null ? Collections.emptyList() : List.of(stringProvideOperator);
+        return Collections.emptyList();
     }
 
     @Override
     public ScalarOperator getChild(int index) {
-        return index == 0 && stringProvideOperator != null ? stringProvideOperator : null;
+        return null;
     }
 
     @Override
     public void setChild(int index, ScalarOperator child) {
-        Preconditions.checkState(index == 0);
-        stringProvideOperator = child;
     }
 
     @Override
@@ -125,13 +122,7 @@ public class DictMappingOperator extends ScalarOperator {
 
     @Override
     public ColumnRefSet getUsedColumns() {
-        if (stringProvideOperator != null) {
-            // When stringProviderOperator is set, dictColumn and originScalaOperator are meta columns, only columns
-            // in stringProviderOperator are used in eval.
-            return stringProvideOperator.getUsedColumns();
-        } else {
-            return dictColumn.getUsedColumns();
-        }
+        return dictColumn.getUsedColumns();
     }
 
     @Override

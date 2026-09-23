@@ -166,7 +166,6 @@ public class HdfsScanNode extends ScanNode {
             HdfsScanNode.appendDataCacheOptionsInExplain(output, prefix, dataCacheOptions);
 
             output.append(explainColumnDict(prefix));
-            output.append(explainColumnAccessPath(prefix));
 
             for (SlotDescriptor slotDescriptor : desc.getSlots()) {
                 Type type = slotDescriptor.getOriginType();
@@ -191,7 +190,6 @@ public class HdfsScanNode extends ScanNode {
         if (hiveTable != null) {
             msg.hdfs_scan_node.setHive_column_names(hiveTable.getDataColumnNames());
             msg.hdfs_scan_node.setTable_name(hiveTable.getName());
-            msg.hdfs_scan_node.setDatabase_name(hiveTable.getCatalogDBName());
         }
 
         setScanOptimizeOptionToThrift(tHdfsScanNode, this);
@@ -200,10 +198,6 @@ public class HdfsScanNode extends ScanNode {
         setMinMaxConjunctsToThrift(tHdfsScanNode, this, this.getScanNodePredicates());
         setNonPartitionConjunctsToThrift(msg, this, this.getScanNodePredicates());
         setDataCacheOptionsToThrift(tHdfsScanNode, dataCacheOptions);
-        if (columnAccessPaths != null && !columnAccessPaths.isEmpty()) {
-            tHdfsScanNode.setColumn_access_paths(columnAccessPathToThrift());
-        }
-
         setConnectorCatalogType(msg);
     }
 

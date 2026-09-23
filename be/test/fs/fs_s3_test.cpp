@@ -22,16 +22,12 @@
 
 #include <fstream>
 
-#include "base/testutil/assert.h"
-#include "base/testutil/scoped_updater.h"
-#include "base/uid_util.h"
-#include "common/config_object_storage_fwd.h"
+#include "common/config.h"
 #include "common/s3_uri.h"
-#include "fs/credential/cloud_configuration_factory.h"
-#include "fs/fs_factory.h"
-#include "fs/fs_options_helper.h"
 #include "fs/fs_s3.h"
 #include "gutil/strings/join.h"
+#include "testutil/assert.h"
+#include "util/uid_util.h"
 
 namespace starrocks {
 
@@ -53,12 +49,12 @@ public:
     }
 
     virtual void SetUp() override {
-        ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString("s3://"));
+        ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString("s3://"));
         (void)fs->delete_dir_recursive(S3Path("/"));
     }
 
     virtual void TearDown() override {
-        ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString("s3://"));
+        ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString("s3://"));
         (void)fs->delete_dir_recursive(S3Path("/"));
     }
 
@@ -87,7 +83,7 @@ private:
 
 TEST_F(S3FileSystemTest, test_write_and_read) {
     auto uri = S3Path("/dir/test-object.png");
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString(uri));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString(uri));
     ASSIGN_OR_ABORT(auto wf, fs->new_writable_file(uri));
     EXPECT_OK(wf->append("hello"));
     EXPECT_OK(wf->append(" world!"));
@@ -120,8 +116,8 @@ TEST_F(S3FileSystemTest, test_write_and_read_with_options) {
              {FSOptions::FS_S3_READ_AHEAD_RANGE, std::to_string(64 * 1024)},
              {FSOptions::FS_S3_RETRY_LIMIT, std::to_string(config::object_storage_max_retries)},
              {FSOptions::FS_S3_RETRY_INTERVAL, std::to_string(config::object_storage_retry_scale_factor)}});
-    ASSERT_TRUE(nullptr == FSOptionsHelper::hdfs_properties(fs_opts));
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString(uri, fs_opts));
+    ASSERT_TRUE(nullptr == fs_opts.hdfs_properties());
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString(uri, fs_opts));
     ASSIGN_OR_ABORT(auto wf, fs->new_writable_file(uri));
     EXPECT_OK(wf->append("hello"));
     EXPECT_OK(wf->append(" world!"));
@@ -143,7 +139,7 @@ TEST_F(S3FileSystemTest, test_write_and_read_with_options) {
 }
 
 TEST_F(S3FileSystemTest, test_root_directory) {
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString("s3://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString("s3://"));
     bool created = false;
     auto bucket_root = S3Root();
 
@@ -158,7 +154,7 @@ TEST_F(S3FileSystemTest, test_root_directory) {
 
 TEST_F(S3FileSystemTest, test_directory) {
     auto now = ::time(nullptr);
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString("s3://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString("s3://"));
     bool created = false;
 
     //
@@ -311,7 +307,7 @@ TEST_F(S3FileSystemTest, test_directory_v1) {
     config::s3_use_list_objects_v1 = true;
 
     auto now = ::time(nullptr);
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString("s3://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString("s3://"));
     bool created = false;
 
     //
@@ -462,7 +458,7 @@ TEST_F(S3FileSystemTest, test_directory_v1) {
 }
 
 TEST_F(S3FileSystemTest, test_delete_dir_recursive) {
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString("s3://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString("s3://"));
 
     std::vector<std::string> entries;
     auto cb = [&](std::string_view name) -> bool {
@@ -506,7 +502,7 @@ TEST_F(S3FileSystemTest, test_delete_dir_recursive_v1) {
     bool s3_use_list_objects_v1 = config::s3_use_list_objects_v1;
     config::s3_use_list_objects_v1 = true;
 
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString("s3://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString("s3://"));
 
     std::vector<std::string> entries;
     auto cb = [&](std::string_view name) -> bool {
@@ -549,14 +545,14 @@ TEST_F(S3FileSystemTest, test_delete_dir_recursive_v1) {
 }
 
 TEST_F(S3FileSystemTest, test_delete_nonexist_file) {
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString("s3://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString("s3://"));
     ASSERT_OK(fs->delete_file(S3Path("/nonexist.dat")));
 }
 
 TEST_F(S3FileSystemTest, test_new_S3_client_with_rename_operation) {
     int default_value = config::object_storage_rename_file_request_timeout_ms;
     config::object_storage_rename_file_request_timeout_ms = 2000;
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString("s3://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString("s3://"));
     // only used for generate a new S3 client into global cache
     (void)fs->rename_file(S3Path("/dir/source_name"), S3Path("/dir/target_name"));
 
@@ -605,88 +601,19 @@ TEST_F(S3FileSystemTest, test_new_S3_client_with_rename_operation) {
     tCloudConfiguration.__set_cloud_properties(test_properties);
     auto cloud_config = CloudConfigurationFactory::create_aws(tCloudConfiguration);
 
-    Aws::Client::ClientConfiguration tcloud_client_config = S3ClientFactory::getClientConfig();
-    tcloud_client_config.scheme = Aws::Http::Scheme::HTTPS;
-    tcloud_client_config.maxConnections = config::object_storage_max_connection;
-    if (config::object_storage_connect_timeout_ms > 0) {
-        tcloud_client_config.connectTimeoutMs = config::object_storage_connect_timeout_ms;
-    }
-    tcloud_client_config.requestTimeoutMs = config::object_storage_rename_file_request_timeout_ms;
+    config.requestTimeoutMs = config::object_storage_rename_file_request_timeout_ms;
     (void)S3ClientFactory::instance().new_client(tCloudConfiguration, S3ClientFactory::OperationType::RENAME_FILE);
-    ASSERT_TRUE(S3ClientFactory::instance().find_client_cache_keys_by_config_TEST(tcloud_client_config, &cloud_config));
+    ASSERT_TRUE(S3ClientFactory::instance().find_client_cache_keys_by_config_TEST(config, &cloud_config));
 
     old_object_storage_rename_file_request_timeout_ms = config::object_storage_rename_file_request_timeout_ms;
     old_object_storage_request_timeout_ms = config::object_storage_request_timeout_ms;
     config::object_storage_rename_file_request_timeout_ms = -1;
     config::object_storage_request_timeout_ms = 1000;
     (void)S3ClientFactory::instance().new_client(tCloudConfiguration, S3ClientFactory::OperationType::RENAME_FILE);
-    tcloud_client_config.requestTimeoutMs = config::object_storage_request_timeout_ms;
-    ASSERT_TRUE(S3ClientFactory::instance().find_client_cache_keys_by_config_TEST(tcloud_client_config, &cloud_config));
+    config.requestTimeoutMs = config::object_storage_request_timeout_ms;
+    ASSERT_TRUE(S3ClientFactory::instance().find_client_cache_keys_by_config_TEST(config, &cloud_config));
     config::object_storage_rename_file_request_timeout_ms = default_value;
     config::object_storage_request_timeout_ms = old_object_storage_request_timeout_ms;
-}
-
-TEST_F(S3FileSystemTest, test_request_timeout_is_part_of_client_cache_key) {
-    close_s3_clients();
-    SCOPED_UPDATE(int64_t, config::object_storage_client_cache_size, 8);
-
-    Aws::Client::ClientConfiguration ordinary = S3ClientFactory::getClientConfig();
-    ordinary.endpointOverride = "s3-request-timeout-cache-key-test";
-    ordinary.region = "us-east-1";
-    ordinary.requestTimeoutMs = 10000;
-    auto rename = ordinary;
-    rename.requestTimeoutMs = 30000;
-
-    auto ordinary_client = S3ClientFactory::instance().new_client(ordinary, FSOptions());
-    auto rename_client = S3ClientFactory::instance().new_client(rename, FSOptions());
-
-    ASSERT_NE(ordinary_client, rename_client);
-    ASSERT_TRUE(S3ClientFactory::instance().find_client_cache_keys_by_config_TEST(ordinary));
-    ASSERT_TRUE(S3ClientFactory::instance().find_client_cache_keys_by_config_TEST(rename));
-    close_s3_clients();
-}
-
-TEST_F(S3FileSystemTest, test_unset_request_timeout_reaches_poco_client) {
-    close_s3_clients();
-    SCOPED_UPDATE(int64_t, config::object_storage_request_timeout_ms, -1);
-    SCOPED_UPDATE(bool, config::enable_poco_client_for_aws_sdk, true);
-
-    std::map<std::string, std::string> test_properties;
-    test_properties[AWS_S3_USE_AWS_SDK_DEFAULT_BEHAVIOR] = "true";
-    TCloudConfiguration t_cloud_configuration;
-    t_cloud_configuration.__set_cloud_type(TCloudType::AWS);
-    t_cloud_configuration.__set_cloud_properties(test_properties);
-    auto cloud_config = CloudConfigurationFactory::create_aws(t_cloud_configuration);
-
-    ASSERT_NE(nullptr, S3ClientFactory::instance().new_client(t_cloud_configuration));
-
-    Aws::Client::ClientConfiguration expected = S3ClientFactory::getClientConfig();
-    expected.scheme = Aws::Http::Scheme::HTTPS;
-    expected.maxConnections = config::object_storage_max_connection;
-    expected.requestTimeoutMs = -1;
-    ASSERT_TRUE(S3ClientFactory::instance().find_client_cache_keys_by_config_TEST(expected, &cloud_config));
-    close_s3_clients();
-}
-
-TEST_F(S3FileSystemTest, test_s3_client_factory_close_idempotent_and_reusable) {
-    close_s3_clients();
-
-    Aws::Client::ClientConfiguration config = S3ClientFactory::getClientConfig();
-    config.endpointOverride = "s3-client-factory-close-test";
-    config.region = "us-east-1";
-    config.maxConnections = 1;
-
-    auto client = S3ClientFactory::instance().new_client(config, FSOptions());
-    ASSERT_NE(nullptr, client);
-    ASSERT_TRUE(S3ClientFactory::instance().find_client_cache_keys_by_config_TEST(config));
-
-    close_s3_clients();
-    close_s3_clients();
-    ASSERT_FALSE(S3ClientFactory::instance().find_client_cache_keys_by_config_TEST(config));
-
-    auto recreated_client = S3ClientFactory::instance().new_client(config, FSOptions());
-    ASSERT_NE(nullptr, recreated_client);
-    ASSERT_TRUE(S3ClientFactory::instance().find_client_cache_keys_by_config_TEST(config));
 }
 
 TEST_F(S3FileSystemTest, test_s3_client_factory_cache_size_runtime_mutable) {
@@ -755,7 +682,7 @@ static std::string get_object_content_type(const std::string& uri) {
 
 TEST_F(S3FileSystemTest, test_write_with_csv_content_type) {
     auto uri = S3Path("/dir/test-csv.csv");
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString(uri));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString(uri));
 
     WritableFileOptions opts;
     opts.content_type = "text/csv";
@@ -772,7 +699,7 @@ TEST_F(S3FileSystemTest, test_write_with_csv_content_type) {
 
 TEST_F(S3FileSystemTest, test_write_with_parquet_content_type) {
     auto uri = S3Path("/dir/test-parquet.parquet");
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString(uri));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString(uri));
 
     WritableFileOptions opts;
     opts.content_type = "application/parquet";
@@ -789,7 +716,7 @@ TEST_F(S3FileSystemTest, test_write_with_parquet_content_type) {
 
 TEST_F(S3FileSystemTest, test_write_with_orc_content_type) {
     auto uri = S3Path("/dir/test-orc.orc");
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString(uri));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString(uri));
 
     WritableFileOptions opts;
     opts.content_type = "application/x-orc";
@@ -806,7 +733,7 @@ TEST_F(S3FileSystemTest, test_write_with_orc_content_type) {
 
 TEST_F(S3FileSystemTest, test_write_with_default_content_type) {
     auto uri = S3Path("/dir/test-binary.bin");
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString(uri));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString(uri));
 
     // Without specifying content_type, default should be application/octet-stream
     WritableFileOptions opts;
@@ -823,7 +750,7 @@ TEST_F(S3FileSystemTest, test_write_with_default_content_type) {
 
 TEST_F(S3FileSystemTest, test_write_with_direct_write_and_content_type) {
     auto uri = S3Path("/dir/test-direct-csv.csv");
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateUniqueFromString(uri));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateUniqueFromString(uri));
 
     WritableFileOptions opts;
     opts.direct_write = true;

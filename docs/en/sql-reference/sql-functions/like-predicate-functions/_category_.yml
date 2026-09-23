@@ -3,5 +3,4 @@ label: 'Pattern matching'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: like-predicate-functions
+  type: generated-index

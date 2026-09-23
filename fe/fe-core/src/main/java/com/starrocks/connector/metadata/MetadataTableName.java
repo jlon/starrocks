@@ -40,8 +40,9 @@ public class MetadataTableName {
             return false;
         }
 
+        MetadataTableType type;
         try {
-            MetadataTableType.get(typeString);
+            type = MetadataTableType.get(typeString);
         } catch (IllegalArgumentException e) {
             return false;
         }

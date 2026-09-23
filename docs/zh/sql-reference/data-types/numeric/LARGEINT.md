@@ -16,18 +16,8 @@ description: "LARGEINT 是 16 字节有符号整数，取值范围为 [-2^127 + 
 ```sql
 CREATE TABLE largeIntDemo (
     pk LARGEINT COMMENT "range [-2^127 + 1 ~ 2^127 - 1]"
-) ENGINE=OLAP
+) ENGINE=OLAP 
 DUPLICATE KEY(pk)
-DISTRIBUTED BY HASH(pk) BUCKETS 1;
-
-INSERT INTO largeIntDemo VALUES (10000000000000000000000000);
-```
-
-```Plaintext
-MySQL > SELECT * FROM largeIntDemo;
-+----------------------------+
-| pk                         |
-+----------------------------+
-| 10000000000000000000000000 |
-+----------------------------+
+COMMENT "OLAP"
+DISTRIBUTED BY HASH(pk);
 ```

@@ -143,17 +143,18 @@ public class DbsProcDirTest {
     @Test
     public void testLookupInvalid() {
         DbsProcDir dir;
+        ProcNodeInterface node;
 
         dir = new DbsProcDir(globalStateMgr);
         try {
-            dir.lookup(null);
+            node = dir.lookup(null);
         } catch (AnalysisException e) {
             // TODO Auto-generated catch block
             e.printStackTrace();
         }
 
         try {
-            dir.lookup("");
+            node = dir.lookup("");
         } catch (AnalysisException e) {
             // TODO Auto-generated catch block
             e.printStackTrace();

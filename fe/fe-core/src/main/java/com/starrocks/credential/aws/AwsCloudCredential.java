@@ -20,7 +20,6 @@ import com.staros.proto.AwsCredentialInfo;
 import com.staros.proto.AwsDefaultCredentialInfo;
 import com.staros.proto.AwsInstanceProfileCredentialInfo;
 import com.staros.proto.AwsSimpleCredentialInfo;
-import com.staros.proto.AwsWebIdentityCredentialInfo;
 import com.staros.proto.FileStoreInfo;
 import com.staros.proto.FileStoreType;
 import com.staros.proto.S3FileStoreInfo;
@@ -42,7 +41,6 @@ import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider;
 import software.amazon.awssdk.profiles.ProfileFile;
 import software.amazon.awssdk.profiles.ProfileFileSystemSetting;
 import software.amazon.awssdk.regions.Region;
@@ -204,9 +202,9 @@ public class AwsCloudCredential implements CloudCredential {
         } else if (useInstanceProfile) {
             return InstanceProfileCredentialsProvider.builder().build();
         } else if (useWebIdentityProfile) {
-            return WebIdentityTokenFileCredentialsProvider.builder()
-                    .asyncCredentialUpdateEnabled(true)
-                    .build();
+            // Reads AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN from env vars via the default chain,
+            // mirroring BE's STSAssumeRoleWebIdentityCredentialsProvider behaviour.
+            return DefaultCredentialsProvider.builder().build();
         } else if (!accessKey.isEmpty() && !secretKey.isEmpty()) {
             if (!sessionToken.isEmpty()) {
                 return StaticCredentialsProvider.create(
@@ -363,11 +361,15 @@ public class AwsCloudCredential implements CloudCredential {
                 awsCredentialInfo.setProfileCredential(AwsInstanceProfileCredentialInfo.newBuilder().build());
             }
         } else if (useWebIdentityProfile) {
-            AwsWebIdentityCredentialInfo.Builder webIdentityCredentialInfo =
-                    AwsWebIdentityCredentialInfo.newBuilder();
-            webIdentityCredentialInfo.setIamRoleArn(iamRoleArn);
-            webIdentityCredentialInfo.setExternalId(externalId);
-            awsCredentialInfo.setWebIdentityCredential(webIdentityCredentialInfo.build());
+            if (!iamRoleArn.isEmpty()) {
+                AwsAssumeIamRoleCredentialInfo.Builder assumeIamRoleCredentialInfo =
+                        AwsAssumeIamRoleCredentialInfo.newBuilder();
+                assumeIamRoleCredentialInfo.setIamRoleArn(iamRoleArn);
+                assumeIamRoleCredentialInfo.setExternalId(externalId);
+                awsCredentialInfo.setAssumeRoleCredential(assumeIamRoleCredentialInfo.build());
+            } else {
+                awsCredentialInfo.setDefaultCredential(AwsDefaultCredentialInfo.newBuilder().build());
+            }
         } else if (!accessKey.isEmpty() && !secretKey.isEmpty()) {
             // TODO: Support assumeRole with AK/SK
             // TODO: Support sessionToken with AK/SK

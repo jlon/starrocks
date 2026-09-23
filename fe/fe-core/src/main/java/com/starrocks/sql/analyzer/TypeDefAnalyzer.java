@@ -28,20 +28,6 @@ import java.util.List;
 
 public class TypeDefAnalyzer {
     public static void analyze(TypeDef typeDef) {
-        analyze(typeDef, true);
-    }
-
-    /**
-     * Analyze a type definition, validating sizes, precision, and nesting constraints.
-     *
-     * @param requireExplicitSize if true, parameterized scalar types (CHAR/VARCHAR) must carry
-     *                            an explicit size. Pass false from DROP FUNCTION and
-     *                            GRANT/REVOKE, where signature matching treats any two string
-     *                            types as equivalent regardless of size — requiring a size in
-     *                            those paths is pointless friction. CREATE paths pass true so
-     *                            declarations always record an explicit size.
-     */
-    public static void analyze(TypeDef typeDef, boolean requireExplicitSize) {
         Type parsedType = typeDef.getType();
 
         // Check the max nesting depth before calling the recursive analyze() to avoid
@@ -51,27 +37,27 @@ public class TypeDefAnalyzer {
                     "Type exceeds the maximum nesting depth of %s:\n%s",
                     Type.MAX_NESTING_DEPTH, parsedType.toSql()));
         }
-        analyze(parsedType, requireExplicitSize);
+        analyze(parsedType);
     }
 
-    private static void analyze(Type type, boolean requireExplicitSize) {
+    private static void analyze(Type type) {
         if (!type.isSupported()) {
             throw new SemanticException("Unsupported data type: " + type.toSql());
         }
         if (type.isScalarType()) {
-            analyzeScalarType((ScalarType) type, requireExplicitSize);
+            analyzeScalarType((ScalarType) type);
         } else if (type.isArrayType()) {
-            analyzeArrayType((ArrayType) type, requireExplicitSize);
+            analyzeArrayType((ArrayType) type);
         } else if (type.isStructType()) {
-            analyzeStructType((StructType) type, requireExplicitSize);
+            analyzeStructType((StructType) type);
         } else if (type.isMapType()) {
-            analyzeMapType((MapType) type, requireExplicitSize);
+            analyzeMapType((MapType) type);
         } else {
             throw new SemanticException("Unsupported data type: " + type.toSql());
         }
     }
 
-    private static void analyzeScalarType(ScalarType scalarType, boolean requireExplicitSize) {
+    private static void analyzeScalarType(ScalarType scalarType) {
         PrimitiveType type = scalarType.getPrimitiveType();
         switch (type) {
             case CHAR:
@@ -87,16 +73,11 @@ public class TypeDefAnalyzer {
                 }
                 int len = scalarType.getLength();
                 // len is decided by child, when it is -1.
-                if (len == -1 && !requireExplicitSize) {
-                    // Permit unsized CHAR/VARCHAR; matchesType() ignores
-                    // string sizes for signature matching, and toSql() renders len=-1 as the bare type name.
-                    break;
-                }
+
                 if (len <= 0) {
                     throw new SemanticException(name + " size must be > 0: " + len);
                 }
-
-                if (len > maxLen) {
+                if (scalarType.getLength() > maxLen) {
                     throw new SemanticException(
                             name + " size must be <= " + maxLen + ": " + len);
                 }
@@ -142,12 +123,12 @@ public class TypeDefAnalyzer {
         }
     }
 
-    private static void analyzeArrayType(ArrayType type, boolean requireExplicitSize) {
+    private static void analyzeArrayType(ArrayType type) {
         Type baseType = getInnermostType(type);
         if (baseType == null) {
             throw new SemanticException("Cannot get innermost type of '" + type + "'");
         }
-        analyze(baseType, requireExplicitSize);
+        analyze(baseType);
         if (baseType.isHllType() || baseType.isBitmapType() || baseType.isPseudoType() || baseType.isPercentile()) {
             throw new SemanticException("Invalid data type: " + type.toSql());
         }
@@ -165,21 +146,21 @@ public class TypeDefAnalyzer {
         return null;
     }
 
-    private static void analyzeStructType(StructType type, boolean requireExplicitSize) {
+    private static void analyzeStructType(StructType type) {
         List<StructField> structFields = type.getFields();
         for (StructField structField : structFields) {
-            analyze(structField.getType(), requireExplicitSize);
+            analyze(structField.getType());
         }
     }
 
-    private static void analyzeMapType(MapType type, boolean requireExplicitSize) {
+    private static void analyzeMapType(MapType type) {
         Type keyType = type.getKeyType();
         if (!keyType.isValidMapKeyType()) {
             throw new SemanticException("Invalid map.key's type: " + keyType.toSql() +
                     ", which should be base types");
         }
-        analyze(keyType, requireExplicitSize);
+        analyze(keyType);
         Type valueType = type.getValueType();
-        analyze(valueType, requireExplicitSize);
+        analyze(valueType);
     }
 }

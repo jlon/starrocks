@@ -25,10 +25,8 @@ import com.starrocks.catalog.Table;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.tvr.TvrVersionRange;
-import com.starrocks.connector.partitiontraits.BenchmarkPartitionTraits;
 import com.starrocks.connector.partitiontraits.CachedPartitionTraits;
 import com.starrocks.connector.partitiontraits.DeltaLakePartitionTraits;
-import com.starrocks.connector.partitiontraits.FlussPartitionTraits;
 import com.starrocks.connector.partitiontraits.HivePartitionTraits;
 import com.starrocks.connector.partitiontraits.HudiPartitionTraits;
 import com.starrocks.connector.partitiontraits.IcebergPartitionTraits;
@@ -38,6 +36,8 @@ import com.starrocks.connector.partitiontraits.OdpsPartitionTraits;
 import com.starrocks.connector.partitiontraits.OlapPartitionTraits;
 import com.starrocks.connector.partitiontraits.PaimonPartitionTraits;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.common.PCellSortedSet;
 import com.starrocks.sql.optimizer.QueryMaterializationContext;
 import com.starrocks.type.Type;
 import org.apache.commons.lang.NotImplementedException;
@@ -76,8 +76,6 @@ public abstract class ConnectorPartitionTraits {
                     .put(Table.TableType.KUDU, KuduPartitionTraits::new)
                     .put(Table.TableType.JDBC, JDBCPartitionTraits::new)
                     .put(Table.TableType.DELTALAKE, DeltaLakePartitionTraits::new)
-                    .put(Table.TableType.FLUSS, FlussPartitionTraits::new)
-                    .put(Table.TableType.BENCHMARK, BenchmarkPartitionTraits::new)
                     .build();
 
     protected Table table;
@@ -207,6 +205,21 @@ public abstract class ConnectorPartitionTraits {
      */
     public abstract List<Column> getPartitionColumns();
 
+    /**
+     * Get partition range map with the specified partition column and expression
+     *
+     * @apiNote it must be a range-partitioned table
+     */
+    public abstract PCellSortedSet getPartitionKeyRange(Column partitionColumn, Expr partitionExpr)
+            throws AnalysisException;
+
+    /**
+     * Get the list-map with specified partition column and expression
+     *
+     * @apiNote it must be a list-partitioned table
+     */
+    public abstract PCellSortedSet getPartitionCells(List<Column> partitionColumns) throws AnalysisException;
+
     public abstract Map<String, PartitionInfo> getPartitionNameWithPartitionInfo();
 
     public abstract Map<String, PartitionInfo> getPartitionNameWithPartitionInfo(List<String> partitionNames);
@@ -226,11 +239,7 @@ public abstract class ConnectorPartitionTraits {
     }
 
     /**
-     * The max refresh/modified timestamp over the table's partitions, in EPOCH MILLISECONDS.
-     * Implementations must convert the connector's native modified-time unit (see
-     * {@link com.starrocks.connector.PartitionInfo#getModifiedTimeUnit()}) to milliseconds, because
-     * callers compare this value against wall-clock-millis baselines (e.g. the MV rewrite staleness
-     * check against lastFreshnessConfirmedAt).
+     * The max of refresh ts for all partitions
      */
     public abstract Optional<Long> maxPartitionRefreshTs();
 

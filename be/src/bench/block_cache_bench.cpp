@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <base/testutil/assert.h>
 #include <benchmark/benchmark.h>
 #include <brpc/server.h>
 #include <bvar/bvar.h>
@@ -20,15 +19,16 @@
 #include <bvar/passive_status.h>
 #include <bvar/reducer.h>
 #include <gtest/gtest.h>
+#include <testutil/assert.h>
 
 #include <filesystem>
 #include <memory>
 
-#include "base/random/random.h"
-#include "base/time/time.h"
 #include "cache/disk_cache/starcache_engine.h"
-#include "common/glog_init.h"
 #include "starcache/common/types.h"
+#include "util/logging.h"
+#include "util/random.h"
+#include "util/time.h"
 
 namespace starrocks {
 

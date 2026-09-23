@@ -19,19 +19,17 @@
 #include <numeric>
 
 #include "column/vectorized_fwd.h"
-#include "common/config_exec_flow_fwd.h"
+#include "common/config.h"
 #include "common/logging.h"
 #include "common/object_pool.h"
-#include "common/runtime_profile.h"
-#include "common/system/cpu_info.h"
 #include "exec/hash_joiner.h"
 #include "exec/join/join_hash_table.h"
 #include "exprs/expr_context.h"
 #include "gutil/casts.h"
-#include "runtime/current_thread.h"
 #include "runtime/descriptors.h"
 #include "runtime/mem_tracker.h"
-#include "runtime/runtime_state.h"
+#include "util/cpu_info.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks {
 
@@ -364,7 +362,6 @@ void PartitionedHashJoinProberImpl::reset(RuntimeState* runtime_state) {
     }
     _partition_input_channels.clear();
     _mem_tracker.release(_mem_tracker.consumption());
-    _partition_input_channels.resize(_probers.size(), PartitionChunkChannel(&_mem_tracker));
     _all_input_finished = false;
     _remain_partition_idx = 0;
 }
@@ -532,8 +529,13 @@ private:
 
 AdaptivePartitionHashJoinBuilder::AdaptivePartitionHashJoinBuilder(HashJoiner& hash_joiner)
         : HashJoinBuilder(hash_joiner), _cache_miss_factor(_calculate_cache_miss_factor(hash_joiner)) {
-    _L2_cache_size = CpuInfo::get_l2_cache_size();
-    _L3_cache_size = CpuInfo::get_l3_cache_size();
+    static constexpr size_t DEFAULT_L2_CACHE_SIZE = 1 * 1024 * 1024;
+    static constexpr size_t DEFAULT_L3_CACHE_SIZE = 32 * 1024 * 1024;
+    const auto& cache_sizes = CpuInfo::get_cache_sizes();
+    _L2_cache_size = cache_sizes[CpuInfo::L2_CACHE];
+    _L3_cache_size = cache_sizes[CpuInfo::L3_CACHE];
+    _L2_cache_size = _L2_cache_size ? _L2_cache_size : DEFAULT_L2_CACHE_SIZE;
+    _L3_cache_size = _L3_cache_size ? _L3_cache_size : DEFAULT_L3_CACHE_SIZE;
 }
 
 double AdaptivePartitionHashJoinBuilder::_calculate_cache_miss_factor(const HashJoiner& hash_joiner) {
@@ -572,10 +574,12 @@ size_t AdaptivePartitionHashJoinBuilder::_estimate_hash_table_probing_bytes_per_
     }
 
     // 3. output bytes
-    for (auto* slot : param.build_record_desc->slots()) {
-        if (param.build_output_slots.empty() || param.build_output_slots.contains(slot->id())) {
-            estimated_each_row += get_size_of_fixed_length_type(slot->type().type);
-            estimated_each_row += type_estimated_overhead_bytes(slot->type().type);
+    for (auto* tuple : param.build_row_desc->tuple_descriptors()) {
+        for (const auto* slot : tuple->slots()) {
+            if (param.build_output_slots.empty() || param.build_output_slots.contains(slot->id())) {
+                estimated_each_row += get_size_of_fixed_length_type(slot->type().type);
+                estimated_each_row += type_estimated_overhead_bytes(slot->type().type);
+            }
         }
     }
 
@@ -587,9 +591,11 @@ size_t AdaptivePartitionHashJoinBuilder::_estimate_probe_row_bytes(const HashTab
     size_t size = 0;
 
     // shuffling probe bytes
-    for (auto* slot : param.probe_record_desc->slots()) {
-        size += get_size_of_fixed_length_type(slot->type().type);
-        size += type_estimated_overhead_bytes(slot->type().type);
+    for (auto* tuple : param.probe_row_desc->tuple_descriptors()) {
+        for (const auto* slot : tuple->slots()) {
+            size += get_size_of_fixed_length_type(slot->type().type);
+            size += type_estimated_overhead_bytes(slot->type().type);
+        }
     }
 
     return std::max<size_t>(size, 1);

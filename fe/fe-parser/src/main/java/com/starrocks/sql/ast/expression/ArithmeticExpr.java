@@ -178,10 +178,6 @@ public class ArithmeticExpr extends Expr {
         public boolean isMonotonic() {
             return monotonic;
         }
-
-        public boolean isMultiplyOrDivide() {
-            return this == Operator.MULTIPLY || this == Operator.DIVIDE;
-        }
     }
 
     public static class TypeTriple {

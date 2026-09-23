@@ -69,7 +69,7 @@ import com.starrocks.clone.TabletSchedCtx.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.Pair;
-import com.starrocks.common.util.LeaderDaemon;
+import com.starrocks.common.util.FrontendDaemon;
 import com.starrocks.common.util.LogUtil;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
@@ -127,7 +127,7 @@ import java.util.stream.Stream;
  * Case 2:
  * A new Backend is added to the cluster. Replicas should be transfer to that host to balance the cluster load.
  */
-public class TabletScheduler extends LeaderDaemon {
+public class TabletScheduler extends FrontendDaemon {
     private static final Logger LOG = LogManager.getLogger(TabletScheduler.class);
 
     // the minimum interval of updating cluster statistics and priority of tablet info
@@ -346,11 +346,7 @@ public class TabletScheduler extends LeaderDaemon {
             result.first = (res == AddResult.ADDED);
         } catch (InterruptedException e) {
             // heldLock has already been re-acquired by sleepUnlocked().
-            // Re-assert the interrupt so the caller (e.g. TabletChecker / ColocateTableBalancer
-            // leader daemon being stopped on demotion) unwinds its cycle promptly instead of
-            // silently swallowing the cancel.
-            Thread.currentThread().interrupt();
-            LOG.warn("Interrupted while executing blockingAddTabletCtxToScheduler", e);
+            LOG.warn("Failed to execute blockingAddTabletCtxToScheduler", e);
         }
 
         return result;
@@ -456,7 +452,7 @@ public class TabletScheduler extends LeaderDaemon {
      * it should be removed.
      */
     @Override
-    protected void runAfterLeaseValid() {
+    protected void runAfterCatalogReady() {
         if (!updateWorkingSlots()) {
             return;
         }
@@ -486,50 +482,6 @@ public class TabletScheduler extends LeaderDaemon {
         handleForceCleanSchedQ();
 
         stat.counterTabletScheduleRound.incrementAndGet();
-    }
-
-    /**
-     * Drop all leader-session scheduling state. Followers do not schedule tablets and
-     * the next leader will rebuild this from TabletInvertedIndex on first iteration.
-     * Clone tasks already submitted to AgentTaskExecutor are idempotent: if the new leader
-     * resubmits the same clone, BE returns success when the destination tablet already exists
-     * with version >= requested.
-     */
-    @Override
-    protected synchronized void onStopped() {
-        // Release every ctx BEFORE dropping the maps: a running ctx has already added a
-        // never-journaled CLONE replica to the LocalTablet / inverted index, which a restarted FE
-        // would not have (it only becomes durable when the clone finishes and journals). Clearing
-        // without releasing leaked those phantom replicas in this node's memory on every demotion.
-        // releaseResource also frees the path slots and removes the CLONE agent task; per-ctx
-        // best-effort so one bad ctx cannot wedge the demotion drain.
-        for (TabletSchedCtx ctx : runningTablets.values()) {
-            try {
-                ctx.releaseResource(this);
-            } catch (Throwable t) {
-                LOG.warn("failed to release running tablet ctx {} on demotion", ctx.getTabletId(), t);
-            }
-        }
-        for (TabletSchedCtx ctx : pendingTablets) {
-            try {
-                ctx.releaseResource(this);
-            } catch (Throwable t) {
-                LOG.warn("failed to release pending tablet ctx {} on demotion", ctx.getTabletId(), t);
-            }
-        }
-        pendingTablets.clear();
-        // shrink the backing array - PriorityQueue does not release capacity on clear()
-        pendingTablets = new PriorityQueue<>();
-        allTabletIds.clear();
-        runningTablets.clear();
-        schedHistory.clear();
-        backendsWorkingSlots.clear();
-        loadStatistic.set(null);
-        lastStatUpdateTime = 0;
-        lastClusterLoadLoggingTime = 0;
-        lastSlotAdjustTime = 0;
-        currentSlotPerPathConfig = 0;
-        forceCleanSchedQ.set(false);
     }
 
     private void updateClusterLoadStatisticsAndPriority() {
@@ -1961,6 +1913,7 @@ public class TabletScheduler extends LeaderDaemon {
         }
 
         // write edit log
+        replica.setState(ReplicaState.NORMAL);
         TabletMeta meta = GlobalStateMgr.getCurrentState().getTabletInvertedIndex().getTabletMeta(tabletId);
         if (meta == null) {
             LOG.warn("skip finishing create replica task because tablet meta not found, tablet:{} backend:{}",
@@ -1974,9 +1927,7 @@ public class TabletScheduler extends LeaderDaemon {
                 replica.getSchemaHash(), replica.getDataSize(), replica.getRowCount(),
                 replica.getLastFailedVersion(), replica.getLastSuccessVersion(),
                 replica.getMinReadableVersion());
-        GlobalStateMgr.getCurrentState().getEditLog().logAddReplica(info, wal -> {
-            replica.setState(ReplicaState.NORMAL);
-        });
+        GlobalStateMgr.getCurrentState().getEditLog().logAddReplica(info);
         finalizeTabletCtx(tabletCtx, TabletSchedCtx.State.FINISHED, "create replica finished");
         LOG.info("create replica for recovery successfully, tablet:{} backend:{}", tabletId, task.getBackendId());
     }

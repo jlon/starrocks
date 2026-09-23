@@ -3,5 +3,4 @@ label: 'Numeric'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: numeric
+  type: generated-index

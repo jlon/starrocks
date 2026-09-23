@@ -15,18 +15,17 @@
 #pragma once
 
 #include <memory>
-#include <sstream>
 
 #include "column/column.h"
+#include "column/datum.h"
 #include "column/vectorized_fwd.h"
 #include "common/object_pool.h"
 #include "gutil/strings/substitute.h"
 #include "types/bitmap_value.h"
-#include "types/datum.h"
 #include "types/hll.h"
-#include "types/json_value.h"
-#include "types/percentile_value.h"
 #include "types/variant_value.h"
+#include "util/json.h"
+#include "util/percentile_value.h"
 
 namespace starrocks {
 
@@ -38,17 +37,17 @@ public:
     using ValueType = T;
     using Container = Buffer<ValueType*>;
 
-    struct ImmContainer {
-        ImmContainer() = default;
-        explicit ImmContainer(const ObjectColumn& column) : _column(&column) {}
+    struct ObjectDataProxyContainer {
+        ObjectDataProxyContainer(const ObjectColumn& column) : _column(column) {}
 
-        T* operator[](size_t index) const { return _column->get_object(index); }
+        T* operator[](size_t index) const { return _column.get_object(index); }
 
-        size_t size() const { return _column->size(); }
+        size_t size() const { return _column.size(); }
 
     private:
-        const ObjectColumn* _column = nullptr;
+        const ObjectColumn& _column;
     };
+    using ImmContainer = ObjectDataProxyContainer;
 
     ObjectColumn() = default;
 
@@ -67,6 +66,16 @@ public:
     ~ObjectColumn() override = default;
 
     bool is_object() const override { return true; }
+
+    const uint8_t* raw_data() const override {
+        _build_slices();
+        return reinterpret_cast<const uint8_t*>(_slices.data());
+    }
+
+    uint8_t* mutable_raw_data() override {
+        _build_slices();
+        return reinterpret_cast<uint8_t*>(_slices.data());
+    }
 
     size_t size() const override { return _pool.size(); }
 
@@ -149,7 +158,17 @@ public:
 
     T* get_object(size_t n) const { return const_cast<T*>(&_pool[n]); }
 
-    ImmContainer immutable_data() const { return ImmContainer(*this); }
+    Buffer<T*>& get_data() {
+        _build_cache();
+        return _cache;
+    }
+
+    const Buffer<T*>& get_data() const {
+        _build_cache();
+        return _cache;
+    }
+
+    const ObjectDataProxyContainer immutable_data() const { return ObjectDataProxyContainer(*this); }
 
     Datum get(size_t n) const override { return Datum(get_object(n)); }
 
@@ -163,11 +182,24 @@ public:
         auto& r = down_cast<ObjectColumn&>(rhs);
         std::swap(this->_delete_state, r._delete_state);
         std::swap(this->_pool, r._pool);
+        std::swap(this->_cache_ok, r._cache_ok);
+        std::swap(this->_cache, r._cache);
+        std::swap(this->_buffer, r._buffer);
+        std::swap(this->_slices, r._slices);
     }
 
     void reset_column() override {
         Column::reset_column();
         _pool.clear();
+        _cache_ok = false;
+        _cache.clear();
+        _slices.clear();
+        _buffer.clear();
+    }
+
+    void reset_cache() {
+        _cache_ok = false;
+        _cache.clear();
     }
 
     Buffer<T>& get_pool() { return _pool; }
@@ -206,13 +238,34 @@ public:
 
     void check_or_die() const override {}
 
-    void build_slices(Buffer<uint8_t>& buffer, Buffer<Slice>& slices) const;
-
-    // Unhide the virtual `Column::append(const Column&)` so derived classes
-    // (e.g. JsonColumn) can also add it back to their scope via `using`.
+private:
+    // add this to avoid warning clang-diagnostic-overloaded-virtual
     using Column::append;
+
+    void _build_cache() const {
+        if (_cache_ok) {
+            return;
+        }
+
+        _cache.clear();
+        _cache.reserve(_pool.size());
+        for (int i = 0; i < _pool.size(); ++i) {
+            _cache.emplace_back(const_cast<T*>(&_pool[i]));
+        }
+
+        _cache_ok = true;
+    }
+
+    // Currently, only for data loading
+    void _build_slices() const;
 
 private:
     Buffer<T> _pool;
+    mutable bool _cache_ok = false;
+    mutable Buffer<T*> _cache;
+
+    // Only for data loading
+    mutable Buffer<Slice> _slices;
+    mutable Buffer<uint8_t> _buffer;
 };
 } // namespace starrocks

@@ -34,7 +34,6 @@
 
 package com.starrocks.alter;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Maps;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.OlapTable;
@@ -42,7 +41,7 @@ import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.ThreadPoolManager;
-import com.starrocks.common.util.LeaderDaemon;
+import com.starrocks.common.util.FrontendDaemon;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.persist.RemoveAlterJobV2OperationLog;
 import com.starrocks.qe.ShowResultSet;
@@ -65,7 +64,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.locks.ReentrantLock;
 
-public abstract class AlterHandler extends LeaderDaemon {
+public abstract class AlterHandler extends FrontendDaemon {
     private static final Logger LOG = LogManager.getLogger(AlterHandler.class);
     protected ConcurrentMap<Long, AlterJobV2> alterJobsV2 = Maps.newConcurrentMap();
 
@@ -78,9 +77,7 @@ public abstract class AlterHandler extends LeaderDaemon {
      */
     protected ReentrantLock lock = new ReentrantLock();
 
-    // Not final: shutdownNow() in onStopped() interrupts in-flight AlterReplicaTask
-    // submissions; start() rebuilds the pool when the next leader takes over.
-    protected volatile ThreadPoolExecutor executor;
+    protected ThreadPoolExecutor executor;
 
     protected void lock() {
         lock.lock();
@@ -92,28 +89,15 @@ public abstract class AlterHandler extends LeaderDaemon {
 
     public AlterHandler(String name) {
         super(name, Config.alter_scheduler_interval_millisecond);
-        executor = newExecutor();
-    }
-
-    private ThreadPoolExecutor newExecutor() {
-        return ThreadPoolManager.newDaemonCacheThreadPool(
-                Config.alter_max_worker_threads, Config.alter_max_worker_queue_size,
-                getName() + "_pool", true);
+        executor = ThreadPoolManager
+                .newDaemonCacheThreadPool(Config.alter_max_worker_threads, Config.alter_max_worker_queue_size,
+                        name + "_pool", true);
     }
 
 
     public void addAlterJobV2(AlterJobV2 alterJob) {
         this.alterJobsV2.put(alterJob.getJobId(), alterJob);
         LOG.info("add {} job {}", alterJob.getType(), alterJob.getJobId());
-    }
-
-    protected final void runAlterJobV2Safely(AlterJobV2 alterJob) {
-        try {
-            alterJob.run();
-        } catch (Exception e) {
-            LOG.warn("alter job {} type {} state {} failed in scheduler; will retry without blocking sibling jobs",
-                    alterJob.getJobId(), alterJob.getType(), alterJob.getJobState(), e);
-        }
     }
 
     public List<AlterJobV2> getUnfinishedAlterJobV2ByTableId(long tblId) {
@@ -206,60 +190,14 @@ public abstract class AlterHandler extends LeaderDaemon {
     }
 
     @Override
-    protected void runAfterLeaseValid() {
+    protected void runAfterCatalogReady() {
         clearExpireFinishedOrCancelledAlterJobsV2();
         setInterval(Config.alter_scheduler_interval_millisecond);
     }
 
     @Override
     public synchronized void start() {
-        // The re-activation cleanliness gate verifies the previous executor terminated before start()
-        // runs (onStopped awaits its termination and only then clears isRunning), so there is no restart
-        // guard here, and no reset either - onStopped() already reset the jobs on the worker's exit.
-        // Just rebuild the executor if a previous demotion shut it down (or on first start).
-        if (executor == null || executor.isShutdown()) {
-            executor = newExecutor();
-        }
         super.start();
-    }
-
-    @VisibleForTesting
-    public void rebuildExecutorForTest() {
-        // UT helpers stop the background loop via setStop() so they can drive alter jobs manually.
-        // setStop() runs the LeaderDaemon worker through onStopped(), which shuts the executor down
-        // (demotion cleanup); rebuild it so a manually driven alterJob.run() can still submit tasks.
-        if (executor == null || executor.isShutdown()) {
-            executor = newExecutor();
-        }
-    }
-
-    @Override
-    protected void onStopped() {
-        // alterJobsV2 is persistent (saved/loaded via image and replayed on followers via
-        // editlog), so it must NOT be cleared on demotion - the next leader resumes those
-        // jobs from the same map. Subclasses can override onStopped() to drop derived caches
-        // (e.g. tableNotFinalStateJobMap) that are recomputable from alterJobsV2; just
-        // remember to call super.onStopped() so the executor shutdown still runs.
-        // shutdownNow() interrupts in-flight AlterReplicaTask submissions; wait until the executor
-        // actually terminates so this worker does not clear isRunning while a finish-report task is
-        // still running (the re-activation gate reads isRunning as the single quiescence signal), and
-        // so the reset below cannot race an in-flight task's job-state mutation.
-        shutdownNowAndAwaitTermination("AlterHandler." + getName() + ".executor", executor);
-        // The jobs themselves survive in memory across an in-place demote / re-elect cycle,
-        // unlike a restart which reloads them from the image/journal. Reset each non-final
-        // job to its last durable state (drop unlogged in-memory transitions and leader-
-        // session transients) so a re-elected leader resumes exactly like a restarted FE.
-        resetJobsToLastDurableState();
-    }
-
-    private void resetJobsToLastDurableState() {
-        for (AlterJobV2 job : alterJobsV2.values()) {
-            try {
-                job.resetToLastDurableState();
-            } catch (Throwable t) {
-                LOG.warn("reset alter job {} on leader handoff failed", job.getJobId(), t);
-            }
-        }
     }
 
     /*

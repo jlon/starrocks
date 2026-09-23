@@ -229,13 +229,6 @@ public class PushTask extends AgentTask {
         }
     }
 
-    @Override
-    public void cancelPendingWaiter(Status status) {
-        if (this.latch != null) {
-            latch.countDownToZero(status);
-        }
-    }
-
     public void countDownLatch(long backendId, long tabletId, String errMsg) {
         if (this.latch != null) {
             if (latch.markedCountDown(backendId, tabletId, new Status(TStatusCode.INTERNAL_ERROR, errMsg))) {

@@ -1,5 +1,4 @@
 ---
-sidebar_position: 100
 displayed_sidebar: docs
 description: "FAQ for common StarRocks operation and maintenance questions."
 ---
@@ -116,7 +115,7 @@ Check for single-replica tables. Other repairs may be blocked if they continuous
 
 ## What does this BE log mean? "tcmalloc: large alloc xxxxxxxx bytes"
 
-This is a legacy allocator large-allocation diagnostic. A large memory allocation request occurred, often caused by large queries. Check the corresponding `query_id` in `be.INFO` to locate the SQL, and use `/mem_tracker` and `/memz` to inspect current memory usage.
+A large memory allocation request occurred, often caused by large queries. Check the corresponding `query_id` in `be.INFO` to locate the SQL.
 
 ## Will tablet migration after adding nodes cause disk I/O fluctuations?
 

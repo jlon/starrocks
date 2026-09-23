@@ -3,5 +3,4 @@ label: 'Tablet，Replica 检查修复'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: tablet_replica
+  type: generated-index

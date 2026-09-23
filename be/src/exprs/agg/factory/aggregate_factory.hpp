@@ -16,7 +16,7 @@
 
 #include <memory>
 
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "exprs/agg/aggregate.h"
 #include "exprs/agg/aggregate_factory.h"
 #include "exprs/agg/any_value.h"
@@ -32,9 +32,7 @@
 #include "exprs/agg/covariance.h"
 #include "exprs/agg/distinct.h"
 #include "exprs/agg/ds_hll_count_distinct.h"
-#include "exprs/agg/ds_theta_combine.h"
 #include "exprs/agg/ds_theta_count_distinct.h"
-#include "exprs/agg/ds_theta_intersect_cond.h"
 #include "exprs/agg/exchange_perf.h"
 #include "exprs/agg/group_concat.h"
 #include "exprs/agg/histogram.h"
@@ -47,7 +45,6 @@
 #include "exprs/agg/map_agg.h"
 #include "exprs/agg/maxmin.h"
 #include "exprs/agg/maxmin_by.h"
-#include "exprs/agg/minmax_n.h"
 #include "exprs/agg/nullable_aggregate.h"
 #include "exprs/agg/percentile_approx.h"
 #include "exprs/agg/percentile_cont.h"
@@ -61,6 +58,7 @@
 #include "exprs/agg/window_funnel.h"
 #include "types/logical_type.h"
 #include "types/logical_type_infra.h"
+#include "udf/java/java_function_fwd.h"
 
 namespace starrocks {
 
@@ -143,12 +141,6 @@ public:
 
     static AggregateFunctionPtr MakeAnyValueSemiAggregateFunction() { return new AnyValueSemiAggregateFunction(); }
 
-    template <LogicalType LT>
-    static AggregateFunctionPtr MakeMinNAggregateFunction();
-
-    template <LogicalType LT>
-    static AggregateFunctionPtr MakeMaxNAggregateFunction();
-
     template <typename NestedState, bool IsWindowFunc, bool IgnoreNull = true,
               typename NestedFunctionPtr = AggregateFunctionPtr,
               IsAggNullPred<NestedState> AggNullPred = AggNonNullPred<NestedState>>
@@ -202,10 +194,6 @@ public:
 
     template <LogicalType T>
     static AggregateFunctionPtr MakeThetaSketchAggregateFunction();
-
-    static AggregateFunctionPtr MakeThetaSketchCombineAggregateFunction();
-
-    static AggregateFunctionPtr MakeThetaSketchIntersectCondAggregateFunction();
 
     template <LogicalType T>
     static AggregateFunctionPtr MakeHllRawAggregateFunction();
@@ -348,16 +336,6 @@ auto AggregateFactory::MakeMinAggregateFunction() {
 }
 
 template <LogicalType LT>
-AggregateFunctionPtr AggregateFactory::MakeMinNAggregateFunction() {
-    return new MinMaxNAggregateFunction<LT, true>();
-}
-
-template <LogicalType LT>
-AggregateFunctionPtr AggregateFactory::MakeMaxNAggregateFunction() {
-    return new MinMaxNAggregateFunction<LT, false>();
-}
-
-template <LogicalType LT>
 AggregateFunctionPtr AggregateFactory::MakeAnyValueAggregateFunction() {
     return new AnyValueAggregateFunction<LT, AnyValueAggregateData<LT>,
                                          AnyValueElement<LT, AnyValueAggregateData<LT>>>();
@@ -443,14 +421,6 @@ AggregateFunctionPtr AggregateFactory::MakeHllSketchAggregateFunction() {
 template <LogicalType LT>
 AggregateFunctionPtr AggregateFactory::MakeThetaSketchAggregateFunction() {
     return new ThetaSketchAggregateFunction<LT>();
-}
-
-inline AggregateFunctionPtr AggregateFactory::MakeThetaSketchCombineAggregateFunction() {
-    return new ThetaSketchCombineAggregateFunction();
-}
-
-inline AggregateFunctionPtr AggregateFactory::MakeThetaSketchIntersectCondAggregateFunction() {
-    return new ThetaSketchIntersectCondAggregateFunction();
 }
 
 template <LogicalType LT>

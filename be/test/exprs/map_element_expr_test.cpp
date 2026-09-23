@@ -17,14 +17,14 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
-#include "base/string/slice.h"
 #include "column/column_helper.h"
+#include "column/datum.h"
 #include "column/map_column.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "exprs/mock_vectorized_expr.h"
 #include "testutil/column_test_helper.h"
-#include "types/datum.h"
 #include "types/logical_type.h"
+#include "util/slice.h"
 
 namespace starrocks {
 namespace {
@@ -461,7 +461,7 @@ TEST_F(MapElementExprTest, test_map_const) {
         ASSERT_TRUE(expr->prepare(nullptr, nullptr).ok());
         ASSERT_TRUE(expr->open(nullptr, nullptr, FunctionContext::FRAGMENT_LOCAL).ok());
         // corner test
-        ASSERT_TRUE(expr->open(nullptr, nullptr, FunctionContext::FunctionStateScope::FRAGMENT_LOCAL).ok());
+        ASSERT_TRUE(expr->open(nullptr, nullptr, FunctionContext::FunctionStateScope::THREAD_LOCAL).ok());
         auto result = expr->evaluate(nullptr, nullptr);
         EXPECT_TRUE(result->is_constant());
         EXPECT_EQ(33, result->get(0).get_int32());

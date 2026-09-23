@@ -14,9 +14,8 @@
 
 #pragma once
 
-#include "common/runtime_profile.h"
-#include "exec_primitive/pipeline/source_operator.h"
-#include "storage/rowset/rowset.h"
+#include "exec/pipeline/source_operator.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks::pipeline {
 

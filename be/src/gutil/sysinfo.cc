@@ -69,8 +69,9 @@
 
 using std::numeric_limits;
 
-// These functions are exported by some allocator libraries outside the 'base'
-// namespace, so keep StarRocks' copies namespaced to avoid conflicts.
+// This isn't in the 'base' namespace in tcmallc. But, tcmalloc
+// exports these functions, so we need to namespace them to avoid
+// the conflict.
 namespace base {
 
 // ----------------------------------------------------------------------
@@ -232,18 +233,14 @@ static void InitializeSystemInfo() {
     if (already_called) return;
     already_called = true;
 
-#if defined(__linux__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
     bool saw_mhz = false;
-#endif
 
     if (RunningOnValgrind()) {
         // Valgrind may slow the progress of time artificially (--scale-time=N
         // option). We thus can't rely on CPU Mhz info stored in /sys or /proc
         // files. Thus, actually measure the cps.
         cpuinfo_cycles_per_second = EstimateCyclesPerSecond(100);
-#if defined(__linux__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
         saw_mhz = true;
-#endif
     }
 
 #if defined(__linux__) || defined(__CYGWIN__) || defined(__CYGWIN32__)

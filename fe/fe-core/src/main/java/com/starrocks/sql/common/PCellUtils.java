@@ -36,8 +36,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static com.starrocks.connector.MVPartitionCellBuilder.buildListCells;
-import static com.starrocks.connector.MVPartitionCellBuilder.buildRangeCells;
+import static com.starrocks.connector.PartitionUtil.getMVPartitionNameWithRange;
+import static com.starrocks.connector.PartitionUtil.getMVPartitionToCells;
 
 public class PCellUtils {
     private static final Logger LOG = LogManager.getLogger(PCellUtils.class);
@@ -67,7 +67,7 @@ public class PCellUtils {
                 }
                 List<Column> refPartitionColumns = refBaseTablePartitionColumns.get(baseTable);
                 if (partitionInfo.isListPartition()) {
-                    return buildListCells(baseTable, refPartitionColumns, partitionNames).cells();
+                    return getMVPartitionToCells(baseTable, refPartitionColumns, partitionNames);
                 } else if (partitionInfo.isRangePartition()) {
                     Preconditions.checkArgument(refPartitionColumns.size() == 1,
                             "Range partition column size must be 1");
@@ -75,8 +75,8 @@ public class PCellUtils {
                     Optional<Expr> partitionExprOpt = mv.getRangePartitionFirstExpr();
                     Preconditions.checkArgument(partitionExprOpt.isPresent(),
                             "Range partition expr must be present");
-                    return buildRangeCells(baseTable, partitionColumn,
-                            partitionNames, partitionExprOpt.get()).cells();
+                    return getMVPartitionNameWithRange(baseTable, partitionColumn,
+                            partitionNames, partitionExprOpt.get());
                 } else if (partitionInfo.isUnPartitioned()) {
                     // For non-partitioned MV, any updated partition in the base table triggers a full refresh.
                     // Wrap each updated base-table partition name as a PCellNone so the caller can detect

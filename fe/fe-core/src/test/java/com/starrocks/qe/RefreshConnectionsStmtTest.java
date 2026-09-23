@@ -140,6 +140,7 @@ public class RefreshConnectionsStmtTest {
                 .getVariableMgr().newSessionVariable());
         
         // Verify new connection has old value (before refresh)
+        int oldTimeout = newCtx.getSessionVariable().getQueryTimeoutS();
         
         // Execute REFRESH CONNECTIONS
         String refreshSql = "REFRESH CONNECTIONS";
@@ -196,6 +197,7 @@ public class RefreshConnectionsStmtTest {
             setExecutor.execute();
             
             // Store original value
+            int originalTimeout = testCtx.getSessionVariable().getQueryTimeoutS();
             
             // Modify session variable to a different value
             SystemVariable sessionVar = new SystemVariable(SetType.SESSION, "query_timeout", 
@@ -271,6 +273,8 @@ public class RefreshConnectionsStmtTest {
             testCtx.modifySystemVariable(sessionVar, true);
             
             // Store original values
+            int originalTimeout = testCtx.getSessionVariable().getQueryTimeoutS();
+            long originalMemLimit = testCtx.getSessionVariable().getMaxExecMemByte();
             
             // Execute REFRESH CONNECTIONS
             String refreshSql = "REFRESH CONNECTIONS";

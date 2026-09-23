@@ -1,4 +1,4 @@
--- name: test_timetravel_snapshot_schema @sequential @no_arrow_flight_sql @slow
+-- name: test_timetravel_snapshot_schema @sequential @no_arrow_flight_sql
 -- Test Point:
 --   1. VERSION AS OF a tag/branch created before a column rename resolves columns by the
 --      snapshot schema: the old column name resolves, the renamed name does not exist yet.

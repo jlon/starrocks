@@ -21,14 +21,13 @@
 #include <boost/tokenizer.hpp>
 #include <memory>
 
-#include "base/format.h"
 #include "column/column_viewer.h"
 #include "common/compiler_util.h"
 #include "common/status.h"
 #include "glog/logging.h"
 #include "gutil/strings/split.h"
 #include "gutil/strings/substitute.h"
-#include "types/json_value.h"
+#include "util/json.h"
 #include "velocypack/vpack.h"
 
 namespace starrocks {
@@ -54,23 +53,13 @@ bool ArraySelectorSlice::match(const std::string& input) {
 }
 
 void ArraySelectorSingle::iterate(vpack::Slice array_slice, std::function<void(vpack::Slice)> callback) {
-    // Bounds-check up front instead of relying on velocypack to throw. Slice::at() raises IndexOutOfBounds
-    // for every row whose array is shorter than the index, and a C++ throw per row is extremely expensive:
-    // the unwinder serializes on a process-wide lock, so a scan over millions of short/empty arrays turns
-    // into a lock convoy that burns most of the node's CPU in the kernel. The try/catch stays as a safety
-    // net for malformed data (it costs nothing unless something is actually thrown); in the common
-    // out-of-range case it is never reached.
-    vpack::Slice item = noneJsonSlice();
-    if (array_slice.isArray() && index >= 0) {
-        try {
-            if (static_cast<vpack::ValueLength>(index) < array_slice.length()) {
-                item = array_slice.at(index);
-            }
-        } catch (const vpack::Exception&) {
-            item = noneJsonSlice();
+    try {
+        callback(array_slice.at(index));
+    } catch (const vpack::Exception& e) {
+        if (e.errorCode() == vpack::Exception::IndexOutOfBounds) {
+            callback(noneJsonSlice());
         }
     }
-    callback(item);
 }
 
 void ArraySelectorWildcard::iterate(vpack::Slice array_slice, std::function<void(vpack::Slice)> callback) {
@@ -157,9 +146,9 @@ Status JsonPathPiece::parse(const std::string& path_string, std::vector<JsonPath
         if (i == 0) {
             std::shared_ptr<ArraySelector> selector(new ArraySelectorNone());
             if (current != "$") {
-                parsed_paths->emplace_back("$", std::move(selector));
+                parsed_paths->emplace_back(JsonPathPiece("$", std::move(selector)));
             } else {
-                parsed_paths->emplace_back("$", std::move(selector));
+                parsed_paths->emplace_back(JsonPathPiece("$", std::move(selector)));
                 continue;
             }
         }
@@ -171,7 +160,7 @@ Status JsonPathPiece::parse(const std::string& path_string, std::vector<JsonPath
             // No array selector
             std::unique_ptr<ArraySelector> selector;
             RETURN_IF_ERROR(ArraySelector::parse(array_pieces, &selector));
-            parsed_paths->emplace_back(variable, std::move(selector));
+            parsed_paths->emplace_back(JsonPathPiece(variable, std::move(selector)));
         } else {
             // Cosume multiple array selector
             re2::StringPiece array_piece(array_pieces);
@@ -179,7 +168,7 @@ Status JsonPathPiece::parse(const std::string& path_string, std::vector<JsonPath
             while (RE2::Consume(&array_piece, ARRAY_INDEX_PATTERN, &single_piece)) {
                 std::unique_ptr<ArraySelector> selector;
                 RETURN_IF_ERROR(ArraySelector::parse(single_piece, &selector));
-                parsed_paths->emplace_back(variable, std::move(selector));
+                parsed_paths->emplace_back(JsonPathPiece(variable, std::move(selector)));
                 variable = "";
             }
         }
@@ -351,9 +340,3 @@ StatusOr<JsonPath*> JsonPath::relativize(const JsonPath* other, JsonPath* output
 }
 
 } // namespace starrocks
-
-auto fmt::formatter<starrocks::ArraySelectorType>::format(const starrocks::ArraySelectorType value,
-                                                          format_context& ctx) const -> format_context::iterator {
-    return formatter<std::underlying_type_t<starrocks::ArraySelectorType>>::format(
-            starrocks::enum_to_underlying_type(value), ctx);
-}

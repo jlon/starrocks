@@ -62,7 +62,6 @@ import com.starrocks.sql.ast.expression.StringLiteral;
 import com.starrocks.sql.ast.expression.SubfieldExpr;
 import com.starrocks.sql.ast.expression.Subquery;
 import com.starrocks.sql.ast.expression.VarBinaryLiteral;
-import com.starrocks.sql.common.AIModelConfigs;
 import com.starrocks.sql.common.LargeInPredicateException;
 import com.starrocks.sql.common.UnsupportedException;
 import com.starrocks.sql.optimizer.operator.scalar.ArrayOperator;
@@ -94,7 +93,6 @@ import com.starrocks.sql.optimizer.operator.scalar.ScalarOperatorVisitor;
 import com.starrocks.sql.optimizer.operator.scalar.SubfieldOperator;
 import com.starrocks.sql.optimizer.operator.scalar.SubqueryOperator;
 import com.starrocks.sql.spm.SPMFunctions;
-import com.starrocks.thrift.TAIModelSource;
 import com.starrocks.type.ArrayType;
 import com.starrocks.type.BooleanType;
 import com.starrocks.type.DateType;
@@ -133,7 +131,8 @@ public class ScalarOperatorToExpr {
         private final Map<ColumnRefOperator, ScalarOperator> projectOperatorMap;
 
         public FormatterContext(Map<ColumnRefOperator, Expr> variableToSlotRef) {
-            this(variableToSlotRef, new HashMap<>());
+            this.colRefToExpr = variableToSlotRef;
+            this.projectOperatorMap = new HashMap<>();
         }
 
         public FormatterContext(Map<ColumnRefOperator, Expr> variableToSlotRef,
@@ -194,12 +193,7 @@ public class ScalarOperatorToExpr {
         public Expr visitVariableReference(ColumnRefOperator node, FormatterContext context) {
             Expr expr = context.colRefToExpr.get(node);
             if (context.projectOperatorMap.containsKey(node) && expr == null) {
-                final ScalarOperator projected = context.projectOperatorMap.get(node);
-                if (projected.equals(node)) {
-                    throw new SemanticException("Cannot convert ColumnRefOperator to Expr, " +
-                            "please check the input expression: " + node);
-                }
-                expr = buildExpr.build(projected, context);
+                expr = buildExpr.build(context.projectOperatorMap.get(node), context);
                 hackTypeNull(expr);
                 context.colRefToExpr.put(node, expr);
                 return expr;
@@ -555,29 +549,15 @@ public class ScalarOperatorToExpr {
                     callExpr.setIgnoreNulls(call.getIgnoreNulls());
                     break;
                 default:
-                    Preconditions.checkNotNull(call.getFunction());
-                    List<ScalarOperator> semanticChildren = call.getChildren();
-                    if (call.getFunction().isAi()) {
-                        Preconditions.checkState(!call.getFunction().hasVarArgs(),
-                                "AI functions must have fixed semantic arity");
-                        int semanticArity = call.getFunction().getNumArgs();
-                        Preconditions.checkState(call.getChildren().size() == semanticArity + 1,
-                                "AI call must contain exactly one optimizer-only occurrence child");
-                        semanticChildren = call.getChildren().subList(0, semanticArity);
-                    }
-                    List<Expr> arg = semanticChildren.stream()
+                    List<Expr> arg = call.getChildren().stream()
                             .map(expr -> buildExpr.build(expr, context))
                             .collect(Collectors.toList());
                     if (call.isCountStar()) {
                         callExpr = new FunctionCallExpr(call.getFnName(), FunctionParams.createStarParam());
-                    } else if (call.getFunction().isAi()) {
-                        callExpr = new FunctionCallExpr(call.getFnName(),
-                                new FunctionParams(call.isDistinct(), arg),
-                                call.getFunction().getAiModelSource() == TAIModelSource.SYSTEM
-                                        ? AIModelConfigs.systemConfigId(call.getFunction()) : null);
                     } else {
                         callExpr = new FunctionCallExpr(call.getFnName(), new FunctionParams(call.isDistinct(), arg));
                     }
+                    Preconditions.checkNotNull(call.getFunction());
                     ((FunctionCallExpr) callExpr).setFn(call.getFunction());
                     callExpr.setIgnoreNulls(call.getIgnoreNulls());
                     break;

@@ -15,6 +15,8 @@
 #include "fs/bundle_file.h"
 
 #include "fs/fs.h"
+#include "fs/fs_util.h"
+
 namespace starrocks {
 
 Status BundleWritableFileContext::try_create_bundle_file(

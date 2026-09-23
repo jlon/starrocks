@@ -14,12 +14,9 @@
 
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
 #include <deque>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "common/status.h"
 

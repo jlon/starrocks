@@ -3,5 +3,4 @@ label: 'Tablet and replica'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: tablet_replica
+  type: generated-index

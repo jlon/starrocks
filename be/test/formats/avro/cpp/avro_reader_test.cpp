@@ -16,16 +16,14 @@
 
 #include <gtest/gtest.h>
 
-#include "base/testutil/assert.h"
 #include "column/adaptive_nullable_column.h"
-#include "column/chunk.h"
 #include "column/column_helper.h"
-#include "common/config_scan_io_fwd.h"
-#include "compute_env/scanner_counter.h"
+#include "exec/file_scanner/file_scanner.h"
 #include "fs/fs.h"
 #include "gen_cpp/Descriptors_types.h"
-#include "runtime/descriptors.h"
+#include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 
@@ -135,8 +133,11 @@ public:
 
 private:
     std::shared_ptr<RuntimeState> create_runtime_state() {
+        TQueryOptions query_options;
+        TUniqueId fragment_id;
         TQueryGlobals query_globals;
-        std::shared_ptr<RuntimeState> state = std::make_shared<RuntimeState>(query_globals);
+        std::shared_ptr<RuntimeState> state =
+                std::make_shared<RuntimeState>(fragment_id, query_options, query_globals, ExecEnv::GetInstance());
         TUniqueId id;
         state->init_mem_trackers(id);
         state->set_timezone("UTC");
@@ -359,7 +360,7 @@ TEST_F(AvroReaderTest, test_read_complex_types_as_varchar) {
     // read as varchar type
     for (auto& slot_desc : tmp_slot_descs) {
         slot_descs.emplace_back(_obj_pool.add(
-                new SlotDescriptor(slot_desc.id(), std::string(slot_desc.col_name()),
+                new SlotDescriptor(slot_desc.id(), slot_desc.col_name(),
                                    TypeDescriptor::create_varchar_type(TypeDescriptor::MAX_VARCHAR_LENGTH))));
     }
 

@@ -16,6 +16,7 @@ package com.starrocks.lake.compaction;
 
 import com.google.common.collect.Lists;
 import com.starrocks.proto.AbortCompactionRequest;
+import com.starrocks.proto.AbortCompactionResponse;
 import com.starrocks.proto.AggregateCompactRequest;
 import com.starrocks.proto.CompactRequest;
 import com.starrocks.proto.CompactResponse;
@@ -30,6 +31,7 @@ import org.apache.logging.log4j.Logger;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 
 public class AggregateCompactionTask extends CompactionTask {
@@ -85,7 +87,7 @@ public class AggregateCompactionTask extends CompactionTask {
             abortRequest.txnId = eachRequest.txnId;
             try {
                 LakeService service = BrpcProxy.getLakeService(computeNodePB.getHost(), computeNodePB.getBrpcPort());
-                service.abortCompaction(abortRequest);
+                Future<AbortCompactionResponse> ignored = service.abortCompaction(abortRequest);
                 LOG.info("abort compaction task successfully sent, txn_id: {}, node: {}", eachRequest.txnId, nodeId);
             } catch (Exception e) {
                 LOG.warn("fail to abort compaction task, txn_id: {}, node: {} error: {}", eachRequest.txnId,

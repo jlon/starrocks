@@ -8,7 +8,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/testutil/id_generator.h"
 #include "common/status.h"
 #include "common/statusor.h"
 #include "gen_cpp/lake_types.pb.h"
@@ -17,8 +16,10 @@
 #include "storage/lake/location_provider.h"
 #include "storage/lake/metacache.h"
 #include "storage/lake/tablet_manager.h"
+#include "storage/lake/tablet_reshard.h" // PublishTabletInfo full definition
 #include "storage/lake/txn_log.h"
 #include "test_util.h"
+#include "testutil/id_generator.h"
 
 namespace starrocks::lake {
 
@@ -327,24 +328,6 @@ TEST_F(NoOpPublishTest, no_op_publish_advances_version_without_txnlog) {
     ASSERT_EQ(_tablet_metadata->rowsets_size(), new_metadata->rowsets_size());
 }
 
-TEST_F(NoOpPublishTest, aggregate_publish_caches_bundled_metadata_marker) {
-    const int64_t tablet_id = _tablet_metadata->id();
-
-    TxnInfoPB txn_info;
-    txn_info.set_txn_id(next_id());
-    txn_info.set_txn_type(TXN_NORMAL);
-    txn_info.set_combined_txn_log(false);
-    txn_info.set_commit_time(time(nullptr));
-    txn_info.set_no_op_publish(true);
-
-    std::vector<TxnInfoPB> txns{txn_info};
-    auto result = publish_version(_tablet_mgr.get(), PublishTabletInfo(tablet_id), 1, 2, txns,
-                                  /*skip_write_tablet_metadata=*/true);
-    ASSERT_OK(result.status());
-
-    EXPECT_TRUE(_tablet_mgr->lookup_cached_bundled_metadata_partition_marker(tablet_id));
-}
-
 // Verifies that has_no_op_publish_in_batch causes the metacache early-return
 // to be bypassed. We pre-populate the metacache with a deliberately-different
 // metadata at the target version (commit_time=999999) to simulate a stale
@@ -634,7 +617,17 @@ protected:
 
     // Two-txn batch matching the base_version=1 -> new_version=3 retry scenario.
     std::vector<TxnInfoPB> make_txns() {
-        return {TEST_txn_info(next_id(), time(nullptr)), TEST_txn_info(next_id(), time(nullptr))};
+        std::vector<TxnInfoPB> txns;
+        for (int i = 0; i < 2; ++i) {
+            TxnInfoPB txn_info;
+            txn_info.set_txn_id(next_id());
+            txn_info.set_txn_type(TXN_NORMAL);
+            txn_info.set_combined_txn_log(false);
+            txn_info.set_commit_time(time(nullptr));
+            txn_info.set_force_publish(false);
+            txns.push_back(std::move(txn_info));
+        }
+        return txns;
     }
 
     std::shared_ptr<TabletMetadataPB> _tablet_metadata;
@@ -658,16 +651,16 @@ TEST_F(CalNewBaseVersionTest, cache_only_version_not_adopted) {
     ASSERT_EQ(0, _update_mgr->get_primary_index_data_version(tablet_id));
 }
 
-// Same as above but with the partition marked as using bundled metadata, so
-// the read goes through get_single_tablet_metadata
-// first -- the exact metacache lookup the original bug hit.
-TEST_F(CalNewBaseVersionTest, cache_only_version_not_adopted_on_bundled_metadata_partition) {
+// Same as above but with the partition marked as an aggregation (file
+// bundling) partition, so the read goes through get_single_tablet_metadata
+// first — the exact metacache lookup the original bug hit.
+TEST_F(CalNewBaseVersionTest, cache_only_version_not_adopted_on_aggregation_partition) {
     const int64_t tablet_id = _tablet_metadata->id();
 
     auto meta_v2 = std::make_shared<TabletMetadataPB>(*_tablet_metadata);
     meta_v2->set_version(2);
     _tablet_mgr->metacache()->cache_tablet_metadata(_tablet_mgr->tablet_metadata_location(tablet_id, 2), meta_v2);
-    _tablet_mgr->cache_bundled_metadata_partition_marker(tablet_id);
+    _tablet_mgr->metacache()->cache_aggregation_partition(_tablet_mgr->tablet_metadata_root_location(tablet_id), true);
     set_primary_index_data_version(tablet_id, 2);
 
     auto txns = make_txns();
@@ -704,7 +697,7 @@ TEST_F(CalNewBaseVersionTest, durable_bundle_version_adopted) {
     tablet_metas.emplace(tablet_id, meta_v2);
     CHECK_OK(_tablet_mgr->put_bundle_tablet_metadata(tablet_metas));
     _tablet_mgr->metacache()->prune();
-    _tablet_mgr->cache_bundled_metadata_partition_marker(tablet_id);
+    _tablet_mgr->metacache()->cache_aggregation_partition(_tablet_mgr->tablet_metadata_root_location(tablet_id), true);
     set_primary_index_data_version(tablet_id, 2);
 
     auto txns = make_txns();

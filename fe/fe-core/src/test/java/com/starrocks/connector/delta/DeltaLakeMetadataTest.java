@@ -144,8 +144,8 @@ public class DeltaLakeMetadataTest {
         );
         // addFile schema, here we only care about the partitionValues, so not use all fields
         StructType addFileSchema = new StructType(Lists.newArrayList(
-                new StructField("path", BasePrimitiveType.createPrimitive("string"), true),
-                new StructField("partitionValues", mapType, true)));
+                new StructField("path", BasePrimitiveType.createPrimitive("string"), true, null),
+                new StructField("partitionValues", mapType, true, null)));
         DefaultStructVector addFile = new DefaultStructVector(3, addFileSchema, Optional.empty(), addFileCols);
         // construct a columnar batch which only contains addFile
         ColumnarBatch columnarBatch = new DefaultColumnarBatch(3,
@@ -174,7 +174,7 @@ public class DeltaLakeMetadataTest {
 
         new Expectations() {
             {
-                snapshot.getScanBuilder();
+                snapshot.getScanBuilder((Engine) any);
                 result = scanBuilder;
                 minTimes = 0;
 

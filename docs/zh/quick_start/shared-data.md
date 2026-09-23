@@ -1,5 +1,4 @@
 ---
-sidebar_position: 30
 description: 计算与存储分离
 displayed_sidebar: docs
 ---

@@ -135,9 +135,6 @@ dependencies {
     implementation("io.delta:delta-kernel-defaults") {
         exclude(group = "org.apache.hadoop", module = "hadoop-client-api")
         exclude(group = "org.apache.hadoop", module = "hadoop-client-runtime")
-        // FE uses slf4j 1.7.x with log4j-slf4j-impl; exclude delta's slf4j 2.x binding to avoid
-        // NoClassDefFoundError: org/slf4j/spi/LoggingEventBuilder at startup
-        exclude(group = "org.apache.logging.log4j", module = "log4j-slf4j2-impl")
     }
     implementation("io.grpc:grpc-api")
     implementation("io.grpc:grpc-core")
@@ -237,20 +234,11 @@ dependencies {
     implementation("org.apache.parquet:parquet-column")
     implementation("org.apache.parquet:parquet-common")
     implementation("org.apache.parquet:parquet-hadoop")
-    implementation("org.apache.ranger:ranger-audit-dest-solr") {
-        exclude(group = "org.elasticsearch", module = "*")
-        exclude(group = "org.elasticsearch.client", module = "*")
-        // jetty-client resolves to the banned 9.4.58 (ban-vulnerable-dependencies); Solr audit
-        // uses the Apache HttpClient path, not the Jetty HTTP/2 client, so this is runtime-safe.
-        exclude(group = "org.eclipse.jetty", module = "*")
-    }
     implementation("org.apache.ranger:ranger-plugins-common") {
         exclude(group = "org.elasticsearch", module = "*")
         exclude(group = "org.elasticsearch.client", module = "*")
         exclude(group = "com.nimbusds", module = "nimbus-jose-jwt")
         exclude(group = "com.sun.jersey", module = "jersey-bundle")
-        // Ranger 2.9.0 declares jsr311-api (JAX-RS 1.1) directly; it shadows jakarta.ws.rs-api 2.1.6
-        exclude(group = "javax.ws.rs", module = "jsr311-api")
     }
     compileOnly("org.apache.spark:spark-catalyst_2.12")
     implementation("org.apache.spark:spark-core_2.12") {
@@ -289,9 +277,6 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     implementation("org.mariadb.jdbc:mariadb-java-client")
     testImplementation("org.mockito:mockito-inline:4.11.0")
-    // Force ByteBuddy 1.14.9+ for Java 21 class file format support
-    testImplementation("net.bytebuddy:byte-buddy:1.14.9")
-    testImplementation("net.bytebuddy:byte-buddy-agent:1.14.9")
     testImplementation("org.openjdk.jmh:jmh-core:1.37")
     testImplementation("org.openjdk.jmh:jmh-generator-annprocess:1.37")
     implementation("org.owasp.encoder:encoder")
@@ -380,6 +365,12 @@ tasks.register<Task>("generateThriftSources") {
     description = "Generates Java source files from Thrift definitions"
     group = "build"
 
+    // Create a special configuration for the thrift compiler rather than using runtime classpath
+    val thriftGenClasspath = configurations.create("thriftGenClasspath")
+    dependencies {
+        thriftGenClasspath("io.github.decster:thrift-java-maven-plugin:0.1.3")
+    }
+
     val protoDir = file("../../gensrc/thrift")
     val outputDir = layout.buildDirectory.get().dir("generated-sources/thrift").asFile
 
@@ -389,40 +380,24 @@ tasks.register<Task>("generateThriftSources") {
         exclude("parquet.thrift")
     }.files
 
-    // Mirror the binary-discovery logic from gensrc/thrift/Makefile:
-    // prefer $STARROCKS_THIRDPARTY/installed/bin/thrift, fall back to "thrift" on PATH.
-    // Resolved at configuration time so Gradle can track it as a task input.
-    val thriftBin: String = run {
-        val tp = System.getenv("STARROCKS_THIRDPARTY")
-        if (tp != null) {
-            val candidate = file("$tp/installed/bin/thrift")
-            if (candidate.exists()) return@run candidate.absolutePath
-        }
-        "thrift"
-    }
-
-    // Declare inputs: proto files and the thrift compiler binary.
-    // Including the binary ensures the task is re-run when the toolchain is upgraded.
+    // Declare inputs (proto files)
     inputs.files(protoFiles)
-    inputs.property("thriftBin", thriftBin)
 
     // Declare output directory
     outputs.dir(outputDir)
 
     doFirst {
         mkdir(outputDir)
-
-        // Process each thrift file with the native compiler, matching Maven's maven-thrift-plugin args.
-        protoFiles.forEach { thriftFile ->
-            project.exec {
-                commandLine(
-                    thriftBin,
-                    "--gen", "java",
-                    "-out", outputDir.absolutePath,
-                    "-I", protoDir.absolutePath,
-                    thriftFile.absolutePath
-                )
+        // Process each proto file individually
+        project.javaexec {
+            classpath = thriftGenClasspath
+            mainClass.set("io.github.decster.ThriftCompiler")
+            // Build arguments list with the output directory and all thrift files
+            val allArgs = mutableListOf("-o", "$outputDir")
+            protoFiles.forEach { file ->
+                allArgs.add(file.absolutePath)
             }
+            args = allArgs
         }
     }
 }
@@ -499,37 +474,10 @@ tasks.test {
     systemProperty("starrocks.home", project.ext["starrocks.home"] as String)
 
     // Add JMockit Java agent to JVM arguments
-    val jmockitPath = configurations.testCompileClasspath.get().find { it.name.contains("jmockit") }?.absolutePath
     jvmArgs(
         "-Djdk.attach.allowAttachSelf",
         "-Duser.timezone=Asia/Shanghai",
-        "-javaagent:${jmockitPath}",
-        // JIT tuning to match Maven surefire config
-        "-XX:TieredStopAtLevel=1",
-        "-XX:CICompilerCount=1",
-        "-XX:-BackgroundCompilation",
-        "-XX:+UseSerialGC",
-        // Java 21 module access for JMockit/Mockito ByteBuddy
-        // (Maven surefire 3.2.5 auto-injects these on Java 17+)
-        "--add-opens", "java.base/java.lang=ALL-UNNAMED",
-        "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
-        "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED",
-        "--add-opens", "java.base/java.io=ALL-UNNAMED",
-        "--add-opens", "java.base/java.math=ALL-UNNAMED",
-        "--add-opens", "java.base/java.net=ALL-UNNAMED",
-        "--add-opens", "java.base/java.nio=ALL-UNNAMED",
-        "--add-opens", "java.base/java.text=ALL-UNNAMED",
-        "--add-opens", "java.base/java.time=ALL-UNNAMED",
-        "--add-opens", "java.base/java.util=ALL-UNNAMED",
-        "--add-opens", "java.base/java.util.stream=ALL-UNNAMED",
-        "--add-opens", "java.base/java.util.regex=ALL-UNNAMED",
-        "--add-opens", "java.base/java.util.concurrent=ALL-UNNAMED",
-        "--add-opens", "java.base/java.util.concurrent.atomic=ALL-UNNAMED",
-        "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED",
-        "--add-opens", "java.base/sun.security.ssl=ALL-UNNAMED",
-        "--add-opens", "java.base/sun.security.x509=ALL-UNNAMED",
-        "--add-opens", "java.base/jdk.internal.misc=ALL-UNNAMED",
-        "--add-opens", "java.management/sun.management=ALL-UNNAMED",
+        "-javaagent:${configurations.testCompileClasspath.get().find { it.name.contains("jmockit") }?.absolutePath}"
     )
 
     // Use independent class loading (equivalent to useSystemClassLoader=false)
@@ -542,7 +490,7 @@ tasks.test {
 
 // Checkstyle configuration to match Maven behavior
 checkstyle {
-    toolVersion = project.ext["puppycrawl.version"].toString()
+    toolVersion = "10.21.1"  // puppycrawl.version from parent pom
     configFile = rootProject.file("checkstyle.xml")
 }
 
@@ -562,23 +510,11 @@ tasks.withType<Checkstyle>().configureEach {
     maxHeapSize = "4096m"
 }
 
-// Aggregate task that checks both main and test sources (matches Maven behavior)
-tasks.register("checkstyle") {
-    dependsOn("checkstyleMain", "checkstyleTest")
-    description = "Run Checkstyle analysis for both main and test classes"
-    group = "verification"
-}
-
 // Bind checkstyle to run before compilation
 tasks.compileJava {
-    dependsOn("checkstyleMain")
     dependsOn("generateThriftSources", "generateProtoSources", "generateByScripts")
     // Add explicit dependency on hive-udf shadowJar task
     dependsOn(":plugin:hive-udf:shadowJar")
-}
-
-tasks.named<JavaCompile>("compileTestJava") {
-    dependsOn("checkstyleTest")
 }
 
 // Configure JAR task

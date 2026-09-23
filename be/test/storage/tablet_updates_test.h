@@ -21,18 +21,15 @@
 #include <string>
 #include <thread>
 
-#include "base/path/path_util.h"
-#include "base/testutil/assert.h"
-#include "base/utility/defer_op.h"
-#include "column/chunk_factory.h"
 #include "column/datum_tuple.h"
 #include "column/vectorized_fwd.h"
-#include "common/config_storage_fwd.h"
 #include "fs/fs.h"
 #include "gutil/strings/substitute.h"
-#include "gutil/walltime.h"
+#include "runtime/runtime_state.h"
 #include "storage/chunk_helper.h"
+#include "storage/empty_iterator.h"
 #include "storage/kv_store.h"
+#include "storage/primary_key_encoder.h"
 #include "storage/rowset/rowset_factory.h"
 #include "storage/rowset/rowset_options.h"
 #include "storage/rowset/rowset_writer.h"
@@ -46,10 +43,11 @@
 #include "storage/tablet_meta_manager.h"
 #include "storage/tablet_reader.h"
 #include "storage/tablet_updates.h"
+#include "storage/union_iterator.h"
 #include "storage/update_manager.h"
-#include "storage_primitive/empty_iterator.h"
-#include "storage_primitive/primary_key_encoder.h"
-#include "storage_primitive/union_iterator.h"
+#include "testutil/assert.h"
+#include "util/defer_op.h"
+#include "util/path_util.h"
 
 namespace starrocks {
 
@@ -94,7 +92,7 @@ public:
             return *writer->build();
         }
         auto schema = ChunkHelper::convert_schema(tablet->thread_safe_get_tablet_schema());
-        auto chunk = ChunkFactory::new_chunk(schema, keys.size());
+        auto chunk = ChunkHelper::new_chunk(schema, keys.size());
         auto cols = chunk->columns();
         for (int64_t key : keys) {
             if (schema.num_key_fields() == 1) {
@@ -150,7 +148,7 @@ public:
         }
         auto schema = ChunkHelper::convert_schema(tablet->thread_safe_get_tablet_schema());
         for (int i = 0; i < keys_by_segment.size(); i++) {
-            auto chunk = ChunkFactory::new_chunk(schema, keys_by_segment[i].size());
+            auto chunk = ChunkHelper::new_chunk(schema, keys_by_segment[i].size());
             auto cols = chunk->columns();
             for (int64_t key : keys_by_segment[i]) {
                 if (schema.num_key_fields() == 1) {
@@ -205,7 +203,7 @@ public:
         auto schema = ChunkHelper::convert_schema(partial_schema);
 
         if (keys.size() > 0) {
-            auto chunk = ChunkFactory::new_chunk(schema, keys.size());
+            auto chunk = ChunkHelper::new_chunk(schema, keys.size());
             EXPECT_TRUE(2 == chunk->num_columns());
             auto cols = chunk->columns();
             for (int64_t key : keys) {
@@ -237,7 +235,7 @@ public:
         EXPECT_TRUE(RowsetFactory::create_rowset_writer(writer_context, &writer).ok());
         auto schema = ChunkHelper::convert_schema(tablet->thread_safe_get_tablet_schema());
         for (std::size_t written_rows = 0; written_rows < keys.size(); written_rows += max_rows_per_segment) {
-            auto chunk = ChunkFactory::new_chunk(schema, max_rows_per_segment);
+            auto chunk = ChunkHelper::new_chunk(schema, max_rows_per_segment);
             auto cols = chunk->columns();
             for (size_t i = 0; i < max_rows_per_segment; i++) {
                 cols[0]->as_mutable_ptr()->append_datum(Datum(keys[written_rows + i]));
@@ -266,7 +264,7 @@ public:
         EXPECT_TRUE(RowsetFactory::create_rowset_writer(writer_context, &writer).ok());
         auto schema = ChunkHelper::convert_schema(tablet->thread_safe_get_tablet_schema());
         const auto nkeys = keys.size();
-        auto chunk = ChunkFactory::new_chunk(schema, nkeys);
+        auto chunk = ChunkHelper::new_chunk(schema, nkeys);
         auto cols = chunk->columns();
         for (int64_t key : keys) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(key));
@@ -303,7 +301,7 @@ public:
             }
         }
         auto schema_without_full_row_column = std::make_unique<Schema>(&schema, cids);
-        auto chunk = ChunkFactory::new_chunk(*schema_without_full_row_column, nkeys);
+        auto chunk = ChunkHelper::new_chunk(*schema_without_full_row_column, nkeys);
         string varchar_value;
         if (large_var_column) {
             varchar_value = std::string(1024 * 1024, 'a');
@@ -338,7 +336,7 @@ public:
         EXPECT_TRUE(RowsetFactory::create_rowset_writer(writer_context, &writer).ok());
         auto schema = ChunkHelper::convert_schema(tablet->thread_safe_get_tablet_schema());
         const auto nkeys = keys.size();
-        auto chunk = ChunkFactory::new_chunk(schema, nkeys);
+        auto chunk = ChunkHelper::new_chunk(schema, nkeys);
         auto cols = chunk->columns();
         for (auto i = 0; i < nkeys; ++i) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(keys[i]));
@@ -367,7 +365,7 @@ public:
         EXPECT_TRUE(RowsetFactory::create_rowset_writer(writer_context, &writer).ok());
         auto schema = ChunkHelper::convert_schema(tablet->thread_safe_get_tablet_schema());
         const auto keys_size = all_cols[0].size();
-        auto chunk = ChunkFactory::new_chunk(schema, keys_size);
+        auto chunk = ChunkHelper::new_chunk(schema, keys_size);
         auto cols = chunk->columns();
         for (auto i = 0; i < keys_size; ++i) {
             append_datum_func(cols[0]->as_mutable_ptr(), static_cast<int64_t>(all_cols[0][i]));
@@ -381,10 +379,7 @@ public:
 
     TabletSharedPtr create_tablet(int64_t tablet_id, int32_t schema_hash, bool multi_column_pk = false,
                                   int64_t schema_id = 0, int32_t schema_version = 0, bool add_v3 = false) {
-        // Deliberately no srand() here. This helper never calls rand(), and re-seeding mid-test
-        // restarts the caller's sequence: `create_tablet(rand(), rand())` followed by another
-        // `create_tablet(rand(), rand())` replays the same two values whenever both seeds land in
-        // the same microsecond, so both calls end up on ONE tablet id (target == base).
+        srand(GetCurrentTimeMicros());
         TCreateTabletReq request;
         request.tablet_id = tablet_id;
         request.__set_version(1);

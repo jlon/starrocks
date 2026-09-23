@@ -91,12 +91,10 @@ export STARROCKS_THIRDPARTY=$(pwd)/thirdparty # 注意: starrocks ディレク�
 FE の多くのソースファイルは手動で生成する必要があります。そうしないと、IDEA はファイルが不足しているためエラーを報告します。次のコマンドを実行して自動的に生成します。
 
 ```bash
-make -C gensrc script
-./build.sh --be --configure-only
-cmake --build be/build_Release --target be_proto_codegen be_thrift_codegen
+cd gensrc
+make clean
+make
 ```
-
-生成された BE の thrift/protobuf C++ ファイルは、`be/build_Release/gensrc/gen_cpp` のようなアクティブな build ディレクトリ配下に配置されます。
 
 ## FE のコンパイル
 

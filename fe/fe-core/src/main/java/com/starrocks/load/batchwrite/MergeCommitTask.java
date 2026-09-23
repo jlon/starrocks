@@ -38,7 +38,6 @@ import com.starrocks.common.profile.Timer;
 import com.starrocks.common.profile.Tracers;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.common.util.LoadPriority;
-import com.starrocks.common.util.ProfileKeyDictionary;
 import com.starrocks.common.util.ProfileManager;
 import com.starrocks.common.util.RuntimeProfile;
 import com.starrocks.common.util.TimeUtils;
@@ -641,7 +640,7 @@ public class MergeCommitTask extends AbstractStreamLoadTask implements Runnable 
             summaryProfile.addInfoString(ProfileManager.QUERY_STATE, taskState.name());
             summaryProfile.addInfoString("State Message", taskStateMessage);
             summaryProfile.addInfoString(ProfileManager.LOAD_TYPE, LOAD_TYPE_NAME);
-            summaryProfile.addInfoString(ProfileKeyDictionary.STARROCKS_VERSION,
+            summaryProfile.addInfoString("StarRocks Version",
                     String.format("%s-%s", Version.STARROCKS_VERSION, Version.STARROCKS_COMMIT_HASH));
             summaryProfile.addInfoString("Default Db", tableRef.getDbName());
             summaryProfile.addInfoString("Table", tableRef.getTableName());
@@ -649,7 +648,7 @@ public class MergeCommitTask extends AbstractStreamLoadTask implements Runnable 
             summaryProfile.addInfoString(ProfileManager.WAREHOUSE_CNGROUP, warehouseName);
             summaryProfile.addInfoString(ProfileManager.PROFILE_COLLECT_TIME,
                     DebugUtil.getPrettyStringMs(collectProfileCostMs.get()));
-            summaryProfile.addInfoString(ProfileKeyDictionary.IS_PROFILE_ASYNC, String.valueOf(true));
+            summaryProfile.addInfoString("IsProfileAsync", String.valueOf(true));
             summaryProfile.addInfoString("Pending Time",
                     DebugUtil.getPrettyStringMs(loadTimeTrace.pendingCostMs.get()));
             summaryProfile.addInfoString("Label", label);
@@ -797,7 +796,7 @@ public class MergeCommitTask extends AbstractStreamLoadTask implements Runnable 
     }
 
     @Override
-    public void afterAborted(TransactionState txnState, String txnStatusChangeReason)
+    public void afterAborted(TransactionState txnState, boolean txnOperated, String txnStatusChangeReason)
             throws StarRocksException {
         // This transaction abort must come from outside, because run() removes the callback before abort txn.
         cancel(txnStatusChangeReason);
@@ -955,12 +954,7 @@ public class MergeCommitTask extends AbstractStreamLoadTask implements Runnable 
             } else {
                 mergeWindowElapsedMs = System.currentTimeMillis() - execStartTime;
             }
-            // A completed load did run the merge window out. The elapsed time above cannot show that reliably:
-            // the backends start the window while the load fragments are still being deployed, before
-            // execWaitStartTimeMs is taken, and time it on a clock of their own. It can also come out negative,
-            // since both of its ends are read from a wall clock that NTP can step backwards.
-            double progress = taskState == TaskState.FINISHED ? 1.0
-                    : (double) Math.max(0, Math.min(mergeCommitIntervalMs, mergeWindowElapsedMs)) / mergeCommitIntervalMs;
+            double progress = (double) Math.min(mergeCommitIntervalMs, mergeWindowElapsedMs) / mergeCommitIntervalMs;
             info.setProgress(String.format("Merge Window %.2f%%", progress * 100));
             return info;
         });

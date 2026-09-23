@@ -37,10 +37,8 @@
 #include <memory>
 #include <sstream>
 
-#include "base/format.h"
-#include "base/uid_util.h"
+#include "runtime/exec_env.h"
 #include "runtime/mem_tracker.h"
-#include "runtime/runtime_env.h"
 #include "storage/metadata_util.h"
 #include "storage/olap_common.h"
 #include "storage/protobuf_file.h"
@@ -49,6 +47,7 @@
 #include "storage/tablet_schema_map.h"
 #include "storage/tablet_updates.h"
 #include "storage/utils.h"
+#include "util/uid_util.h"
 
 namespace starrocks {
 
@@ -136,15 +135,15 @@ TabletMeta::TabletMeta(int64_t table_id, int64_t partition_id, int64_t tablet_id
     }
     CHECK(st.ok()) << st;
     init_from_pb(&tablet_meta_pb);
-    MEM_TRACKER_SAFE_CONSUME(RuntimeEnv::GetInstance()->tablet_metadata_mem_tracker(), _mem_usage());
+    MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->tablet_metadata_mem_tracker(), _mem_usage());
 }
 
 TabletMeta::TabletMeta() : _tablet_uid(0, 0) {
-    MEM_TRACKER_SAFE_CONSUME(RuntimeEnv::GetInstance()->tablet_metadata_mem_tracker(), _mem_usage());
+    MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->tablet_metadata_mem_tracker(), _mem_usage());
 }
 
 TabletMeta::~TabletMeta() {
-    MEM_TRACKER_SAFE_RELEASE(RuntimeEnv::GetInstance()->tablet_metadata_mem_tracker(), _mem_usage());
+    MEM_TRACKER_SAFE_RELEASE(GlobalEnv::GetInstance()->tablet_metadata_mem_tracker(), _mem_usage());
 }
 
 Status TabletMeta::create_from_file(const string& file_path) {
@@ -695,9 +694,3 @@ bool operator!=(const TabletMeta& a, const TabletMeta& b) {
 }
 
 } // namespace starrocks
-
-auto fmt::formatter<starrocks::TabletState>::format(const starrocks::TabletState value, format_context& ctx) const
-        -> format_context::iterator {
-    return formatter<std::underlying_type_t<starrocks::TabletState>>::format(starrocks::enum_to_underlying_type(value),
-                                                                             ctx);
-}

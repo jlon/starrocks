@@ -38,9 +38,6 @@
 
 #include <memory>
 
-#include "base/logging.h"
-#include "base/types/int128.h"
-#include "column/chunk_factory.h"
 #include "column/column_helper.h"
 #include "column/column_viewer.h"
 #include "gutil/int128.h"
@@ -49,6 +46,8 @@
 #include "storage/rowset/options.h"
 #include "storage/rowset/page_builder.h"
 #include "storage/rowset/page_decoder.h"
+#include "types/large_int_value.h"
+#include "util/logging.h"
 
 using starrocks::PageBuilderOptions;
 using starrocks::operator<<;
@@ -57,21 +56,21 @@ namespace starrocks {
 class FrameOfReferencePageTest : public testing::Test {
 public:
     template <LogicalType type, class PageDecoderType>
-    void copy_one(PageDecoderType* decoder, StorageCppType<type>* ret) {
-        // Must build a storage-typed column (e.g. TYPE_DATETIME_V1 -> Int64Column) to match
-        // GetStorageContainer<type>, not the query-typed column (e.g. TYPE_DATETIME -> TimestampColumn)
-        // that scalar_field_type_to_logical_type() + ColumnHelper::create_column() would produce.
-        auto column = ChunkFactory::column_from_field_type(type, false);
+    void copy_one(PageDecoderType* decoder, typename TypeTraits<type>::CppType* ret) {
+        LogicalType ltype = scalar_field_type_to_logical_type(type);
+        TypeDescriptor index_type(ltype);
+        // TODO(alvinz): To reuse this colum
+        auto column = ColumnHelper::create_column(index_type, false);
         size_t n = 1;
         ASSERT_TRUE(decoder->next_batch(&n, column.get()).ok());
         ASSERT_EQ(1, n);
-        *ret = GetStorageContainer<type>::get_data(column, 0);
+        *ret = *reinterpret_cast<const typename TypeTraits<type>::CppType*>(column->raw_data());
     }
 
     template <LogicalType Type, class PageBuilderType = FrameOfReferencePageBuilder<Type>,
               class PageDecoderType = FrameOfReferencePageDecoder<Type>>
-    void test_encode_decode_page_template(StorageCppType<Type>* src, size_t size) {
-        using CppType = StorageCppType<Type>;
+    void test_encode_decode_page_template(typename TypeTraits<Type>::CppType* src, size_t size) {
+        typedef typename TypeTraits<Type>::CppType CppType;
         PageBuilderOptions builder_options;
         builder_options.data_page_size = 256 * 1024;
         PageBuilderType for_page_builder(builder_options);
@@ -87,13 +86,13 @@ public:
         ASSERT_EQ(0, for_page_decoder.current_index());
         ASSERT_EQ(size, for_page_decoder.count());
 
-        auto column = ChunkFactory::column_from_field_type(Type, false);
+        auto column = ChunkHelper::column_from_field_type(Type, false);
         size_t size_to_fetch = size;
         status = for_page_decoder.next_batch(&size_to_fetch, column.get());
         ASSERT_TRUE(status.ok());
         ASSERT_EQ(size, size_to_fetch);
 
-        const auto values = GetStorageContainer<Type>::get_data(column);
+        auto* values = reinterpret_cast<const CppType*>(column->raw_data());
 
         for (uint i = 0; i < size; i++) {
             ASSERT_EQ(src[i], values[i]);
@@ -112,8 +111,8 @@ public:
 
     template <LogicalType Type, class PageBuilderType = FrameOfReferencePageBuilder<Type>,
               class PageDecoderType = FrameOfReferencePageDecoder<Type>>
-    void test_encode_decode_page_vectorize(StorageCppType<Type>* src, size_t size) {
-        using CppType = StorageCppType<Type>;
+    void test_encode_decode_page_vectorize(typename TypeTraits<Type>::CppType* src, size_t size) {
+        typedef typename TypeTraits<Type>::CppType CppType;
         PageBuilderOptions builder_options;
         builder_options.data_page_size = 256 * 1024;
         PageBuilderType for_page_builder(builder_options);
@@ -129,7 +128,7 @@ public:
         ASSERT_EQ(0, for_page_decoder.current_index());
         ASSERT_EQ(size, for_page_decoder.count());
 
-        auto column = ChunkFactory::column_from_field_type(Type, false);
+        auto column = ChunkHelper::column_from_field_type(Type, false);
         size_t size_to_fetch = size;
         status = for_page_decoder.next_batch(&size_to_fetch, column.get());
         ASSERT_TRUE(status.ok());
@@ -144,7 +143,7 @@ public:
         ASSERT_EQ(0, for_page_decoder.current_index());
         ASSERT_EQ(size, for_page_decoder.count());
 
-        auto column1 = ChunkFactory::column_from_field_type(Type, false);
+        auto column1 = ChunkHelper::column_from_field_type(Type, false);
         SparseRange<> read_range;
         read_range.add(Range<>(0, size / 3));
         read_range.add(Range<>(size / 2, (size * 2 / 3)));

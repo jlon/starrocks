@@ -53,9 +53,6 @@ public class IcebergMetadataScannerFactory implements ScannerFactory {
                 case "partitions":
                     loadClass = "com.starrocks.connector.iceberg.IcebergPartitionsTableScanner";
                     break;
-                case "properties":
-                    loadClass = "com.starrocks.connector.iceberg.IcebergPropertiesTableScanner";
-                    break;
                 default:
                     throw new IllegalArgumentException("unknown iceberg scanner type " + scannerType);
             }

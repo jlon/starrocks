@@ -17,12 +17,11 @@
 #include "column/chunk.h"
 #include "column/column.h"
 #include "column/schema.h"
-#include "column/serde/column_array_serde.h"
 #include "gutil/strings/substitute.h"
+#include "serde/column_array_serde.h"
+#include "storage/primary_key_encoder.h"
 #include "storage/tablet_schema.h"
 #include "storage/types.h"
-#include "storage_primitive/primary_key_encoder.h"
-#include "types/logical_type_infra.h"
 
 namespace starrocks {
 
@@ -30,9 +29,14 @@ namespace {
 
 bool is_fixed_length_non_string_pk_type(LogicalType type) {
     switch (type) {
-#define M(LT) case LT:
-        APPLY_FOR_ALL_PK_SUPPORT_FIXED_TYPE(M)
-#undef M
+    case TYPE_BOOLEAN:
+    case TYPE_TINYINT:
+    case TYPE_SMALLINT:
+    case TYPE_INT:
+    case TYPE_BIGINT:
+    case TYPE_LARGEINT:
+    case TYPE_DATE:
+    case TYPE_DATETIME:
         return true;
     default:
         // TYPE_VARCHAR and other types fall through; they are binary-compatible across V1/V2.
@@ -119,7 +123,6 @@ Status DelFileStreamConverter::close() {
     PrimaryKeyEncoder::encode(*_pkey_schema, pk_chunk, /*offset=*/0, /*len=*/row_count, dst_col.get(),
                               _target_pk_encoding);
 
-    RETURN_IF_ERROR(PrimaryKeyEncoder::check_delete_file_binary_column_size(*dst_col));
     const int64_t output_capacity = serde::ColumnArraySerde::max_serialized_size(*dst_col);
     if (output_capacity <= 0) {
         return Status::InternalError("ColumnArraySerde::max_serialized_size returned 0 for target column");

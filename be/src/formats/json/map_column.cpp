@@ -14,15 +14,15 @@
 
 #include "column/map_column.h"
 
-#include "common/simdjson_util.h"
 #include "fmt/format.h"
 #include "formats/json/map_column.h"
 #include "formats/json/nullable_column.h"
 #include "gutil/strings/substitute.h"
+#include "util/simdjson_util.h"
 
 namespace starrocks {
 
-Status add_map_column(Column* column, const TypeDescriptor& type_desc, std::string_view name,
+Status add_map_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
                       simdjson::ondemand::value* value) {
     auto map_column = down_cast<MapColumn*>(column);
 

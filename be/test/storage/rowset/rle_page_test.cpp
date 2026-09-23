@@ -38,9 +38,6 @@
 #include <cstdlib>
 #include <memory>
 
-#include "base/logging.h"
-#include "column/chunk_factory.h"
-#include "column/column_helper.h"
 #include "column/fixed_length_column.h"
 #include "gtest/gtest.h"
 #include "runtime/mem_pool.h"
@@ -49,7 +46,7 @@
 #include "storage/rowset/options.h"
 #include "storage/rowset/page_builder.h"
 #include "storage/rowset/page_decoder.h"
-#include "types/storage_type_traits.h"
+#include "util/logging.h"
 
 using starrocks::PageBuilderOptions;
 
@@ -59,19 +56,19 @@ class RlePageTest : public testing::Test {
 public:
     ~RlePageTest() override = default;
 
-    template <LogicalType type, class PageDecoderType, class CppType = StorageCppType<type>>
-    void copy_one(PageDecoderType* decoder, CppType* ret) {
-        auto column = ChunkFactory::column_from_field_type(type, false);
+    template <LogicalType type, class PageDecoderType>
+    void copy_one(PageDecoderType* decoder, typename TypeTraits<type>::CppType* ret) {
+        auto column = ChunkHelper::column_from_field_type(type, false);
 
         size_t n = 1;
         ASSERT_TRUE(decoder->next_batch(&n, column.get()).ok());
         ASSERT_EQ(1, n);
-        *ret = GetStorageContainer<type>::get_data(column, 0);
+        *ret = *reinterpret_cast<const typename TypeTraits<type>::CppType*>(column->raw_data());
     }
 
     template <LogicalType Type, class PageBuilderType = RlePageBuilder<Type>>
-    OwnedSlice rle_encode(StorageCppType<Type>* src, size_t size) {
-        using CppType = StorageCppType<Type>;
+    OwnedSlice rle_encode(typename TypeTraits<Type>::CppType* src, size_t size) {
+        typedef typename TypeTraits<Type>::CppType CppType;
         PageBuilderOptions builder_options;
         builder_options.data_page_size = 256 * 1024;
         PageBuilderType rle_page_builder(builder_options);
@@ -89,8 +86,9 @@ public:
         return s;
     }
 
-    template <LogicalType Type, class CppType = StorageCppType<Type>>
-    void test_encode_decode_page_template(CppType* src, size_t size) {
+    template <LogicalType Type>
+    void test_encode_decode_page_template(typename TypeTraits<Type>::CppType* src, size_t size) {
+        typedef typename TypeTraits<Type>::CppType CppType;
         OwnedSlice s = rle_encode<Type>(src, size);
 
         RlePageDecoder<Type> rle_page_decoder(s.slice());
@@ -99,13 +97,13 @@ public:
         ASSERT_EQ(0, rle_page_decoder.current_index());
         ASSERT_EQ(size, rle_page_decoder.count());
 
-        auto column = ChunkFactory::column_from_field_type(Type, true);
+        auto column = ChunkHelper::column_from_field_type(Type, true);
         size_t size_to_fetch = size;
         status = rle_page_decoder.next_batch(&size_to_fetch, column.get());
         ASSERT_TRUE(status.ok());
         ASSERT_EQ(size, size_to_fetch);
 
-        const auto values = GetStorageContainer<Type>::get_data(column);
+        auto* values = reinterpret_cast<const CppType*>(column->raw_data());
         for (uint i = 0; i < size; i++) {
             if (src[i] != values[i]) {
                 FAIL() << "Fail at index " << i << " inserted=" << src[i] << " got=" << values[i];
@@ -123,8 +121,9 @@ public:
         }
     }
 
-    template <LogicalType Type, class CppType = StorageCppType<Type>>
-    void test_encode_decode_page_vectorized(CppType* src, size_t size) {
+    template <LogicalType Type>
+    void test_encode_decode_page_vectorized(typename TypeTraits<Type>::CppType* src, size_t size) {
+        typedef typename TypeTraits<Type>::CppType CppType;
         OwnedSlice s = rle_encode<Type>(src, size);
 
         RlePageDecoder<Type> rle_page_decoder(s.slice());
@@ -174,7 +173,7 @@ TEST_F(RlePageTest, TestRleInt32BlockEncoderRandom) {
 
     // TYPE_INT
     {
-        using CppType = StorageCppType<TYPE_INT>;
+        using CppType = TypeTraits<TYPE_INT>::CppType;
         std::vector<CppType> ints(size, 0);
         std::generate(std::begin(ints), std::end(ints), []() -> CppType { return rand(); });
         test_encode_decode_page_template<TYPE_INT>(ints.data(), size);
@@ -182,7 +181,7 @@ TEST_F(RlePageTest, TestRleInt32BlockEncoderRandom) {
     }
     // TYPE_BIGINT
     {
-        using CppType = StorageCppType<TYPE_BIGINT>;
+        using CppType = TypeTraits<TYPE_BIGINT>::CppType;
         std::vector<CppType> ints(size, 0);
         std::generate(std::begin(ints), std::end(ints), []() -> CppType { return rand(); });
         test_encode_decode_page_template<TYPE_BIGINT>(ints.data(), size);

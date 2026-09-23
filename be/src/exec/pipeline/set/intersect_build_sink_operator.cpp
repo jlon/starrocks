@@ -14,8 +14,6 @@
 
 #include "exec/pipeline/set/intersect_build_sink_operator.h"
 
-#include "exprs/expr_executor.h"
-
 namespace starrocks::pipeline {
 
 StatusOr<ChunkPtr> IntersectBuildSinkOperator::pull_chunk(RuntimeState* state) {
@@ -40,14 +38,14 @@ void IntersectBuildSinkOperator::close(RuntimeState* state) {
 Status IntersectBuildSinkOperatorFactory::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(OperatorFactory::prepare(state));
 
-    RETURN_IF_ERROR(ExprExecutor::prepare(_dst_exprs, state));
-    RETURN_IF_ERROR(ExprExecutor::open(_dst_exprs, state));
+    RETURN_IF_ERROR(Expr::prepare(_dst_exprs, state));
+    RETURN_IF_ERROR(Expr::open(_dst_exprs, state));
 
     return Status::OK();
 }
 
 void IntersectBuildSinkOperatorFactory::close(RuntimeState* state) {
-    ExprExecutor::close(_dst_exprs, state);
+    Expr::close(_dst_exprs, state);
 
     OperatorFactory::close(state);
 }

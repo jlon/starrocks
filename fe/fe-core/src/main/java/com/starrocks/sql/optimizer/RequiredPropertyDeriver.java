@@ -281,9 +281,7 @@ public class RequiredPropertyDeriver extends PropertyDeriverBase<Void, Expressio
         SortProperty sortProperty = SortProperty.createProperty(node.getEnforceOrderBy(), partitionColumnRefSet);
 
         DistributionProperty distributionProperty;
-        // forceMergeSort requires a single, globally-ordered input stream, so gather instead of
-        // hash-shuffling the partition keys.
-        if (partitionColumnRefSet.isEmpty() || node.isForceMergeSort()) {
+        if (partitionColumnRefSet.isEmpty()) {
             distributionProperty = DistributionProperty.createProperty(DistributionSpec.createGatherDistributionSpec());
         } else {
             // If scan tablet sum less than 1, no distribution property is required

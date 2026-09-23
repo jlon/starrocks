@@ -43,7 +43,6 @@ import com.starrocks.thrift.TSnapshotInfo;
 import com.starrocks.thrift.TStatus;
 import com.starrocks.thrift.TStatusCode;
 import com.starrocks.thrift.TTableReplicationRequest;
-import com.starrocks.thrift.TTableReplicationResponse;
 import com.starrocks.thrift.TTableType;
 import com.starrocks.thrift.TTabletReplicationInfo;
 import com.starrocks.utframe.StarRocksAssert;
@@ -122,10 +121,10 @@ public class ReplicationMgrTest {
         Assertions.assertEquals(ReplicationJobState.INITIALIZING.toString(), job.getState().toString());
         Assertions.assertEquals(ReplicationJobState.INITIALIZING.hashCode(), job.getState().hashCode());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
 
         replicationMgr.replayReplicationJob(job);
@@ -143,7 +142,7 @@ public class ReplicationMgrTest {
             task.toString();
         }
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.REPLICATING, job.getState());
 
         replicationMgr.replayReplicationJob(job);
@@ -159,7 +158,7 @@ public class ReplicationMgrTest {
             task.toString();
         }
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.COMMITTED, job.getState());
 
         Assertions.assertEquals(partition.getDefaultPhysicalPartition().getCommittedVersion(),
@@ -176,7 +175,7 @@ public class ReplicationMgrTest {
         Config.history_job_keep_max_second = -1;
         Assertions.assertTrue(job.isExpired());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertTrue(replicationMgr.getCommittedJobs().isEmpty());
 
         replicationMgr.replayDeleteReplicationJob(job);
@@ -192,7 +191,7 @@ public class ReplicationMgrTest {
         replicationMgr.cancelRunningJobs();
         Assertions.assertEquals(ReplicationJobState.ABORTED, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.ABORTED, job.getState());
 
         Assertions.assertTrue(replicationMgr.getRunningJobs().isEmpty());
@@ -200,40 +199,16 @@ public class ReplicationMgrTest {
     }
 
     @Test
-    public void testDemotionResetsTaskBookkeepingForCrashRecovery() {
-        Assertions.assertEquals(ReplicationJobState.INITIALIZING, job.getState());
-
-        replicationMgr.runAfterLeaseValid();
-        Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
-        Assertions.assertFalse(job.isCrashRecovery());
-
-        // Leader demotion abandons the queued agent tasks and their BE finish reports get dropped,
-        // so onStopped must reset the leader-session bookkeeping to its deserialized-equivalent
-        // shape - otherwise a re-elected leader in this same process would judge the job as still
-        // running (isCrashRecovery() == false) and never re-send the tasks.
-        replicationMgr.onStopped();
-        Assertions.assertTrue(job.isCrashRecovery(),
-                "after the demotion reset a re-elected leader must re-drive the current state");
-        Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState(),
-                "the journal-visible job state must be untouched");
-
-        // The re-elected leader's next cycle re-sends the snapshot tasks like a crash recovery.
-        replicationMgr.runAfterLeaseValid();
-        Assertions.assertFalse(job.isCrashRecovery());
-        Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
-    }
-
-    @Test
     public void testSnapshotingCancel() {
         Assertions.assertEquals(ReplicationJobState.INITIALIZING, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
 
         replicationMgr.cancelRunningJobs();
         Assertions.assertEquals(ReplicationJobState.ABORTED, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.ABORTED, job.getState());
 
         Assertions.assertTrue(replicationMgr.getRunningJobs().isEmpty());
@@ -243,7 +218,7 @@ public class ReplicationMgrTest {
         Config.history_job_keep_max_second = -1;
         Assertions.assertTrue(job.isExpired());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertTrue(replicationMgr.getAbortedJobs().isEmpty());
 
         replicationMgr.replayDeleteReplicationJob(job);
@@ -256,7 +231,7 @@ public class ReplicationMgrTest {
     public void testReplicatingCancel() {
         Assertions.assertEquals(ReplicationJobState.INITIALIZING, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
 
         Map<AgentTask, AgentTask> runningTasks = Deencapsulation.getField(job, "runningTasks");
@@ -267,13 +242,13 @@ public class ReplicationMgrTest {
             replicationMgr.finishRemoteSnapshotTask((RemoteSnapshotTask) task, request);
         }
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.REPLICATING, job.getState());
 
         replicationMgr.cancelRunningJobs();
         Assertions.assertEquals(ReplicationJobState.ABORTED, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.ABORTED, job.getState());
     }
 
@@ -281,10 +256,10 @@ public class ReplicationMgrTest {
     public void testCommittedCancel() {
         Assertions.assertEquals(ReplicationJobState.INITIALIZING, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
 
         Map<AgentTask, AgentTask> runningTasks = Deencapsulation.getField(job, "runningTasks");
@@ -295,7 +270,7 @@ public class ReplicationMgrTest {
             replicationMgr.finishRemoteSnapshotTask((RemoteSnapshotTask) task, request);
         }
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.REPLICATING, job.getState());
 
         for (AgentTask task : runningTasks.values()) {
@@ -304,7 +279,7 @@ public class ReplicationMgrTest {
             replicationMgr.finishReplicateSnapshotTask((ReplicateSnapshotTask) task, request);
         }
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.COMMITTED, job.getState());
 
         replicationMgr.cancelRunningJobs();
@@ -315,10 +290,10 @@ public class ReplicationMgrTest {
     public void testSnapshotingFailed() throws Exception {
         Assertions.assertEquals(ReplicationJobState.INITIALIZING, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
 
         Map<AgentTask, AgentTask> runningTasks = Deencapsulation.getField(job, "runningTasks");
@@ -328,7 +303,7 @@ public class ReplicationMgrTest {
             replicationMgr.finishRemoteSnapshotTask((RemoteSnapshotTask) task, request);
         }
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.ABORTED, job.getState());
     }
 
@@ -336,10 +311,10 @@ public class ReplicationMgrTest {
     public void testReplicatingFailed() throws Exception {
         Assertions.assertEquals(ReplicationJobState.INITIALIZING, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.SNAPSHOTING, job.getState());
 
         Map<AgentTask, AgentTask> runningTasks = Deencapsulation.getField(job, "runningTasks");
@@ -350,7 +325,7 @@ public class ReplicationMgrTest {
             replicationMgr.finishRemoteSnapshotTask((RemoteSnapshotTask) task, request);
         }
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.REPLICATING, job.getState());
 
         for (AgentTask task : runningTasks.values()) {
@@ -361,12 +336,12 @@ public class ReplicationMgrTest {
             replicationMgr.finishReplicateSnapshotTask((ReplicateSnapshotTask) task, request);
         }
 
-        replicationMgr.runAfterLeaseValid();
+        replicationMgr.runAfterCatalogReady();
         Assertions.assertEquals(ReplicationJobState.ABORTED, job.getState());
     }
 
     @Test
-    public void testInitializedByThrift() throws Exception {
+    public void testInitializedByThrift() {
         TTableReplicationRequest request = new TTableReplicationRequest();
         request.username = "test_usename";
         request.password = "test_password";
@@ -380,7 +355,7 @@ public class ReplicationMgrTest {
         TPartitionReplicationInfo partitionInfo = new TPartitionReplicationInfo();
         Partition partition = table.getPartitions().iterator().next();
         Partition srcPartition = srcTable.getPartitions().iterator().next();
-        partitionInfo.partition_id = partition.getDefaultPhysicalPartition().getId();
+        partitionInfo.partition_id = partition.getId();
         partitionInfo.src_version = srcPartition.getDefaultPhysicalPartition().getVisibleVersion();
         partitionInfo.src_version_epoch = srcPartition.getDefaultPhysicalPartition().getVersionEpoch();
         request.partition_replication_infos.put(partitionInfo.partition_id, partitionInfo);
@@ -412,15 +387,11 @@ public class ReplicationMgrTest {
             tabletInfo.replica_replication_infos.add(replicaInfo);
         }
 
-        // startTableReplication reports a rejected request through the response status instead of
-        // throwing, so a try/catch around it can never observe one: assert on the status itself.
-        int runningJobsBefore = GlobalStateMgr.getCurrentState().getReplicationMgr().getRunningJobs().size();
-        TTableReplicationResponse response = new LeaderImpl().startTableReplication(request);
-        Assertions.assertEquals(TStatusCode.OK, response.getStatus().getStatus_code(),
-                () -> String.valueOf(response.getStatus().getError_msgs()));
-        Assertions.assertEquals(runningJobsBefore + 1,
-                GlobalStateMgr.getCurrentState().getReplicationMgr().getRunningJobs().size(),
-                "the request should have created a replication job");
+        try {
+            new LeaderImpl().startTableReplication(request);
+        } catch (Exception e) {
+            Assertions.assertNull(e);
+        }
     }
 
     private static TSnapshotInfo newTSnapshotInfo(TBackend backend, String snapshotPath, boolean incrementalSnapshot) {

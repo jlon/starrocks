@@ -48,7 +48,6 @@ import com.starrocks.type.Type;
 import com.starrocks.type.TypeSerializer;
 import org.apache.logging.log4j.util.Strings;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -255,9 +254,8 @@ public class AggregateFunction extends Function {
         Type intermediateType;
         String objectFile;
         String symbolName;
-        CloudConfiguration cloudConfiguration;
         private boolean isolationType = true;
-        private String inputType;
+        CloudConfiguration cloudConfiguration;
 
         private AggregateFunctionBuilder(TFunctionBinaryType binaryType) {
             this.binaryType = binaryType;
@@ -307,18 +305,13 @@ public class AggregateFunction extends Function {
             return this;
         }
 
-        public AggregateFunctionBuilder cloudConfiguration(CloudConfiguration cloudConfiguration) {
-            this.cloudConfiguration = cloudConfiguration;
-            return this;
-        }
-
         public AggregateFunctionBuilder setIsolationType(boolean isolationType) {
             this.isolationType = isolationType;
             return this;
         }
 
-        public AggregateFunctionBuilder inputType(String inputType) {
-            this.inputType = inputType;
+        public AggregateFunctionBuilder cloudConfiguration(CloudConfiguration cloudConfiguration) {
+            this.cloudConfiguration = cloudConfiguration;
             return this;
         }
 
@@ -333,9 +326,8 @@ public class AggregateFunction extends Function {
             fn.setBinaryType(binaryType);
             fn.symbolName = symbolName;
             fn.setLocation(new HdfsURI(objectFile));
-            fn.setCloudConfiguration(cloudConfiguration);
             fn.setIsolationType(isolationType);
-            fn.setInputType(inputType);
+            fn.setCloudConfiguration(cloudConfiguration);
             return fn;
         }
     }
@@ -374,42 +366,19 @@ public class AggregateFunction extends Function {
 
     @Override
     public String toSql(boolean ifNotExists) {
-        StringBuilder sb = new StringBuilder();
-        appendCreateHeader(sb, "AGGREGATE", ifNotExists);
-        sb.append(signatureString()).append("\n")
-                .append("RETURNS ").append(getReturnType()).append("\n");
+        StringBuilder sb = new StringBuilder("CREATE AGGREGATE FUNCTION ");
+        if (ifNotExists) {
+            sb.append("IF NOT EXISTS ");
+        }
+        sb.append(dbName() + "." + signatureString() + "\n")
+                .append(" RETURNS " + getReturnType() + "\n")
+                .append(" LOCATION '" + getLocation() + "'\n")
+                .append(" SYMBOL='" + getSymbolName() + "'\n");
 
-        Map<String, String> props = synthesizePropertiesFromFields();
-        appendPropertiesBlock(sb, props);
+        if (getIntermediateType() != null) {
+            sb.append(" INTERMEDIATE " + getIntermediateType() + "\n");
+        }
         return sb.toString();
-    }
-
-    private Map<String, String> synthesizePropertiesFromFields() {
-        Map<String, String> props = new LinkedHashMap<>();
-        String typeStr = binaryTypeToPropertyValue(getBinaryType());
-        if (typeStr != null) {
-            props.put(CreateFunctionStmt.TYPE_KEY, typeStr);
-        }
-        if (getLocation() != null) {
-            props.put(CreateFunctionStmt.FILE_KEY, getLocation().toString());
-        }
-        if (!Strings.isEmpty(getSymbolName())) {
-            props.put(CreateFunctionStmt.SYMBOL_KEY, getSymbolName());
-        }
-        if (intermediateType != null) {
-            props.put(CreateFunctionStmt.INTERMEDIATE_KEY, intermediateType.toSql());
-        }
-        // Default isolation is isolated (true); only emit when explicitly shared.
-        if (!isolationType) {
-            props.put(CreateFunctionStmt.ISOLATION_KEY, CreateFunctionStmt.ISOLATION_SHARED);
-        }
-        if (isAnalyticFn) {
-            props.put(CreateFunctionStmt.IS_ANALYTIC_NAME, "true");
-        }
-        if (!Strings.isEmpty(getInputType())) {
-            props.put(CreateFunctionStmt.INPUT_TYPE, getInputType());
-        }
-        return props;
     }
 
     @Override

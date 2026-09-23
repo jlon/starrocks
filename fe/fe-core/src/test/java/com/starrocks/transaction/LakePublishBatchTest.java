@@ -48,7 +48,6 @@ import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
 import com.starrocks.warehouse.cngroup.ComputeResource;
 import com.starrocks.warehouse.cngroup.WarehouseComputeResourceProvider;
-import mockit.Invocation;
 import mockit.Mock;
 import mockit.MockUp;
 import org.apache.logging.log4j.LogManager;
@@ -69,7 +68,6 @@ import java.util.concurrent.TimeUnit;
 import javax.validation.constraints.NotNull;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
@@ -110,32 +108,22 @@ public class LakePublishBatchTest {
         }
     }
 
-    private void waitTransactionDone(TransactionState transaction) throws Exception {
-        long dbId = transaction.getDbId();
-        long txnId = transaction.getTransactionId();
-        GlobalTransactionMgr globalTransactionMgr = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr();
-        while (true) {
-            // Re-fetch from the map each iteration, because COW may have replaced the object
-            TransactionState current = globalTransactionMgr.getDatabaseTransactionMgr(dbId)
-                    .getTransactionState(txnId);
-            if (current != null && current.getTransactionStatus().isFinalStatus()) {
-                LOG.warn("transaction {} is done. state: {}", txnId, current.getTransactionStatus());
-                break;
-            }
-            LOG.warn("transaction {} is running. state: {}", txnId,
-                    current != null ? current.getTransactionStatus() : "null");
+    private void waitTransactionDone(TransactionState transaction) throws InterruptedException {
+        while (!transaction.getTransactionStatus().isFinalStatus()) {
+            LOG.warn("transaction {} is running. state: {}", transaction.getTransactionId(), transaction.getTransactionStatus());
             Thread.sleep(200);
         }
+        LOG.warn("transaction {} is done. state: {}", transaction.getTransactionId(), transaction.getTransactionStatus());
     }
 
     /**
-     * Simulates the real PublishVersionDaemon's periodic behavior by retrying runAfterLeaseValid()
+     * Simulates the real PublishVersionDaemon's periodic behavior by retrying runAfterCatalogReady()
      * until all waiters are satisfied. This prevents flakiness caused by transient RPC failures or
      * thread pool scheduling delays under CI load.
      */
     private void awaitPublish(PublishVersionDaemon daemon, VisibleStateWaiter... waiters) {
         Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
-            daemon.runAfterLeaseValid();
+            daemon.runAfterCatalogReady();
             for (VisibleStateWaiter waiter : waiters) {
                 if (!waiter.await(500, TimeUnit.MILLISECONDS)) {
                     return false;
@@ -275,213 +263,6 @@ public class LakePublishBatchTest {
         awaitPublish(publishVersionDaemon, waiter1, waiter2, waiter3, waiter4);
     }
 
-    @Test
-    public void testMultiTableBatchPublish() throws Exception {
-        boolean oldMultiTable = Config.lake_enable_batch_publish_multi_table;
-        Config.lake_enable_batch_publish_multi_table = true;
-        try {
-            Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(DB);
-            Table table1 = GlobalStateMgr.getCurrentState().getLocalMetastore()
-                    .getTable(db.getFullName(), TABLE_AGG_OFF);
-            Table table2 = GlobalStateMgr.getCurrentState().getLocalMetastore()
-                    .getTable(db.getFullName(), TABLE_AGG_ON);
-
-            // every txn commits the same tablets so per-partition versions stay consecutive
-            List<TabletCommitInfo> bothTableTablets = Lists.newArrayList();
-            List<TabletCommitInfo> table1Tablets = Lists.newArrayList();
-            for (Table table : Lists.newArrayList(table1, table2)) {
-                for (Partition partition : table.getPartitions()) {
-                    MaterializedIndex baseIndex = partition.getDefaultPhysicalPartition().getLatestBaseIndex();
-                    for (Long tabletId : baseIndex.getTabletIdsInOrder()) {
-                        for (Long backendId : GlobalStateMgr.getCurrentState().getNodeMgr()
-                                .getClusterInfo().getBackendIds()) {
-                            TabletCommitInfo tabletCommitInfo = new TabletCommitInfo(tabletId, backendId);
-                            bothTableTablets.add(tabletCommitInfo);
-                            if (table == table1) {
-                                table1Tablets.add(tabletCommitInfo);
-                            }
-                        }
-                    }
-                }
-            }
-
-            GlobalTransactionMgr globalTransactionMgr = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr();
-            List<Long> bothTableIds = Lists.newArrayList(table1.getId(), table2.getId());
-
-            long transactionId1 = globalTransactionMgr.beginTransaction(db.getId(), bothTableIds,
-                    "multi_table_batch_1_" + UUIDUtil.genUUID(), transactionSource,
-                    TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-            VisibleStateWaiter waiter1 = globalTransactionMgr.commitTransaction(db.getId(), transactionId1,
-                    bothTableTablets, Lists.newArrayList(), null);
-
-            long transactionId2 = globalTransactionMgr.beginTransaction(db.getId(), bothTableIds,
-                    "multi_table_batch_2_" + UUIDUtil.genUUID(), transactionSource,
-                    TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-            VisibleStateWaiter waiter2 = globalTransactionMgr.commitTransaction(db.getId(), transactionId2,
-                    bothTableTablets, Lists.newArrayList(), null);
-
-            // a txn writing only a subset of the head txn's tables joins the same batch
-            long transactionId3 = globalTransactionMgr.beginTransaction(db.getId(),
-                    Lists.newArrayList(table1.getId()),
-                    "multi_table_batch_3_" + UUIDUtil.genUUID(), transactionSource,
-                    TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-            VisibleStateWaiter waiter3 = globalTransactionMgr.commitTransaction(db.getId(), transactionId3,
-                    table1Tablets, Lists.newArrayList(), null);
-
-            long transactionId4 = globalTransactionMgr.beginTransaction(db.getId(), bothTableIds,
-                    "multi_table_batch_4_" + UUIDUtil.genUUID(), transactionSource,
-                    TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-            VisibleStateWaiter waiter4 = globalTransactionMgr.commitTransaction(db.getId(), transactionId4,
-                    bothTableTablets, Lists.newArrayList(), null);
-
-            // the head-gated selection groups all four txns into one multi-table batch
-            List<TransactionStateBatch> batches = globalTransactionMgr.getReadyPublishTransactionsBatch();
-            TransactionStateBatch multiTableBatch = batches.stream()
-                    .filter(batch -> batch.getTxnIds().contains(transactionId1))
-                    .findFirst().orElse(null);
-            assertNotNull(multiTableBatch);
-            assertEquals(Lists.newArrayList(transactionId1, transactionId2, transactionId3, transactionId4),
-                    multiTableBatch.getTxnIds());
-            assertEquals(bothTableIds, multiTableBatch.getTableIdList());
-
-            PublishVersionDaemon publishVersionDaemon = new PublishVersionDaemon();
-            awaitPublish(publishVersionDaemon, waiter1, waiter2, waiter3, waiter4);
-        } finally {
-            Config.lake_enable_batch_publish_multi_table = oldMultiTable;
-        }
-    }
-
-    @Test
-    public void testTrimBatchAtVersionGapMultiTable() throws Exception {
-        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(DB);
-        Table table1 = GlobalStateMgr.getCurrentState().getLocalMetastore()
-                .getTable(db.getFullName(), TABLE_AGG_OFF);
-        Table table2 = GlobalStateMgr.getCurrentState().getLocalMetastore()
-                .getTable(db.getFullName(), TABLE_AGG_ON);
-        List<Long> bothTableIds = Lists.newArrayList(table1.getId(), table2.getId());
-
-        Partition t1Part = Lists.newArrayList(table1.getPartitions()).get(0);
-        List<Partition> t2Parts = Lists.newArrayList(table2.getPartitions());
-        Partition t2PartNoGap = t2Parts.get(0);
-        Partition t2PartWithGap = t2Parts.get(2);
-
-        List<TabletCommitInfo> tabletsNoGap = getPartitionTabletCommitInfos(t1Part);
-        tabletsNoGap.addAll(getPartitionTabletCommitInfos(t2PartNoGap));
-        List<TabletCommitInfo> tabletsWithGap = getPartitionTabletCommitInfos(t1Part);
-        tabletsWithGap.addAll(getPartitionTabletCommitInfos(t2PartWithGap));
-
-        GlobalTransactionMgr globalTransactionMgr = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr();
-
-        // txn1 and txn2 write both tables but avoid the gap partition of table2
-        long txnId1 = globalTransactionMgr.beginTransaction(db.getId(), bothTableIds,
-                "trim_mt_1_" + UUIDUtil.genUUID(), transactionSource,
-                TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-        VisibleStateWaiter waiter1 = globalTransactionMgr.commitTransaction(
-                db.getId(), txnId1, tabletsNoGap, Lists.newArrayList(), null);
-
-        long txnId2 = globalTransactionMgr.beginTransaction(db.getId(), bothTableIds,
-                "trim_mt_2_" + UUIDUtil.genUUID(), transactionSource,
-                TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-        VisibleStateWaiter waiter2 = globalTransactionMgr.commitTransaction(
-                db.getId(), txnId2, tabletsNoGap, Lists.newArrayList(), null);
-
-        // Create a version gap on the second table's partition
-        // (simulates SplitTabletJob.updateNextVersions)
-        PhysicalPartition physWithGap = t2PartWithGap.getDefaultPhysicalPartition();
-        physWithGap.setNextVersion(physWithGap.getNextVersion() + 1);
-
-        // txn3 writes both tables and touches the gap partition of table2
-        long txnId3 = globalTransactionMgr.beginTransaction(db.getId(), bothTableIds,
-                "trim_mt_3_" + UUIDUtil.genUUID(), transactionSource,
-                TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-        VisibleStateWaiter waiter3 = globalTransactionMgr.commitTransaction(
-                db.getId(), txnId3, tabletsWithGap, Lists.newArrayList(), null);
-
-        DatabaseTransactionMgr dbTxnMgr = globalTransactionMgr.getDatabaseTransactionMgr(db.getId());
-        TransactionStateBatch batch = new TransactionStateBatch(Lists.newArrayList(
-                dbTxnMgr.getTransactionState(txnId1),
-                dbTxnMgr.getTransactionState(txnId2),
-                dbTxnMgr.getTransactionState(txnId3)));
-
-        // The gap lives on the second table of the batch; the batch must still be
-        // trimmed right before the first txn touching the gap partition
-        PublishVersionDaemon daemon = new PublishVersionDaemon();
-        TransactionStateBatch trimmed = daemon.trimBatchAtVersionGap(batch);
-        assertNotNull(trimmed);
-        assertEquals(2, trimmed.size());
-        assertEquals(txnId1, trimmed.getTransactionStates().get(0).getTransactionId());
-        assertEquals(txnId2, trimmed.getTransactionStates().get(1).getTransactionId());
-
-        // Cleanup: fill the phantom version gap and publish all transactions
-        physWithGap.updateVisibleVersion(physWithGap.getVisibleVersion() + 1);
-        awaitPublish(daemon, waiter1, waiter2, waiter3);
-    }
-
-    @Test
-    public void testMultiTableBatchPublishTableDropped() throws Exception {
-        boolean oldMultiTable = Config.lake_enable_batch_publish_multi_table;
-        Config.lake_enable_batch_publish_multi_table = true;
-        try {
-            Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(DB);
-            Table table1 = GlobalStateMgr.getCurrentState().getLocalMetastore()
-                    .getTable(db.getFullName(), TABLE_AGG_OFF);
-            Table table2 = GlobalStateMgr.getCurrentState().getLocalMetastore()
-                    .getTable(db.getFullName(), TABLE_AGG_ON);
-            List<Long> bothTableIds = Lists.newArrayList(table1.getId(), table2.getId());
-
-            List<TabletCommitInfo> bothTableTablets = Lists.newArrayList();
-            for (Table table : Lists.newArrayList(table1, table2)) {
-                for (Partition partition : table.getPartitions()) {
-                    bothTableTablets.addAll(getPartitionTabletCommitInfos(partition));
-                }
-            }
-
-            GlobalTransactionMgr globalTransactionMgr = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr();
-
-            long txnId1 = globalTransactionMgr.beginTransaction(db.getId(), bothTableIds,
-                    "mt_dropped_1_" + UUIDUtil.genUUID(), transactionSource,
-                    TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-            VisibleStateWaiter waiter1 = globalTransactionMgr.commitTransaction(
-                    db.getId(), txnId1, bothTableTablets, Lists.newArrayList(), null);
-
-            long txnId2 = globalTransactionMgr.beginTransaction(db.getId(), bothTableIds,
-                    "mt_dropped_2_" + UUIDUtil.genUUID(), transactionSource,
-                    TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-            VisibleStateWaiter waiter2 = globalTransactionMgr.commitTransaction(
-                    db.getId(), txnId2, bothTableTablets, Lists.newArrayList(), null);
-
-            // Drop table2 after commit: publish, trim and visibility must skip it and
-            // still make the whole batch VISIBLE
-            long droppedTableId = table2.getId();
-            try {
-                new MockUp<LocalMetastore>() {
-                    @Mock
-                    public Table getTable(Invocation invocation, Long dbId, Long tableId) {
-                        if (tableId == droppedTableId) {
-                            return null;
-                        }
-                        return invocation.proceed(dbId, tableId);
-                    }
-                };
-
-                PublishVersionDaemon publishVersionDaemon = new PublishVersionDaemon();
-                awaitPublish(publishVersionDaemon, waiter1, waiter2);
-            } finally {
-                // The "dropped" table's committed versions were skipped, leaving
-                // nextVersion ahead of visibleVersion. The suite shares one cluster,
-                // so close the gap or every later publish on this table stalls.
-                for (Partition partition : table2.getPartitions()) {
-                    PhysicalPartition physicalPartition = partition.getDefaultPhysicalPartition();
-                    if (physicalPartition.getVisibleVersion() < physicalPartition.getNextVersion() - 1) {
-                        physicalPartition.updateVisibleVersion(physicalPartition.getNextVersion() - 1);
-                    }
-                }
-            }
-        } finally {
-            Config.lake_enable_batch_publish_multi_table = oldMultiTable;
-        }
-    }
-
     //    @ParameterizedTest
     //    @ValueSource(booleans = {true, false})
     public void testPublishTransactionState(boolean enableAggregation) throws Exception {
@@ -513,12 +294,12 @@ public class LakePublishBatchTest {
                 Lists.newArrayList(), null);
 
         PublishVersionDaemon publishVersionDaemon = new PublishVersionDaemon();
-        publishVersionDaemon.runAfterLeaseValid();
+        publishVersionDaemon.runAfterCatalogReady();
         TransactionState transactionState9 = globalTransactionMgr.getDatabaseTransactionMgr(db.getId()).
                 getTransactionState(transactionId9);
         boolean success = false;
         for (int i = 0; i < 10; i++) {
-            publishVersionDaemon.runAfterLeaseValid();
+            publishVersionDaemon.runAfterCatalogReady();
             if (waiter9.await(1, TimeUnit.SECONDS)) {
                 success = true;
                 break;
@@ -575,7 +356,7 @@ public class LakePublishBatchTest {
         };
 
         PublishVersionDaemon publishVersionDaemon = new PublishVersionDaemon();
-        publishVersionDaemon.runAfterLeaseValid();
+        publishVersionDaemon.runAfterCatalogReady();
 
         TransactionState transactionState1 = globalTransactionMgr.getDatabaseTransactionMgr(db.getId()).
                 getTransactionState(transactionId5);
@@ -586,11 +367,6 @@ public class LakePublishBatchTest {
         waitTransactionDone(transactionState1);
         waitTransactionDone(transactionState2);
 
-        // Re-fetch after waiting because COW may have replaced the objects in the map
-        transactionState1 = globalTransactionMgr.getDatabaseTransactionMgr(db.getId()).
-                getTransactionState(transactionId5);
-        transactionState2 = globalTransactionMgr.getDatabaseTransactionMgr(db.getId()).
-                getTransactionState(transactionId6);
         assertEquals(transactionState1.getTransactionStatus(), TransactionStatus.ABORTED);
         assertEquals(transactionState2.getTransactionStatus(), TransactionStatus.ABORTED);
     }
@@ -638,7 +414,7 @@ public class LakePublishBatchTest {
         };
 
         PublishVersionDaemon publishVersionDaemon = new PublishVersionDaemon();
-        publishVersionDaemon.runAfterLeaseValid();
+        publishVersionDaemon.runAfterCatalogReady();
 
         TransactionState transactionState1 = globalTransactionMgr.getDatabaseTransactionMgr(db.getId()).
                 getTransactionState(transactionId7);
@@ -649,11 +425,6 @@ public class LakePublishBatchTest {
         waitTransactionDone(transactionState1);
         waitTransactionDone(transactionState2);
 
-        // Re-fetch after waiting because COW may have replaced the objects in the map
-        transactionState1 = globalTransactionMgr.getDatabaseTransactionMgr(db.getId()).
-                getTransactionState(transactionId7);
-        transactionState2 = globalTransactionMgr.getDatabaseTransactionMgr(db.getId()).
-                getTransactionState(transactionId8);
         assertEquals(transactionState1.getTransactionStatus(), TransactionStatus.VISIBLE);
         assertEquals(transactionState2.getTransactionStatus(), TransactionStatus.VISIBLE);
     }
@@ -756,7 +527,7 @@ public class LakePublishBatchTest {
         publishVersionDaemon.publishingTransactionIds.add(transactionId6);
 
         Config.lake_enable_batch_publish_version = true;
-        publishVersionDaemon.runAfterLeaseValid();
+        publishVersionDaemon.runAfterCatalogReady();
         Assertions.assertFalse(waiter6.await(5, TimeUnit.SECONDS));
         Assertions.assertFalse(waiter7.await(5, TimeUnit.SECONDS));
 
@@ -788,7 +559,7 @@ public class LakePublishBatchTest {
                         transactionSource,
                         TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
         // commit a transaction
-        globalTransactionMgr.commitTransaction(db.getId(), transactionId1, transTablets,
+        VisibleStateWaiter waiter1 = globalTransactionMgr.commitTransaction(db.getId(), transactionId1, transTablets,
                 Lists.newArrayList(), null);
 
         long transactionId2 = globalTransactionMgr.
@@ -797,7 +568,7 @@ public class LakePublishBatchTest {
                         transactionSource,
                         TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
         // commit a transaction
-        globalTransactionMgr.commitTransaction(db.getId(), transactionId2, transTablets,
+        VisibleStateWaiter waiter2 = globalTransactionMgr.commitTransaction(db.getId(), transactionId2, transTablets,
                 Lists.newArrayList(), null);
 
         {
@@ -808,7 +579,7 @@ public class LakePublishBatchTest {
             long myTableId = table.getId();
             TransactionStateBatch readyStateBatch = null;
             for (TransactionStateBatch batch : globalTransactionMgr.getReadyPublishTransactionsBatch()) {
-                if (batch.getTableIdList().contains(myTableId)) {
+                if (batch.getTableId() == myTableId) {
                     readyStateBatch = batch;
                     break;
                 }
@@ -858,7 +629,7 @@ public class LakePublishBatchTest {
             Assertions.assertTrue(transactionMgr.checkTxnStateBatchConsistent(db, readyStateBatch));
 
             PublishVersionDaemon publishVersionDaemon = new PublishVersionDaemon();
-            publishVersionDaemon.runAfterLeaseValid();
+            publishVersionDaemon.runAfterCatalogReady();
         }
     }
 
@@ -901,20 +672,10 @@ public class LakePublishBatchTest {
         txnState1.addPartitionLoadedIndexes(table.getId(), physicalPartition.getId(), Lists.newArrayList(normalIndex.getId()));
         List<TabletCommitInfo> commitInfo1 = commitAllTablets(List.of(normalTablet));
 
-        // Disable the LakeTableAddIndexJob fast path just for the alterTable
-        // call so ADD INDEX routes through the legacy LakeTableSchemaChangeJob
-        // shadow-index flow that this batch-publish scenario exercises. Once
-        // the job is registered with the scheduler it runs on its own; we
-        // restore the flag immediately after.
+        // do a schema change, which will create a shadow index
         String alterSql = String.format("alter table %s add index idx (v0) using bitmap", TABLE_SCHEMA_CHANGE);
         AlterTableStmt stmt = (AlterTableStmt) UtFrameUtils.parseStmtWithNewParser(alterSql, connectContext);
-        boolean origFastPath = Config.enable_lake_add_index_fast_path;
-        Config.enable_lake_add_index_fast_path = false;
-        try {
-            GlobalStateMgr.getCurrentState().getLocalMetastore().alterTable(connectContext, stmt);
-        } finally {
-            Config.enable_lake_add_index_fast_path = origFastPath;
-        }
+        GlobalStateMgr.getCurrentState().getLocalMetastore().alterTable(connectContext, stmt);
         List<AlterJobV2> alterJobs = GlobalStateMgr.getCurrentState().getAlterJobMgr()
                 .getSchemaChangeHandler().getUnfinishedAlterJobV2ByTableId(table.getId());
         assertEquals(1, alterJobs.size());
@@ -1115,59 +876,5 @@ public class LakePublishBatchTest {
             commitInfos.add(tabletCommitInfo);
         }
         return commitInfos;
-    }
-
-    @Test
-    public void testBatchInBackoffIsNotResubmitted() throws Exception {
-        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(DB);
-        Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), TABLE_AGG_OFF);
-        Partition partition = Lists.newArrayList(table.getPartitions()).get(0);
-        List<TabletCommitInfo> tablets = getPartitionTabletCommitInfos(partition);
-
-        GlobalTransactionMgr globalTransactionMgr = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr();
-        long txnId1 = globalTransactionMgr.beginTransaction(db.getId(), Lists.newArrayList(table.getId()),
-                "backoff_1_" + UUIDUtil.genUUID(), transactionSource,
-                TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-        VisibleStateWaiter waiter1 = globalTransactionMgr.commitTransaction(
-                db.getId(), txnId1, tablets, Lists.newArrayList(), null);
-        long txnId2 = globalTransactionMgr.beginTransaction(db.getId(), Lists.newArrayList(table.getId()),
-                "backoff_2_" + UUIDUtil.genUUID(), transactionSource,
-                TransactionState.LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-        VisibleStateWaiter waiter2 = globalTransactionMgr.commitTransaction(
-                db.getId(), txnId2, tablets, Lists.newArrayList(), null);
-
-        DatabaseTransactionMgr dbTxnMgr = globalTransactionMgr.getDatabaseTransactionMgr(db.getId());
-        TransactionState state1 = dbTxnMgr.getTransactionState(txnId1);
-        TransactionState state2 = dbTxnMgr.getTransactionState(txnId2);
-        TransactionStateBatch batch = new TransactionStateBatch(Lists.newArrayList(state1, state2));
-
-        // Mark every partition of the batch as having just failed to publish. This is the state a
-        // stalled object store leaves behind, and the daemon used to resubmit the whole batch on
-        // every tick while it lasted.
-        long now = System.currentTimeMillis();
-        for (TransactionState state : Lists.newArrayList(state1, state2)) {
-            for (TableCommitInfo tableCommitInfo : state.getIdToTableCommitInfos().values()) {
-                for (PartitionCommitInfo pci : tableCommitInfo.getIdToPartitionCommitInfo().values()) {
-                    pci.markPublishFailed(now);
-                }
-            }
-        }
-
-        PublishVersionDaemon daemon = new PublishVersionDaemon();
-        daemon.publishVersionForLakeTableBatch(Lists.newArrayList(batch));
-        // Skipped before the batch was claimed, so no publish task was even marked as sent.
-        assertFalse(state1.hasSendTask());
-        assertFalse(state2.hasSendTask());
-
-        // Once the back-off has elapsed the same batch publishes normally.
-        for (TransactionState state : Lists.newArrayList(state1, state2)) {
-            for (TableCommitInfo tableCommitInfo : state.getIdToTableCommitInfos().values()) {
-                for (PartitionCommitInfo pci : tableCommitInfo.getIdToPartitionCommitInfo().values()) {
-                    // PublishVersionDaemon.RETRY_INTERVAL_MS is 1s.
-                    pci.markPublishFailed(now - 2000);
-                }
-            }
-        }
-        awaitPublish(daemon, waiter1, waiter2);
     }
 }

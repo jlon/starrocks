@@ -16,11 +16,6 @@
 
 #include <cstdlib>
 
-#include "base/coding.h"
-#include "base/string/faststring.h"
-#include "base/testutil/assert.h"
-#include "base/testutil/parallel_test.h"
-#include "column/chunk_factory.h"
 #include "fs/fs_memory.h"
 #include "fs/fs_util.h"
 #include "storage/chunk_helper.h"
@@ -33,6 +28,10 @@
 #include "storage/storage_engine.h"
 #include "storage/tablet_manager.h"
 #include "storage/update_manager.h"
+#include "testutil/assert.h"
+#include "testutil/parallel_test.h"
+#include "util/coding.h"
+#include "util/faststring.h"
 
 namespace starrocks {
 
@@ -89,7 +88,7 @@ public:
         std::unique_ptr<RowsetWriter> writer;
         EXPECT_TRUE(RowsetFactory::create_rowset_writer(writer_context, &writer).ok());
         auto schema = ChunkHelper::convert_schema(tablet->tablet_schema());
-        auto chunk = ChunkFactory::new_chunk(schema, keys.size());
+        auto chunk = ChunkHelper::new_chunk(schema, keys.size());
         auto cols = chunk->columns();
         size_t size = keys.size();
         for (size_t i = 0; i < size; i++) {

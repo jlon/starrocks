@@ -17,16 +17,15 @@
 #include <optional>
 #include <vector>
 
-#include "base/base64.h"
-#include "base/crypto/aes_util.h"
-#include "base/crypto/md5.h"
-#include "base/crypto/sha.h"
 #include "column/column_builder.h"
 #include "column/column_helper.h"
 #include "column/column_viewer.h"
-#include "common/config_expr_fwd.h"
 #include "common/status.h"
+#include "exprs/base64.h"
 #include "types/logical_type_infra.h"
+#include "util/aes_util.h"
+#include "util/md5.h"
+#include "util/sha.h"
 
 namespace starrocks {
 
@@ -228,7 +227,10 @@ private:
 static StatusOr<ColumnPtr> aes_encrypt_2params(FunctionContext* ctx, const Columns& columns) {
     DCHECK_EQ(columns.size(), 2);
 
-    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+    // Check if data or key columns are only_null
+    if (columns[0]->only_null() || columns[1]->only_null()) {
+        return columns[0]->only_null() ? columns[0] : columns[1];
+    }
 
     auto src_viewer = ColumnViewer<TYPE_VARCHAR>(columns[0]);
     auto key_viewer = ColumnViewer<TYPE_VARCHAR>(columns[1]);
@@ -280,7 +282,10 @@ static StatusOr<ColumnPtr> aes_encrypt_2params(FunctionContext* ctx, const Colum
 static StatusOr<ColumnPtr> aes_decrypt_2params(FunctionContext* ctx, const Columns& columns) {
     DCHECK_EQ(columns.size(), 2);
 
-    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+    // Check if data or key columns are only_null
+    if (columns[0]->only_null() || columns[1]->only_null()) {
+        return columns[0]->only_null() ? columns[0] : columns[1];
+    }
 
     auto src_viewer = ColumnViewer<TYPE_VARCHAR>(columns[0]);
     auto key_viewer = ColumnViewer<TYPE_VARCHAR>(columns[1]);
@@ -819,31 +824,28 @@ struct EncodeColumnToDigest {
     using CppType = RunTimeCppType<LT>;
     using ColumnType = RunTimeColumnType<LT>;
 
-    // `is_const` marks a constant argument, whose unwrapped data column holds exactly one element
-    // that logically repeats for every row. Such a column must always be read at index 0.
-    static void encode(const Column* data_col, const NullColumn* null_col, size_t chunk_size, bool is_const,
+    static void encode(const Column* data_col, const NullColumn* null_col, size_t chunk_size,
                        std::vector<SHA256Digest>& digests) {
         if constexpr (lt_is_string<LT> || lt_is_binary<LT>) {
             // String/Binary types
             auto* col = data_col ? down_cast<const ColumnType*>(data_col) : nullptr;
-            const uint8_t* null_data = null_col ? null_col->immutable_data().data() : nullptr;
+            const uint8_t* null_data = null_col ? null_col->raw_data() : nullptr;
             for (size_t row = 0; row < chunk_size; row++) {
-                const size_t idx = is_const ? 0 : row;
-                if (null_data && null_data[idx]) {
+                if (null_data && null_data[row]) {
                     uint8_t marker = static_cast<uint8_t>(RowFingerprintValueType::Null);
                     digests[row].update(&marker, 1);
                 } else {
                     DCHECK(col != nullptr);
                     uint8_t marker = static_cast<uint8_t>(RowFingerprintValueType::String);
                     digests[row].update(&marker, 1);
-                    Slice value = col->get_slice(idx);
+                    Slice value = col->get_slice(row);
                     digests[row].update(value.data, value.size);
                 }
             }
         } else if constexpr (lt_is_arithmetic<LT> || lt_is_date_or_datetime<LT> || lt_is_decimal<LT> ||
                              lt_is_largeint<LT>) {
             // Fixed-length types: numerics, dates, decimals
-            const auto* data = data_col ? GetContainer<LT>::get_data(data_col).data() : nullptr;
+            auto* data = data_col ? reinterpret_cast<const CppType*>(data_col->raw_data()) : nullptr;
             RowFingerprintValueType marker_type;
 
             if constexpr (sizeof(CppType) == 1) {
@@ -865,16 +867,15 @@ struct EncodeColumnToDigest {
             }
 
             uint8_t marker = static_cast<uint8_t>(marker_type);
-            const auto* null_data = null_col ? null_col->immutable_data().data() : nullptr;
+            const uint8_t* null_data = null_col ? null_col->raw_data() : nullptr;
             for (size_t row = 0; row < chunk_size; row++) {
-                const size_t idx = is_const ? 0 : row;
-                if (null_data && null_data[idx]) {
+                if (null_data && null_data[row]) {
                     uint8_t null_marker = static_cast<uint8_t>(RowFingerprintValueType::Null);
                     digests[row].update(&null_marker, 1);
                 } else {
                     DCHECK(data != nullptr);
                     digests[row].update(&marker, 1);
-                    digests[row].update(&data[idx], sizeof(CppType));
+                    digests[row].update(&data[row], sizeof(CppType));
                 }
             }
         } else if (LT == TYPE_NULL) {
@@ -886,10 +887,9 @@ struct EncodeColumnToDigest {
             // Fallback for unsupported types (JSON, HLL, OBJECT, STRUCT, ARRAY, MAP, etc.)
             // Cast to string representation and encode
             auto* col = data_col ? down_cast<const ColumnType*>(data_col) : nullptr;
-            const auto* null_data = null_col ? null_col->immutable_data().data() : nullptr;
+            const uint8_t* null_data = null_col ? null_col->raw_data() : nullptr;
             for (size_t row = 0; row < chunk_size; row++) {
-                const size_t idx = is_const ? 0 : row;
-                if (null_data && null_data[idx]) {
+                if (null_data && null_data[row]) {
                     uint8_t marker = static_cast<uint8_t>(RowFingerprintValueType::Null);
                     digests[row].update(&marker, 1);
                 } else {
@@ -897,7 +897,7 @@ struct EncodeColumnToDigest {
                     uint8_t marker = static_cast<uint8_t>(RowFingerprintValueType::String);
                     digests[row].update(&marker, 1);
                     // Convert the value to string and encode
-                    std::string str_value = col->debug_item(idx);
+                    std::string str_value = col->debug_item(row);
                     digests[row].update(str_value.data(), str_value.size());
                 }
             }
@@ -906,8 +906,6 @@ struct EncodeColumnToDigest {
 };
 
 StatusOr<ColumnPtr> EncryptionFunctions::encode_fingerprint_sha256(FunctionContext* ctx, const Columns& columns) {
-    RETURN_IF(columns.empty(), Status::InvalidArgument("encode_fingerprint_sha256 requires at least 1 argument"));
-
     size_t chunk_size = columns[0]->size();
     std::vector<SHA256Digest> digests(chunk_size);
 
@@ -924,9 +922,6 @@ StatusOr<ColumnPtr> EncryptionFunctions::encode_fingerprint_sha256(FunctionConte
             }
             continue;
         }
-        // A constant argument keeps its single value in a one-element data column while reporting
-        // `chunk_size` rows, so every row must read index 0 instead of its own row index.
-        const bool is_const = col->is_constant();
         const Column* data_col = ColumnHelper::get_data_column(col.get());
         const NullColumn* null_col = ColumnHelper::get_null_column(col.get());
 
@@ -940,7 +935,7 @@ StatusOr<ColumnPtr> EncryptionFunctions::encode_fingerprint_sha256(FunctionConte
 
         // Use type dispatch to call the appropriate template specialization
         type_dispatch_filter(type, false, [&]<LogicalType LT>() -> bool {
-            EncodeColumnToDigest<LT>::encode(data_col, null_col, chunk_size, is_const, digests);
+            EncodeColumnToDigest<LT>::encode(data_col, null_col, chunk_size, digests);
             return true;
         });
     }

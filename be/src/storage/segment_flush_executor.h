@@ -18,10 +18,10 @@
 #include <memory>
 #include <vector>
 
-#include "base/concurrency/spinlock.h"
 #include "common/status.h"
-#include "common/storage_define.h"
-#include "common/thread/threadpool.h"
+#include "storage/olap_define.h"
+#include "util/spinlock.h"
+#include "util/threadpool.h"
 
 namespace brpc {
 class Controller;
@@ -34,6 +34,7 @@ class Closure;
 namespace starrocks {
 
 class DataDir;
+class ExecEnv;
 class PTabletWriterAddSegmentRequest;
 class PTabletWriterAddSegmentResult;
 class ThreadPoolToken;

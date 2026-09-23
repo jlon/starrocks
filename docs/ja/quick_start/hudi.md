@@ -1,5 +1,4 @@
 ---
-sidebar_position: 50
 description: Apache Hudi を使用したデータレイクハウス
 displayed_sidebar: docs
 ---

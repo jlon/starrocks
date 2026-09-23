@@ -35,7 +35,6 @@ import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.common.util.concurrent.lock.NotSupportLockException;
 import com.starrocks.load.DeleteJob.DeleteState;
-import com.starrocks.load.MultiDeleteInfo;
 import com.starrocks.persist.EditLog;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.QueryStateException;
@@ -53,6 +52,7 @@ import com.starrocks.sql.ast.expression.BinaryType;
 import com.starrocks.sql.ast.expression.IntLiteral;
 import com.starrocks.sql.ast.expression.SlotRef;
 import com.starrocks.sql.parser.NodePosition;
+import com.starrocks.system.SystemInfoService;
 import com.starrocks.task.AgentBatchTask;
 import com.starrocks.task.AgentTask;
 import com.starrocks.task.AgentTaskExecutor;
@@ -139,18 +139,7 @@ public class DeleteHandlerTest {
             }
 
             @Mock
-            public void logInsertTransactionState(TransactionState transactionState,
-                    com.starrocks.persist.WALApplier walApplier) {
-                if (walApplier != null) {
-                    walApplier.apply(transactionState);
-                }
-            }
-
-            @Mock
-            public void logFinishMultiDelete(MultiDeleteInfo info, com.starrocks.persist.WALApplier walApplier) {
-                if (walApplier != null) {
-                    walApplier.apply(info);
-                }
+            public void logInsertTransactionState(TransactionState transactionState) {
             }
         };
 
@@ -209,6 +198,7 @@ public class DeleteHandlerTest {
         };
         globalTransactionMgr.addDatabaseTransactionMgr(db.getId());
 
+        SystemInfoService systemInfoService = new SystemInfoService();
         new Expectations() {
             {
                 GlobalStateMgr.getCurrentState();

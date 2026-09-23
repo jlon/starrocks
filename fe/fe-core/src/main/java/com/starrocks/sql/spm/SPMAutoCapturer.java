@@ -20,7 +20,7 @@ import com.google.common.collect.Maps;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableName;
 import com.starrocks.common.AuditLog;
-import com.starrocks.common.util.LeaderDaemon;
+import com.starrocks.common.util.FrontendDaemon;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.GlobalVariable;
 import com.starrocks.server.GlobalStateMgr;
@@ -42,7 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-public class SPMAutoCapturer extends LeaderDaemon {
+public class SPMAutoCapturer extends FrontendDaemon {
     private static final Logger LOG = LogManager.getLogger(SPMAutoCapturer.class);
 
     private LocalDateTime lastWorkTime =
@@ -51,22 +51,16 @@ public class SPMAutoCapturer extends LeaderDaemon {
     private ConnectContext connect;
 
     public SPMAutoCapturer() {
-        super("spm-auto-capturer", GlobalVariable.spmCaptureIntervalSeconds * 1000L);
+        super("spm-auto-capturer");
     }
 
     @Override
-    protected synchronized void onStopped() {
-        // The captured ConnectContext is leader-session-only (it carries leader-side query
-        // execution state). Drop it so the next activation rebuilds a fresh context and the
-        // demoted FE does not retain references into leader-only state.
-        connect = null;
+    public long getInterval() {
+        return GlobalVariable.spmCaptureIntervalSeconds * 100;
     }
 
     @Override
-    protected void runAfterLeaseValid() {
-        // Pick up runtime changes to spm_capture_interval_seconds so operators can retune the
-        // pace without restarting the leader.
-        setInterval(GlobalVariable.spmCaptureIntervalSeconds * 1000L);
+    protected void runAfterCatalogReady() {
         if (!GlobalVariable.enableSPMCapture) {
             return;
         }
@@ -114,7 +108,6 @@ public class SPMAutoCapturer extends LeaderDaemon {
             } catch (Exception e) {
                 // if the db isn't exists, we just skip this query
                 AuditLog.getInternalAudit().info("SPM auto capture failed, db not exists: {}", queryHistory.getDb());
-                SPMMetrics.increaseCaptureCandidate(SPMMetrics.CAPTURE_CANDIDATE_SKIPPED_DB_MISSING);
                 continue;
             }
             try (var scope = connect.bindScope()) {
@@ -124,13 +117,11 @@ public class SPMAutoCapturer extends LeaderDaemon {
 
                 Map<TableName, Table> tables = AnalyzerUtils.collectAllTable(stmt.get(0));
                 if (tables.size() < 2) {
-                    SPMMetrics.increaseCaptureCandidate(SPMMetrics.CAPTURE_CANDIDATE_SKIPPED_TABLE_COUNT);
                     continue;
                 }
 
                 if (!tables.keySet().stream()
                         .allMatch(t -> checkPattern.matcher(t.getDb() + "." + t.getTbl()).find())) {
-                    SPMMetrics.increaseCaptureCandidate(SPMMetrics.CAPTURE_CANDIDATE_SKIPPED_PATTERN_MISMATCH);
                     continue;
                 }
 
@@ -144,7 +135,6 @@ public class SPMAutoCapturer extends LeaderDaemon {
                     }
                 }
                 if (!allTableExists) {
-                    SPMMetrics.increaseCaptureCandidate(SPMMetrics.CAPTURE_CANDIDATE_SKIPPED_TABLE_MISSING);
                     continue;
                 }
 
@@ -158,7 +148,6 @@ public class SPMAutoCapturer extends LeaderDaemon {
                 base.setUpdateTime(queryHistory.getDatetime());
                 plans.put(queryHistory.getSqlDigest(), base);
             } catch (Exception e) {
-                SPMMetrics.increaseCaptureCandidate(SPMMetrics.CAPTURE_CANDIDATE_FAILED);
                 LOG.warn("sql plan capture failed. sql: {}", queryHistory.getOriginSQL(), e);
             }
         }
@@ -180,10 +169,8 @@ public class SPMAutoCapturer extends LeaderDaemon {
 
             if (allBaselines.stream().anyMatch(b -> b.getBindSqlDigest().equalsIgnoreCase(digest) &&
                     b.getPlanSql().equalsIgnoreCase(plan.getPlanSql()))) {
-                SPMMetrics.increaseCaptureCandidate(SPMMetrics.CAPTURE_CANDIDATE_SKIPPED_DUPLICATE);
                 continue;
             }
-            SPMMetrics.increaseCaptureCandidate(SPMMetrics.CAPTURE_CANDIDATE_CAPTURED);
             result.add(plan);
         }
         return result;

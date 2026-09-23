@@ -19,31 +19,36 @@
 #include <mutex>
 #include <vector>
 
+#include "agent/master_info.h"
 #include "column/chunk.h"
 #include "column/fixed_length_column.h"
 #include "column/nullable_column.h"
-#include "column/serde/column_array_serde.h"
-#include "column/sorting/sorting.h"
 #include "column/vectorized_fwd.h"
-#include "common/config_exec_flow_fwd.h"
+#include "common/config.h"
 #include "common/global_types.h"
-#include "common/runtime_profile.h"
-#include "common/system/master_info.h"
-#include "exec/exec_env.h"
+#include "common/logging.h"
 #include "exec/pipeline/fetch_task.h"
+#include "exec/sorting/sorting.h"
+#include "exec/tablet_info.h"
+#include "fmt/format.h"
 #include "runtime/descriptors.h"
-#include "runtime/runtime_state.h"
-#include "storage_primitive/tablet_info.h"
+#include "runtime/exec_env.h"
+#include "runtime/lookup_stream_mgr.h"
+#include "serde/column_array_serde.h"
+#include "util/brpc_stub_cache.h"
+#include "util/defer_op.h"
+#include "util/disposable_closure.h"
+#include "util/runtime_profile.h"
+#include "util/uuid_generator.h"
 
 namespace starrocks::pipeline {
 
-Status FetchProcessor::prepare(RuntimeState* state, std::shared_ptr<RuntimeProfile>& runtime_profile) {
+Status FetchProcessor::prepare(RuntimeState* state, RuntimeProfile* runtime_profile) {
     if (auto opt = get_backend_id(); opt.has_value()) {
         _local_be_id = opt.value();
     } else {
         return Status::InternalError("can't get local backend id");
     }
-    _runtime_profile = runtime_profile;
 
     runtime_profile->add_info_string("LookUpNode", std::to_string(_target_node_id));
     _build_row_id_chunk_timer = ADD_TIMER(runtime_profile, "BuildRowIdChunkTime");
@@ -168,7 +173,8 @@ StatusOr<ChunkPtr> FetchProcessor::_build_request_chunk(RuntimeState* state, con
 
     auto position_column = UInt32Column::create();
     size_t total_rows = 0;
-    std::ranges::for_each(input_chunks, [&total_rows](const ChunkPtr& chunk) { total_rows += chunk->num_rows(); });
+    std::for_each(input_chunks.begin(), input_chunks.end(),
+                  [&total_rows](const ChunkPtr& chunk) { total_rows += chunk->num_rows(); });
 
     position_column->resize_uninitialized(total_rows);
     auto& position_data = position_column->get_data();
@@ -208,23 +214,15 @@ StatusOr<FetchTaskPtr> FetchProcessor::_create_fetch_task(TupleId request_tuple_
                                                           const RowPositionDescriptor* row_pos_desc, BatchUnitPtr unit,
                                                           int32_t source_id, const ChunkPtr& request_chunk) {
     auto row_position_type = row_pos_desc->type();
-    auto task_ctx = std::make_shared<FetchTaskContext>();
-    task_ctx->processor = shared_from_this();
-    task_ctx->unit = std::move(unit);
-    task_ctx->request_tuple_id = request_tuple_id;
-    task_ctx->source_node_id = source_id;
-    task_ctx->request_chunk = request_chunk;
-    task_ctx->scan_node_id = row_pos_desc->get_scan_node_id();
-
     switch (row_position_type) {
     case RowPositionDescriptor::ICEBERG_V3: {
-        return std::make_shared<FetchTask>(std::move(task_ctx));
-    }
-    case RowPositionDescriptor::OLAP_SCAN: {
-        return std::make_shared<FetchTask>(std::move(task_ctx));
-    }
-    case RowPositionDescriptor::LAKE_SCAN: {
-        return std::make_shared<FetchTask>(std::move(task_ctx));
+        auto task_ctx = std::make_shared<FetchTaskContext>();
+        task_ctx->processor = this;
+        task_ctx->unit = std::move(unit);
+        task_ctx->request_tuple_id = request_tuple_id;
+        task_ctx->source_node_id = source_id;
+        task_ctx->request_chunk = std::move(request_chunk);
+        return std::make_shared<IcebergFetchTask>(std::move(task_ctx));
     }
     default:
         return Status::InternalError(fmt::format("Unknown row position type: {}", row_position_type));
@@ -432,20 +430,16 @@ Status FetchProcessor::_build_output_chunk(RuntimeState* state, const BatchUnitP
         MutableColumnPtr position_column = UInt32Column::create();
         std::vector<SlotDescriptor*> slots;
         {
-            const auto& lookup = row_pos_desc->get_lookup_ref_slot_ids();
-            const auto& fetch = row_pos_desc->get_fetch_ref_slot_ids();
-
-            auto not_in_lookup = [&](SlotDescriptor* slot) {
-                return !std::ranges::any_of(lookup, [&](int id) { return id == slot->id(); });
-            };
-
-            auto not_in_fetch = [&](SlotDescriptor* slot) {
-                return !std::ranges::any_of(fetch, [&](int id) { return id == slot->id(); });
-            };
-
-            for (auto* slot :
-                 tuple_desc->slots() | std::views::filter(not_in_lookup) | std::views::filter(not_in_fetch)) {
-                slots.push_back(slot);
+            for (const auto& slot : tuple_desc->slots()) {
+                bool ignore = std::any_of(row_pos_desc->get_lookup_ref_slot_ids().begin(),
+                                          row_pos_desc->get_lookup_ref_slot_ids().end(),
+                                          [slot](SlotId slot_id) { return slot_id == slot->id(); }) ||
+                              std::any_of(row_pos_desc->get_fetch_ref_slot_ids().begin(),
+                                          row_pos_desc->get_fetch_ref_slot_ids().end(),
+                                          [slot](SlotId slot_id) { return slot_id == slot->id(); });
+                if (!ignore) {
+                    slots.emplace_back(slot);
+                }
             }
         }
 
@@ -518,7 +512,7 @@ Status FetchProcessor::_build_output_chunk(RuntimeState* state, const BatchUnitP
             for (const auto& input_chunk : input_chunks) {
                 size_t num_rows = input_chunk->num_rows();
                 auto dst_column = ColumnHelper::create_column(slot_desc->type(), slot_desc->is_nullable());
-                dst_column->append_default(num_rows);
+                dst_column->append_nulls(num_rows);
                 input_chunk->append_column(std::move(dst_column), slot);
                 input_chunk->check_or_die();
             }
@@ -532,33 +526,20 @@ Status FetchProcessor::_build_output_chunk(RuntimeState* state, const BatchUnitP
 FetchProcessorFactory::FetchProcessorFactory(int32_t target_node_id,
                                              phmap::flat_hash_map<TupleId, RowPositionDescriptor*> row_pos_descs,
                                              phmap::flat_hash_map<SlotId, SlotDescriptor*> slot_id_to_desc,
-                                             std::shared_ptr<StarRocksNodesInfo> nodes_info)
+                                             std::shared_ptr<StarRocksNodesInfo> nodes_info,
+                                             std::shared_ptr<LookUpDispatcher> local_dispatcher)
         : _target_node_id(target_node_id),
           _row_pos_descs(std::move(row_pos_descs)),
           _slot_id_to_desc(std::move(slot_id_to_desc)),
-          _nodes_info(std::move(nodes_info)) {}
+          _nodes_info(std::move(nodes_info)),
+          _local_dispatcher(std::move(local_dispatcher)) {}
 
 FetchProcessorPtr FetchProcessorFactory::get_or_create(int32_t driver_sequence) {
-    // Do the get-or-create and the read entirely under the submap lock. Returning
-    // _processor_map.at() would deref a slot reference after the lock is released,
-    // racing with a concurrent try_emplace()/resize() (another driver sequence hashing
-    // into the same submap) that frees the slot array -> heap-use-after-free.
-    FetchProcessorPtr processor;
-    _processor_map.lazy_emplace_l(
-            driver_sequence, [&](FetchProcessorPtr& value) { processor = value; },
-            [&](const auto& ctor) {
-                processor = std::make_shared<FetchProcessor>(_target_node_id, _row_pos_descs, _slot_id_to_desc,
-                                                             _nodes_info);
-                ctor(driver_sequence, processor);
-            });
-    return processor;
-}
-
-void FetchProcessorFactory::close_context(RuntimeState* state) {
-    for (auto& [id, node_info] : _nodes_info->get_nodes()) {
-        LookUpCloseTask close_task(_target_node_id, node_info.host, node_info.brpc_port);
-        close_task.submit(state);
+    if (!_processor_map.contains(driver_sequence)) {
+        _processor_map.try_emplace(driver_sequence,
+                                   std::make_shared<FetchProcessor>(_target_node_id, _row_pos_descs, _slot_id_to_desc,
+                                                                    _nodes_info, _local_dispatcher));
     }
+    return _processor_map.at(driver_sequence);
 }
-
 } // namespace starrocks::pipeline

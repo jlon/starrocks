@@ -80,7 +80,7 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
     //   1.2 Cloud native: LAKE, LAKE_MATERIALIZED_VIEW
     // 2. System table: SCHEMA
     // 3. View: INLINE_VIEW, VIEW
-    // 4. External table: MYSQL, OLAP_EXTERNAL, BROKER, ELASTICSEARCH, HIVE, ICEBERG, HUDI, ODBC, JDBC, BENCHMARK
+    // 4. External table: MYSQL, OLAP_EXTERNAL, BROKER, ELASTICSEARCH, HIVE, ICEBERG, HUDI, ODBC, JDBC
     public enum TableType {
         @SerializedName("MYSQL")
         MYSQL,
@@ -128,18 +128,12 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
         METADATA,
         @SerializedName("KUDU")
         KUDU,
-        @SerializedName("BENCHMARK")
-        BENCHMARK,
         @SerializedName("HIVE_VIEW")
         HIVE_VIEW,
         @SerializedName("ICEBERG_VIEW")
         ICEBERG_VIEW,
         @SerializedName("PAIMON_VIEW")
-        PAIMON_VIEW,
-        @SerializedName("LANCE")
-        LANCE,
-        @SerializedName("FLUSS")
-        FLUSS;
+        PAIMON_VIEW;
 
         public static String serialize(TableType type) {
             if (type == CLOUD_NATIVE) {
@@ -400,8 +394,7 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
     }
 
     public boolean isExternalTableWithFileSystem() {
-        return isHiveTable() || isIcebergTable() || isHudiTable() || isDeltalakeTable()
-                || isPaimonTable() || isKuduTable() || isFlussTable();
+        return isHiveTable() || isIcebergTable() || isHudiTable() || isDeltalakeTable() || isPaimonTable() || isKuduTable();
     }
 
     public boolean isHiveTable() {
@@ -431,10 +424,6 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
         return type == TableType.PAIMON;
     }
 
-    public boolean isFlussTable() {
-        return type == TableType.FLUSS;
-    }
-
     public boolean isOdpsTable() {
         return type == TableType.ODPS;
     }
@@ -453,14 +442,6 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
 
     public boolean isKuduTable() {
         return type == TableType.KUDU;
-    }
-
-    public boolean isBenchmarkTable() {
-        return type == TableType.BENCHMARK;
-    }
-
-    public boolean isLanceTable() {
-        return type == TableType.LANCE;
     }
 
     public boolean isHMSTable() {
@@ -534,16 +515,6 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
 
     public Column getColumnByUniqueId(long uniqueId) {
         return fullSchema.stream().filter(c -> c.getUniqueId() == uniqueId).findFirst().orElse(null);
-    }
-
-    /**
-     * Get all virtual columns for this table. Virtual columns are not persisted 
-     * but are available during query execution.
-     * Default implementation returns empty list. Subclasses can override to provide virtual columns.
-     * @return List of virtual columns
-     */
-    public List<Column> getVirtualColumns() {
-        return new ArrayList<>();
     }
 
     public boolean containColumn(String columnName) {
@@ -775,10 +746,8 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
      */
     public void onDrop(Database db, boolean force, boolean replay) {
         // inactive relative materialized views if the base table/view/external table is dropped.
-        if (!replay) {
-            AlterMVJobExecutor.inactiveRelatedMaterializedViewsRecursive(this,
-                    MaterializedViewExceptions.inactiveReasonForBaseTableNotExists(getName()));
-        }
+        AlterMVJobExecutor.inactiveRelatedMaterializedViewsRecursive(this,
+                MaterializedViewExceptions.inactiveReasonForBaseTableNotExists(getName()), replay);
     }
 
     /**

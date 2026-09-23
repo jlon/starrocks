@@ -155,7 +155,7 @@ public class IcebergTableTest extends TableTestBase {
             Assertions.assertEquals(c.getName(), "k1");
         }
 
-        table.toThrift(new ArrayList<DescriptorTable.ReferencedPartitionInfo>());
+        TTableDescriptor tds = table.toThrift(new ArrayList<DescriptorTable.ReferencedPartitionInfo>());
     }
 
     @Test

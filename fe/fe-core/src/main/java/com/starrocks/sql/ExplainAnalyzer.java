@@ -22,7 +22,6 @@ import com.google.gson.JsonObject;
 import com.starrocks.common.Pair;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.util.Counter;
-import com.starrocks.common.util.ProfileKeyDictionary;
 import com.starrocks.common.util.ProfileManager;
 import com.starrocks.common.util.ProfilingExecPlan;
 import com.starrocks.common.util.RuntimeProfile;
@@ -65,7 +64,6 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.starrocks.qe.scheduler.QueryRuntimeProfile.LOAD_CHANNEL_PROFILE_NAME;
-import static com.starrocks.qe.scheduler.QueryRuntimeProfile.PER_TABLE_SCAN_STATS_PROFILE_NAME;
 
 public class ExplainAnalyzer {
     private static final Logger LOG = LogManager.getLogger(ExplainAnalyzer.class);
@@ -84,7 +82,7 @@ public class ExplainAnalyzer {
 
     private static final Set<String> EXCLUDE_DETAIL_METRIC_NAMES = Sets.newHashSet(
             RuntimeProfile.ROOT_COUNTER, RuntimeProfile.TOTAL_TIME_COUNTER,
-            ProfileKeyDictionary.NETWORK_TIME, ProfileKeyDictionary.SCAN_TIME);
+            "NetworkTime", "ScanTime");
     private static final Set<String> INCLUDE_DETAIL_METRIC_NAMES = Sets.newHashSet(
             "IOTaskWaitTime", "IOTaskExecTime"
     );
@@ -255,10 +253,6 @@ public class ExplainAnalyzer {
             if (LOAD_CHANNEL_PROFILE_NAME.equals(fragmentProfile.getName())) {
                 continue;
             }
-            // PerTableScanStats is an aggregated sibling, not a fragment.
-            if (PER_TABLE_SCAN_STATS_PROFILE_NAME.equals(fragmentProfile.getName())) {
-                continue;
-            }
 
             ProfileNodeParser parser = new ProfileNodeParser(isRuntimeProfile, fragmentProfile);
             Map<Integer, NodeInfo> nodeInfos = parser.parse();
@@ -328,7 +322,7 @@ public class ExplainAnalyzer {
                         null, "UniqueMetrics", "PartType");
                 if (TPartitionType.UNPARTITIONED.name().equalsIgnoreCase(partType) &&
                         nodeInfo.fragmentProfile != null) {
-                    Counter instanceNum = nodeInfo.fragmentProfile.getCounter(ProfileKeyDictionary.INSTANCE_NUM);
+                    Counter instanceNum = nodeInfo.fragmentProfile.getCounter("InstanceNum");
                     if (instanceNum != null && instanceNum.getValue() > 0) {
                         nodeInfo.outputRowNums.setValue(nodeInfo.outputRowNums.getValue() / instanceNum.getValue());
                     }
@@ -337,7 +331,7 @@ public class ExplainAnalyzer {
         });
 
         // Setup mv hits
-        String mvContent = summaryProfile.getInfoString(ProfileKeyDictionary.HIT_MATERIALIZED_VIEWS);
+        String mvContent = summaryProfile.getInfoString("HitMaterializedViews");
         if (StringUtils.isNotBlank(mvContent)) {
             HashSet<String> mvs = Sets.newHashSet(mvContent.split(","));
             allNodeInfos.values().forEach(nodeInfo -> {
@@ -351,11 +345,10 @@ public class ExplainAnalyzer {
             });
         }
 
-        cumulativeOperatorTime =
-                executionProfile.getCounter(ProfileKeyDictionary.QUERY_CUMULATIVE_OPERATOR_TIME).getValue();
-        cumulativeScanTime = executionProfile.getCounter(ProfileKeyDictionary.QUERY_CUMULATIVE_SCAN_TIME);
-        cumulativeNetworkTime = executionProfile.getCounter(ProfileKeyDictionary.QUERY_CUMULATIVE_NETWORK_TIME);
-        scheduleTime = executionProfile.getCounter(ProfileKeyDictionary.QUERY_PEAK_SCHEDULE_TIME);
+        cumulativeOperatorTime = executionProfile.getCounter("QueryCumulativeOperatorTime").getValue();
+        cumulativeScanTime = executionProfile.getCounter("QueryCumulativeScanTime");
+        cumulativeNetworkTime = executionProfile.getCounter("QueryCumulativeNetworkTime");
+        scheduleTime = executionProfile.getCounter("QueryPeakScheduleTime");
     }
 
     private void checkIdentical() {
@@ -395,7 +388,7 @@ public class ExplainAnalyzer {
                     "Profile is not identical!!!", getAnsiColor(ANSI_RESET));
         }
         appendSummaryLine("QueryId: ", summaryProfile.getInfoString(ProfileManager.QUERY_ID));
-        appendSummaryLine("Version: ", summaryProfile.getInfoString(ProfileKeyDictionary.STARROCKS_VERSION));
+        appendSummaryLine("Version: ", summaryProfile.getInfoString("StarRocks Version"));
         appendSummaryLine("State: ", summaryProfile.getInfoString(ProfileManager.QUERY_STATE));
         if (isRuntimeProfile) {
             appendSummaryLine("Legend: ", NodeState.INIT.symbol, " for blocked; ", NodeState.RUNNING.symbol,
@@ -407,11 +400,11 @@ public class ExplainAnalyzer {
                 summaryProfile.getInfoString(ProfileManager.TOTAL_TIME) :
                 summaryProfile.getCounter(ProfileManager.TOTAL_TIME));
         pushIndent(GraphElement.LEAF_METRIC_INDENT);
-        Counter executionWallTime = executionProfile.getCounter(ProfileKeyDictionary.QUERY_EXECUTION_WALL_TIME);
+        Counter executionWallTime = executionProfile.getCounter("QueryExecutionWallTime");
         if (executionWallTime == null) {
             executionWallTime = getMaximumPipelineDriverTime();
         }
-        Counter resultDeliverTime = executionProfile.getCounter(ProfileKeyDictionary.RESULT_DELIVER_TIME);
+        Counter resultDeliverTime = executionProfile.getCounter("ResultDeliverTime");
         if (resultDeliverTime == null) {
             resultDeliverTime = new Counter(TUnit.TIME_NS, null, 0);
         }
@@ -433,15 +426,12 @@ public class ExplainAnalyzer {
                             summaryProfile.getInfoString(ProfileManager.PROFILE_COLLECT_TIME) :
                             summaryProfile.getCounter(ProfileManager.PROFILE_COLLECT_TIME));
         }
-        appendSummaryLine("FrontendProfileMergeTime: ",
-                executionProfile.getCounter(ProfileKeyDictionary.FRONTEND_PROFILE_MERGE_TIME));
+        appendSummaryLine("FrontendProfileMergeTime: ", executionProfile.getCounter("FrontendProfileMergeTime"));
         popIndent(); // metric indent
 
         // 3. Memory Usage
-        appendSummaryLine("QueryPeakMemoryUsage: ",
-                executionProfile.getCounter(ProfileKeyDictionary.QUERY_PEAK_MEMORY_USAGE_PER_NODE),
-                ", QueryAllocatedMemoryUsage: ",
-                executionProfile.getCounter(ProfileKeyDictionary.QUERY_ALLOCATED_MEMORY_USAGE));
+        appendSummaryLine("QueryPeakMemoryUsage: ", executionProfile.getCounter("QueryPeakMemoryUsage"),
+                ", QueryAllocatedMemoryUsage: ", executionProfile.getCounter("QueryAllocatedMemoryUsage"));
 
         // 4. Top Cpu Nodes
         appendCpuTopNodes();
@@ -461,7 +451,7 @@ public class ExplainAnalyzer {
         }
 
         // 7. Non default Variables
-        String sessionVariables = summaryProfile.getInfoString(ProfileKeyDictionary.NON_DEFAULT_SESSION_VARIABLES);
+        String sessionVariables = summaryProfile.getInfoString("NonDefaultSessionVariables");
         Map<String, SessionVariable.NonDefaultValue> variables = Maps.newTreeMap();
         var map = SessionVariable.NonDefaultValue.parseFrom(sessionVariables);
         if (map != null) {
@@ -483,10 +473,6 @@ public class ExplainAnalyzer {
         Counter maxDriverTotalTime = null;
         for (Pair<RuntimeProfile, Boolean> fragmentProfileKv : executionProfile.getChildList()) {
             RuntimeProfile fragmentProfile = fragmentProfileKv.first;
-            if (LOAD_CHANNEL_PROFILE_NAME.equals(fragmentProfile.getName())
-                    || PER_TABLE_SCAN_STATS_PROFILE_NAME.equals(fragmentProfile.getName())) {
-                continue;
-            }
             for (Pair<RuntimeProfile, Boolean> pipelineProfileKv : fragmentProfile.getChildList()) {
                 RuntimeProfile pipelineProfile = pipelineProfileKv.first;
                 Counter driverTotalTime = pipelineProfile.getMaxCounter("DriverTotalTime");
@@ -548,7 +534,7 @@ public class ExplainAnalyzer {
     private void appendFragment(ProfilingExecPlan.ProfilingFragment fragment, RuntimeProfile fragmentProfile) {
         appendDetailLine(fragmentProfile.getName());
         pushIndent(GraphElement.NON_LEAF_METRIC_INDENT);
-        appendDetailLine("BackendNum: ", fragmentProfile.getCounter(ProfileKeyDictionary.BACKEND_NUM));
+        appendDetailLine("BackendNum: ", fragmentProfile.getCounter("BackendNum"));
         appendDetailLine("InstancePeakMemoryUsage: ",
                 fragmentProfile.getCounter("InstancePeakMemoryUsage"),
                 ", InstanceAllocatedMemoryUsage: ", fragmentProfile.getCounter("InstanceAllocatedMemoryUsage"));
@@ -782,9 +768,9 @@ public class ExplainAnalyzer {
     private void appendOperatorUniqueInfo(NodeInfo nodeInfo) {
         if (nodeInfo.element.instanceOf(JoinNode.class)) {
             Counter buildTime = searchMetric(nodeInfo, SearchMode.NATIVE_ONLY, "_JOIN_BUILD (", true,
-                    "CommonMetrics", ProfileKeyDictionary.OPERATOR_TOTAL_TIME);
+                    "CommonMetrics", "OperatorTotalTime");
             Counter probeTime = searchMetric(nodeInfo, SearchMode.NATIVE_ONLY, "_JOIN_PROBE (", true,
-                    "CommonMetrics", ProfileKeyDictionary.OPERATOR_TOTAL_TIME);
+                    "CommonMetrics", "OperatorTotalTime");
             appendDetailLine("BuildTime: ", buildTime);
             appendDetailLine("ProbeTime: ", probeTime);
         } else if (nodeInfo.element.instanceOf(AggregationNode.class)) {
@@ -1128,25 +1114,6 @@ public class ExplainAnalyzer {
         appendMetric(uniqueMetrics, nodeInfo, "PeakChunkBufferSize");
         appendMetric(uniqueMetrics, nodeInfo, "ChunkBufferCapacity");
         appendMetric(uniqueMetrics, nodeInfo, "DefaultChunkBufferCapacity");
-        popIndent();
-
-        appendDetailLine("VectorIndex:");
-        pushIndent(GraphElement.LEAF_METRIC_INDENT);
-        appendMetric(uniqueMetrics, nodeInfo, "VectorIndex");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorIndexLoad");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorIndexCacheLookup");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorIndexCacheHit");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorIndexCacheMiss");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorIndexFileOpenAndGetSize");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorIndexFileRead");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorIndexDeserialize");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorIndexSearcherCreate");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorIndexSearch");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorANNSearch");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorResultProcess");
-        // Legacy names kept visible for profiles produced during rolling upgrades.
-        appendMetric(uniqueMetrics, nodeInfo, "ProcessVectorDistanceAndIdTime");
-        appendMetric(uniqueMetrics, nodeInfo, "VectorSearchTime");
         popIndent();
 
         appendGroupedMetricsOthers(uniqueMetrics, nodeInfo, getScanKnownMetrics());
@@ -1561,20 +1528,17 @@ public class ExplainAnalyzer {
 
         public void computeTimeUsage(long cumulativeOperatorTime) {
             totalTime = new Counter(TUnit.TIME_NS, null, 0);
-            cpuTime =
-                    sumUpMetric(this, SearchMode.BOTH, true, "CommonMetrics", ProfileKeyDictionary.OPERATOR_TOTAL_TIME);
+            cpuTime = sumUpMetric(this, SearchMode.BOTH, true, "CommonMetrics", "OperatorTotalTime");
             if (cpuTime != null) {
                 totalTime.update(cpuTime.getValue());
             }
             if (element.instanceOf(ExchangeNode.class)) {
-                networkTime = searchMetric(this, SearchMode.NATIVE_ONLY, null, true, "UniqueMetrics",
-                        ProfileKeyDictionary.NETWORK_TIME);
+                networkTime = searchMetric(this, SearchMode.NATIVE_ONLY, null, true, "UniqueMetrics", "NetworkTime");
                 if (networkTime != null) {
                     totalTime.update(networkTime.getValue());
                 }
             } else if (element.instanceOf(ScanNode.class)) {
-                scanTime = searchMetric(this, SearchMode.NATIVE_ONLY, null, true, "UniqueMetrics",
-                        ProfileKeyDictionary.SCAN_TIME);
+                scanTime = searchMetric(this, SearchMode.NATIVE_ONLY, null, true, "UniqueMetrics", "ScanTime");
                 if (scanTime != null) {
                     totalTime.update(scanTime.getValue());
                 }
@@ -1779,10 +1743,7 @@ public class ExplainAnalyzer {
                 "MorselsCount", "PeakIOTasks", "PeakScanTaskQueueSize", "PeakChunkBufferMemoryUsage",
                 "PeakChunkBufferSize", "ChunkBufferCapacity", "DefaultChunkBufferCapacity",
                 "CreateSegmentIter", "GetDelVec", "GetDeltaColumnGroup", "GetRowsets", "ReadPKIndex",
-                "VectorIndex", "VectorIndexLoad", "VectorIndexCacheLookup", "VectorIndexFileOpenAndGetSize",
-                "VectorIndexFileRead", "VectorIndexDeserialize", "VectorIndexSearcherCreate",
-                "VectorIndexCacheHit", "VectorIndexCacheMiss", "VectorIndexSearch", "VectorANNSearch",
-                "VectorResultProcess", "ProcessVectorDistanceAndIdTime", "VectorSearchTime",
+                "ProcessVectorDistanceAndIdTime", "VectorSearchTime",
                 "PushdownAccessPaths", "PushdownPredicates"
         );
     }

@@ -33,12 +33,11 @@
 typedef unsigned long ulong;
 #endif
 #endif
-#include "base/time/timezone_hsscan.h"
 #include "exprs/binary_function.h"
 #include "exprs/unary_function.h"
+#include "runtime/datetime_value.h"
 #include "runtime/runtime_state.h"
 #include "types/date_value.h"
-#include "types/datetime_value.h"
 
 namespace starrocks {
 // index as day of week(1: Sunday, 2: Monday....), value as distance of this day and first day(Monday) of this week.
@@ -1222,10 +1221,10 @@ DEFINE_BINARY_FUNCTION_WITH_IMPL(years_diffImpl, l, r) {
                minute * 100'000'000LL + second * 1'000'000LL + usec;
     };
 
-    if (year > 0) {
+    if (year >= 0) {
         year -= (func(month1, day1, hour1, minute1, second1, usec1) <
                  func(month2, day2, hour2, minute2, second2, usec2));
-    } else if (year < 0) {
+    } else {
         year += (func(month1, day1, hour1, minute1, second1, usec1) >
                  func(month2, day2, hour2, minute2, second2, usec2));
     }
@@ -1303,9 +1302,9 @@ DEFINE_BINARY_FUNCTION_WITH_IMPL(months_diffImpl, l, r) {
                second * 1'000'000LL + usec;
     };
 
-    if (month > 0) {
+    if (month >= 0) {
         month -= (func(day1, hour1, minute1, second1, usec1) < func(day2, hour2, minute2, second2, usec2));
-    } else if (month < 0) {
+    } else {
         month += (func(day1, hour1, minute1, second1, usec1) > func(day2, hour2, minute2, second2, usec2));
     }
 

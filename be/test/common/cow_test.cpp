@@ -82,8 +82,6 @@ public:
         int get() const override { return _data; }
         void set(int value) override { _data = value; }
 
-        IColumn::MutablePtr clone() const override { return create(_data); }
-
         // not override
         void set_value(int val) { _data = val; }
         int get_value() { return _data; }
@@ -118,8 +116,6 @@ public:
             DCHECK_LT(i, _data.size());
             return _data[i];
         }
-
-        IColumn::MutablePtr clone() const override { return create(_data); }
 
     private:
         friend class CowFactory<ColumnFactory<IColumn, ConcreteVectorColumn>, ConcreteVectorColumn>;
@@ -162,8 +158,6 @@ public:
         using SuperClass = CowFactory<ColumnFactory<MFixedLengthColumnBase<T>, MFixedLengthColumn<T>>,
                                       MFixedLengthColumn<T>, IColumn>;
         MFixedLengthColumn() = default;
-
-        IColumn::MutablePtr clone() const override { return MFixedLengthColumn::create(); }
     };
     using MNullColumn = MFixedLengthColumn<uint8_t>;
 
@@ -187,8 +181,6 @@ public:
     public:
         int get() const override { return _inner->get(); }
         void set(int value) override { _inner->set(value); }
-
-        IColumn::MutablePtr clone() const override { return create(_inner->clone()); }
 
         void for_each_subcolumn(const ColumnCallback& callback) override {
             ColumnPtr inner;
@@ -339,7 +331,7 @@ TEST_F(CowTest, TestColumnPtrStaticPointerCast) {
     auto x = ConcreteColumn::create(1);
     EXPECT_EQ(1, x->get());
     {
-        auto x1 = ConcreteColumn::static_pointer_cast(x->clone());
+        auto x1 = ConcreteColumn::create(x);
         // x1 is a deep copy of x, which its type is ConcreteColumn
         x1->set(2);
         EXPECT_EQ(2, x1->get());

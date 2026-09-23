@@ -14,7 +14,6 @@
 
 #include <gtest/gtest.h>
 
-#include "common/storage_define.h"
 #include "exprs/string_functions.h"
 
 namespace starrocks {
@@ -40,7 +39,7 @@ TEST_F(StringFunctionSpaceTest, spaceTest) {
     for (int k = 0; k < 20; ++k) {
         std::string s;
         s.resize(k, ' ');
-        ASSERT_EQ(s, v->get_slice(k).to_string());
+        ASSERT_EQ(s, v->get_data()[k].to_string());
     }
 }
 

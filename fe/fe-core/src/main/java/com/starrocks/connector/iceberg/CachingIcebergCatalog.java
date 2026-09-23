@@ -17,7 +17,6 @@ package com.starrocks.connector.iceberg;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.benmanes.caffeine.cache.Weigher;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.IcebergTable;
@@ -102,13 +101,13 @@ public class CachingIcebergCatalog implements IcebergCatalog {
         this.catalogName = catalogName;
         this.delegate = delegate;
         this.icebergProperties = icebergProperties;
-        Preconditions.checkArgument(icebergProperties.isEnableIcebergMetadataCache(),
-                "CachingIcebergCatalog should only be instantiated when metadata cache is enabled");
+        boolean enableCache = icebergProperties.isEnableIcebergMetadataCache();
         long tableCacheSize = Math.round(Runtime.getRuntime().maxMemory() *
                 icebergProperties.getIcebergTableCacheMemoryUsageRatio());
         this.databases = newCacheBuilderWithMaximumSize(
                 icebergProperties.getIcebergMetaCacheTtlSec(),
-                NEVER_CACHE, DEFAULT_CACHE_NUM).build();
+                NEVER_CACHE,
+                enableCache ? DEFAULT_CACHE_NUM : NEVER_CACHE).build();
         long tableCacheTtlSec = icebergProperties.getIcebergMetaCacheTtlSec();
         if (delegate instanceof IcebergRESTCatalog) {
             tableCacheTtlSec = Math.min(tableCacheTtlSec, REST_TABLE_CACHE_MAX_TTL_SEC);
@@ -194,7 +193,7 @@ public class CachingIcebergCatalog implements IcebergCatalog {
         long deleteFileCacheSize = Math.round(Runtime.getRuntime().maxMemory() *
                 icebergProperties.getIcebergDeleteFileCacheMemoryUsageRatio());
 
-        this.dataFileCache = Caffeine.newBuilder()
+        this.dataFileCache = enableCache ? Caffeine.newBuilder()
                 .executor(executorService)
                 .expireAfterWrite(icebergProperties.getIcebergMetaCacheTtlSec(), SECONDS)
                 .weigher((Weigher<String, Set<DataFile>>) this::weighContentFiles)
@@ -205,8 +204,8 @@ public class CachingIcebergCatalog implements IcebergCatalog {
                             value != null ? value.size() : 0,
                             cause));
                 })
-                .build();
-        this.deleteFileCache = Caffeine.newBuilder()
+                .build() : null;
+        this.deleteFileCache = enableCache ? Caffeine.newBuilder()
                 .executor(executorService)
                 .expireAfterWrite(icebergProperties.getIcebergMetaCacheTtlSec(), SECONDS)
                 .weigher((Weigher<String, Set<DeleteFile>>) this::weighContentFiles)
@@ -217,7 +216,7 @@ public class CachingIcebergCatalog implements IcebergCatalog {
                             value != null ? value.size() : 0,
                             cause));
                 })
-                .build();
+                .build() : null;
 
         this.backgroundExecutor = executorService;
     }

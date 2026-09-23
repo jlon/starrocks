@@ -16,19 +16,8 @@ description: "INT 是 4 字节有符号整数，取值范围为 [-2147483648, 21
 ```sql
 CREATE TABLE intDemo (
     pk INT COMMENT "range [-2147483648, 2147483647]"
-) ENGINE=OLAP
+) ENGINE=OLAP 
 DUPLICATE KEY(pk)
-DISTRIBUTED BY HASH(pk) BUCKETS 1;
-
-INSERT INTO intDemo VALUES (2147483647), (-2147483648);
-```
-
-```Plaintext
-MySQL > SELECT * FROM intDemo;
-+-------------+
-| pk          |
-+-------------+
-| -2147483648 |
-|  2147483647 |
-+-------------+
+COMMENT "OLAP"
+DISTRIBUTED BY HASH(pk);
 ```

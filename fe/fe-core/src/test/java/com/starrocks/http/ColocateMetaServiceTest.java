@@ -17,7 +17,11 @@ package com.starrocks.http;
 import com.google.common.collect.Lists;
 import com.starrocks.catalog.ColocateTableIndex;
 import com.starrocks.http.meta.ColocateMetaService;
-import com.starrocks.utframe.UtFrameUtils;
+import com.starrocks.persist.ColocatePersistInfo;
+import com.starrocks.persist.EditLog;
+import com.starrocks.server.GlobalStateMgr;
+import mockit.Expectations;
+import mockit.Mocked;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -26,13 +30,22 @@ import java.util.List;
 public class ColocateMetaServiceTest {
 
     @Test
-    public void testUpdateBackendPerBucketSeq() {
-        UtFrameUtils.setUpForPersistTest();
+    public void testUpdateBackendPerBucketSeq(@Mocked EditLog editLog) {
+        new Expectations() {
+            {
+                editLog.logColocateBackendsPerBucketSeq((ColocatePersistInfo) any);
+                minTimes = 0;
+
+                editLog.logColocateMarkUnstable((ColocatePersistInfo) any);
+                minTimes = 0;
+            }
+        };
+
+        GlobalStateMgr.getCurrentState().setEditLog(editLog);
         ColocateMetaService.BucketSeqAction action = new ColocateMetaService.BucketSeqAction(null);
         List<List<Long>> seqs = new ArrayList<>();
         seqs.add(Lists.newArrayList(1000L));
         ColocateTableIndex.GroupId groupId = new ColocateTableIndex.GroupId(111, 222);
         action.updateBackendPerBucketSeq(groupId, seqs);
-        UtFrameUtils.tearDownForPersisTest();
     }
 }

@@ -4,8 +4,6 @@ hide_table_of_contents: true
 description: "Alphabetical i - p"
 ---
 
-import MetricsIP from '../../../../_assets/commonMarkdown/metrics_i_p.mdx'
-
 # Metrics i through p
 
 :::note
@@ -15,11 +13,9 @@ Metrics for materialized views and shared-data clusters are detailed in the corr
 - [Metrics for asynchronous materialized view metrics](../metrics-materialized_view.md)
 - [Metrics for Shared-data Dashboard metrics, and Starlet Dashboard metrics](../metrics-shared-data.md)
 
-For more information on how to build a monitoring service for your StarRocks cluster, see [Monitor and Alert](../monitoring.md).
+For more information on how to build a monitoring service for your StarRocks cluster, see [Monitor and Alert](../Monitor_and_Alert.md).
 
 :::
-
-<MetricsIP />
 
 ## `iceberg_compaction_duration_ms_total`
 
@@ -56,41 +52,36 @@ For more information on how to build a monitoring service for your StarRocks clu
 - Labels: `compaction_type` (`manual` or `auto`)
 - Description: Total number of Iceberg compaction (`rewrite_data_files`) tasks.
 
-## `iceberg_merge_bytes`
+## `iceberg_delete_bytes`
 
 - Unit: Bytes
 - Type: Cumulative
-- Labels: `file_type` (`data` or `position_delete`)
-- Description: Total bytes written by Iceberg `MERGE INTO` tasks, split by file type. `data` is the size of new data files (updated rows and inserts); `position_delete` is the size of position-delete files marking the matched old rows.
+- Labels: `delete_type` (`position` or `metadata`)
+- Description: Total deleted bytes from Iceberg `DELETE` tasks. For `metadata` delete, this represents the size of deleted data files. For `position` delete, this represents the size of position delete files created.
 
-## `iceberg_merge_duration_ms_total`
+## `iceberg_delete_duration_ms_total`
 
 - Unit: Millisecond
 - Type: Cumulative
-- Description: Total execution time of Iceberg `MERGE INTO` tasks in milliseconds. The duration of each task is added after it ends.
+- Labels: `delete_type` (`position` or `metadata`)
+- Description: Total execution time of Iceberg `DELETE` tasks in milliseconds. The duration of each task is added after it ends. `delete_type` distinguishes between two delete methods.
 
-## `iceberg_merge_files`
-
-- Unit: Count
-- Type: Cumulative
-- Labels: `file_type` (`data` or `position_delete`)
-- Description: Total number of files written by Iceberg `MERGE INTO` tasks, split by file type. `data` counts new data files; `position_delete` counts position-delete files.
-
-## `iceberg_merge_rows`
+## `iceberg_delete_rows`
 
 - Unit: Rows
 - Type: Cumulative
-- Labels: `file_type` (`data` or `position_delete`)
-- Description: Total number of rows processed by Iceberg `MERGE INTO` tasks, split by file type. `position_delete` counts target rows hit by UPDATE or DELETE (added as position deletes); `data` counts data rows written (updated rows plus inserts).
+- Labels: `delete_type` (`position` or `metadata`)
+- Description: Total deleted rows from Iceberg `DELETE` tasks. For `metadata` delete, this represents the number of rows in deleted data files. For `position` delete, this represents the number of position deletes created.
 
-## `iceberg_merge_total`
+## `iceberg_delete_total`
 
 - Unit: Count
 - Type: Cumulative
 - Labels:
   - `status` (`success` or `failed`)
   - `reason` (`none`, `timeout`, `oom`, `access_denied`, `unknown`)
-- Description: Total number of `MERGE INTO` tasks that target Iceberg tables. The metric is incremented by 1 after each task ends, regardless of success or failure. Iceberg MERGE INTO uses the V2 Merge-On-Read model and atomically writes both data files and position-delete files in a single snapshot.
+  - `delete_type` (`position` or `metadata`)
+- Description: Total number of `DELETE` tasks that target Iceberg tables. The metric is incremented by 1 after each task ends, regardless of success or failure. `delete_type` distinguishes between two delete methods: `position` (generates position delete files) and `metadata` (metadata-level delete).
 
 ## `iceberg_metadata_table_query_total`
 
@@ -105,41 +96,6 @@ For more information on how to build a monitoring service for your StarRocks clu
 - Type: Cumulative
 - Labels: `time_travel_type` (`branch`, `tag`, `snapshot`, or `timestamp`) for the categorized series.
 - Description: Total number of Iceberg time travel queries. The unlabeled series counts each time travel query once. The labeled series count each distinct time travel type used by the query. `snapshot` means `FOR VERSION AS OF <snapshot_id>`, `branch` and `tag` mean `FOR VERSION AS OF <reference_name>`, and `timestamp` means `FOR TIMESTAMP AS OF ...`.
-
-## `iceberg_update_bytes`
-
-- Unit: Bytes
-- Type: Cumulative
-- Labels: `file_type` (`data` or `position_delete`)
-- Description: Total bytes written by Iceberg `UPDATE` tasks, split by file type. `data` is the size of new data files containing the updated rows; `position_delete` is the size of position-delete files marking the old rows.
-
-## `iceberg_update_duration_ms_total`
-
-- Unit: Millisecond
-- Type: Cumulative
-- Description: Total execution time of Iceberg `UPDATE` tasks in milliseconds. The duration of each task is added after it ends.
-
-## `iceberg_update_files`
-
-- Unit: Count
-- Type: Cumulative
-- Labels: `file_type` (`data` or `position_delete`)
-- Description: Total number of files written by Iceberg `UPDATE` tasks, split by file type. `data` counts new data files; `position_delete` counts position-delete files.
-
-## `iceberg_update_rows`
-
-- Unit: Rows
-- Type: Cumulative
-- Description: Total number of rows affected by Iceberg `UPDATE` tasks. Each updated row is counted once, not once per emitted file.
-
-## `iceberg_update_total`
-
-- Unit: Count
-- Type: Cumulative
-- Labels:
-  - `status` (`success` or `failed`)
-  - `reason` (`none`, `timeout`, `oom`, `access_denied`, `unknown`)
-- Description: Total number of `UPDATE` tasks that target Iceberg tables. The metric is incremented by 1 after each task ends, regardless of success or failure. Iceberg UPDATE uses the V2 Merge-On-Read model and atomically writes both data files and position-delete files in a single snapshot.
 
 ## `iceberg_write_bytes`
 
@@ -214,11 +170,6 @@ For more information on how to build a monitoring service for your StarRocks clu
 - Unit: Bytes
 - Description: Total number of bytes allocated by the application.
 
-## `jemalloc_dirty_bytes`
-
-- Unit: Bytes
-- Description: Total number of bytes in unused dirty pages, which have not yet been `madvise`d back to the operating system and can be reused for new allocations without a page fault.
-
 ## `jemalloc_mapped_bytes`
 
 - Unit: Bytes
@@ -234,11 +185,6 @@ For more information on how to build a monitoring service for your StarRocks clu
 - Unit: Count
 - Description: Number of Transparent Huge Pages used for metadata.
 
-## `jemalloc_muzzy_bytes`
-
-- Unit: Bytes
-- Description: Total number of bytes in unused muzzy pages, an intermediate decay state between dirty and retained where the pages have been `madvise`d (for example with `MADV_FREE`) but the mapping is still retained.
-
 ## `jemalloc_resident_bytes`
 
 - Unit: Bytes
@@ -253,12 +199,6 @@ For more information on how to build a monitoring service for your StarRocks clu
 
 - Unit: Bytes
 - Description: Memory used by jit compiled function cache.
-
-## `lake_compaction_held_segment_bytes`
-
-- Unit: Bytes
-- Type: Instantaneous
-- Description: Segment metadata currently pinned by running lake compaction tasks that hold their input segments (`lake_compaction_hold_input_segments`). Unlike the metadata cache, this memory is not managed by an LRU and is released when the holding task ends, so a persistently high value indicates long-running compactions rather than a cache that needs resizing.
 
 ## `lake_compaction_failed`
 
@@ -329,12 +269,6 @@ For more information on how to build a monitoring service for your StarRocks clu
 - Description: The current size of the RPC thread pool, which is used for handling Routine Load and loading via table functions. The default value is 10, with a maximum value of 1000. This value is dynamically adjusted based on the usage of the thread pool.
 
 ## `local_column_pool_bytes (Deprecated)`
-
-## `low_cardinality_dict_cache_bytes`
-
-- Unit: Bytes
-- Type: Gauge
-- Description: Total byte size of cached dictionary data in the low-cardinality global dictionary cache (`CacheDictManager`) on this FE. Tracked exactly by the cache (not sampled); it counts serialized dictionary data, which is a lower bound on the actual heap footprint. The cache is bounded by this size via the `low_cardinality_dict_cache_max_bytes` configuration.
 
 ## `max_disk_io_util_percent`
 
@@ -461,12 +395,6 @@ Latency metrics expose percentile series such as `merge_commit_request_latency_9
 - Type: Summary
 - Description: Combined latency for the RPC request and waiting for the stream load pipe to become available.
 
-## `meta_replay_lag_second`
-
-- Unit: Seconds
-- Type: Gauge
-- Description: How far the metadata replayed by this FE lags behind the Leader's clock. The Leader FE writes a timestamp into the journal every 10 seconds, and this metric is the age of the most recent timestamp that this node has replayed. Unlike `max_journal_replay_lag`, which only the Leader reports, this metric is reported by the lagging node itself, and it keeps growing while a single journal entry is stuck in replay. The Leader FE always reports `0`, because it writes the timestamps instead of replaying them. Once this value exceeds `meta_delay_toleration_second`, the node stops serving reads from its own metadata and forwards its queries to the Leader. Two cases are exempt: reads continue while `ignore_meta_check` is `true`, and a node that has replayed nothing since the previous check keeps whatever read availability it already had, unless it has also lost contact with the Leader, because falling behind a Leader that is writing nothing says nothing about this node. This second case only stops a node from being taken out of service; it never returns one that has already stopped serving.
-
 ## `meta_request_duration`
 
 - Unit: us
@@ -576,33 +504,13 @@ Latency metrics expose percentile series such as `merge_commit_request_latency_9
 
 - Type: Counter
 - Unit: Count
-- Description: Total number of SST file read failures in the lake Primary Key persistent index. Incremented when SST multi-get (read) operations fail, or when compaction detects data corruption while reading input SST files.
+- Description: Total number of SST file read failures in the lake Primary Key persistent index. Incremented when SST multi-get (read) operations fail.
 
 ## `pk_index_sst_write_error_total`
 
 - Type: Counter
 - Unit: Count
 - Description: Total number of SST file write failures in the lake Primary Key persistent index. Incremented when SST file build fails.
-
-## `plan_advisor_guide_applied_total`
-
-- Unit: Count
-- Type: Cumulative
-- Labels: `operator_type` (`join` or `agg`)
-- Description: Total number of Plan Advisor guides applied during query optimization. The metric is incremented once for each guide that successfully rewrites a plan node. `join` covers join estimation error guides, and `agg` covers streaming aggregation guides.
-
-## `plan_advisor_guide_generated_total`
-
-- Unit: Count
-- Type: Cumulative
-- Labels: `operator_type` (`join` or `agg`)
-- Description: Total number of Plan Advisor guides generated and inserted into the local FE cache. The metric is incremented only when the analyzed guides are non-empty and stored as a new cache entry. `join` covers join estimation error guides, and `agg` covers streaming aggregation guides.
-
-## `plan_advisor_optimization_duration_ms_total`
-
-- Unit: Milliseconds
-- Type: Cumulative
-- Description: Total execution time saved by Plan Advisor, in milliseconds. When a query that used a cached guide finishes faster than the original query that produced the guide, the saved time is added to this counter.
 
 ## `plan_fragment_count`
 

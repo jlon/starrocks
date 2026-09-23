@@ -20,33 +20,19 @@
 #include "agent/agent_common.h"
 #include "agent/agent_server.h"
 #include "agent/publish_version.h"
-#include "base/concurrency/await.h"
-#include "base/failpoint/fail_point.h"
-#include "base/logging.h"
-#include "base/path/file_util.h"
-#include "base/testutil/assert.h"
-#include "base/time/time.h"
-#include "base/time/timezone_utils.h"
-#include "column/chunk_factory.h"
+#include "butil/file_util.h"
 #include "column/column_helper.h"
-#include "common/config_exec_fwd.h"
-#include "common/system/cpu_info.h"
-#include "common/system/disk_info.h"
-#include "common/system/master_info.h"
-#include "common/system/mem_info.h"
-#include "common/thread/threadpool.h"
-#include "exec/exec_env.h"
+#include "common/config.h"
 #include "exec/pipeline/query_context.h"
 #include "fs/fs_util.h"
 #include "gen_cpp/AgentService_types.h"
 #include "gen_cpp/internal_service.pb.h"
-#include "platform/user_function_cache.h"
-#include "runtime/chunk_helper.h"
 #include "runtime/current_thread.h"
 #include "runtime/descriptor_helper.h"
-#include "runtime/descriptors.h"
+#include "runtime/exec_env.h"
 #include "runtime/mem_tracker.h"
-#include "runtime/runtime_state.h"
+#include "runtime/time_types.h"
+#include "runtime/user_function_cache.h"
 #include "storage/chunk_helper.h"
 #include "storage/delta_writer.h"
 #include "storage/options.h"
@@ -57,28 +43,24 @@
 #include "storage/storage_engine.h"
 #include "storage/tablet_manager.h"
 #include "storage/tablet_meta.h"
-#include "storage/tablet_updates.h"
 #include "storage/txn_manager.h"
 #include "storage/update_manager.h"
-#include "testutil/local_snapshot_client.h"
-#include "types/time_types.h"
+#include "testutil/assert.h"
+#include "util/await.h"
+#include "util/cpu_info.h"
+#include "util/disk_info.h"
+#include "util/failpoint/fail_point.h"
+#include "util/logging.h"
+#include "util/mem_info.h"
+#include "util/threadpool.h"
+#include "util/time.h"
+#include "util/timezone_utils.h"
 
 namespace starrocks {
 
 class PublishVersionTaskTest : public testing::Test {
 public:
     static void SetUpTestCase() { init(); }
-
-    void SetUp() override {
-        _previous_snapshot_client =
-                StorageEngine::instance()->replication_txn_manager()->TEST_set_remote_snapshot_client(
-                        local_snapshot_client_for_test());
-    }
-
-    void TearDown() override {
-        StorageEngine::instance()->replication_txn_manager()->TEST_set_remote_snapshot_client(
-                _previous_snapshot_client);
-    }
 
     static void TearDownTestCase() {
         auto tablet_mgr = StorageEngine::instance()->tablet_manager();
@@ -169,7 +151,7 @@ public:
     static void rowset_writer_add_rows(std::unique_ptr<RowsetWriter>& writer, const TabletSchemaCSPtr& tablet_schema) {
         std::vector<std::string> test_data;
         auto schema = ChunkHelper::convert_schema(tablet_schema);
-        auto chunk = ChunkFactory::new_chunk(schema, 1024);
+        auto chunk = ChunkHelper::new_chunk(schema, 1024);
         for (size_t i = 0; i < 1024; ++i) {
             test_data.push_back("well" + std::to_string(i));
             auto cols = chunk->columns();
@@ -207,7 +189,8 @@ public:
         CHECK(DescriptorTbl::create(&_runtime_state, &_pool, table_builder.desc_tbl(), &tbl, config::vector_chunk_size)
                       .ok());
 
-        auto* tuple_desc = tbl->get_tuple_descriptor(row_tuples[0]);
+        auto* row_desc = _pool.add(new RowDescriptor(*tbl, row_tuples));
+        auto* tuple_desc = row_desc->tuple_descriptors()[0];
 
         return tuple_desc;
     }
@@ -218,7 +201,6 @@ private:
     std::string _names[3] = {"k1", "k2", "v1"};
     RuntimeState _runtime_state;
     ObjectPool _pool;
-    RemoteSnapshotClient* _previous_snapshot_client = nullptr;
 };
 
 TEST_F(PublishVersionTaskTest, test_publish_version) {
@@ -243,7 +225,7 @@ TEST_F(PublishVersionTaskTest, test_publish_version) {
         ASSERT_TRUE(delta_writer != nullptr);
         // prepare chunk
         std::vector<std::string> test_data;
-        auto chunk = RuntimeChunkHelper::new_chunk(tuple_desc->slots(), 1024);
+        auto chunk = ChunkHelper::new_chunk(tuple_desc->slots(), 1024);
         std::vector<uint32_t> indexes;
         indexes.reserve(1024);
         for (size_t i = 0; i < 1024; ++i) {
@@ -346,7 +328,7 @@ TEST_F(PublishVersionTaskTest, test_publish_version2) {
         ASSERT_TRUE(delta_writer != nullptr);
         // prepare chunk
         std::vector<std::string> test_data;
-        auto chunk = RuntimeChunkHelper::new_chunk(tuple_desc->slots(), 1024);
+        auto chunk = ChunkHelper::new_chunk(tuple_desc->slots(), 1024);
         std::vector<uint32_t> indexes;
         indexes.reserve(1024);
         for (size_t i = 0; i < 1024; ++i) {
@@ -434,7 +416,7 @@ TEST_F(PublishVersionTaskTest, test_publish_version_cancellation) {
         ASSERT_TRUE(delta_writer != nullptr);
 
         std::vector<std::string> test_data;
-        auto chunk = RuntimeChunkHelper::new_chunk(tuple_desc->slots(), 128);
+        auto chunk = ChunkHelper::new_chunk(tuple_desc->slots(), 128);
         std::vector<uint32_t> indexes;
         indexes.reserve(128);
         for (size_t i = 0; i < 128; ++i) {
@@ -456,7 +438,7 @@ TEST_F(PublishVersionTaskTest, test_publish_version_cancellation) {
 
     // Build a dedicated thread pool with a single worker
     std::unique_ptr<ThreadPool> pool;
-    ASSERT_TRUE(ThreadPoolBuilder("pub-cancel-test")
+    ASSERT_TRUE(ThreadPoolBuilder("publish-cancel-test")
                         .set_min_threads(1)
                         .set_max_threads(1)
                         .set_max_queue_size(128)
@@ -587,7 +569,7 @@ TEST_F(PublishVersionTaskTest, test_publish_version_overwrite_failed) {
         ASSERT_TRUE(writer_status.ok());
         auto delta_writer = std::move(writer_status.value());
         ASSERT_TRUE(delta_writer != nullptr);
-        auto chunk = RuntimeChunkHelper::new_chunk(tuple_desc->slots(), 8);
+        auto chunk = ChunkHelper::new_chunk(tuple_desc->slots(), 8);
         std::vector<uint32_t> indexes;
         indexes.reserve(8);
         for (size_t i = 0; i < 8; ++i) {
@@ -648,7 +630,7 @@ TEST_F(PublishVersionTaskTest, test_publish_version_submit_failure) {
 
     // Build a dedicated pool and shut it down to force submit() to fail
     std::unique_ptr<ThreadPool> pool;
-    ASSERT_TRUE(ThreadPoolBuilder("pub-submit-fail").set_min_threads(1).set_max_threads(1).build(&pool).ok());
+    ASSERT_TRUE(ThreadPoolBuilder("publish-submit-fail-test").set_min_threads(1).set_max_threads(1).build(&pool).ok());
     auto token = pool->new_token(ThreadPool::ExecutionMode::CONCURRENT);
     pool->shutdown();
 
@@ -702,7 +684,7 @@ TEST_F(PublishVersionTaskTest, test_publish_version_tablet_dropped) {
         ASSERT_TRUE(writer_status.ok());
         auto delta_writer = std::move(writer_status.value());
         ASSERT_TRUE(delta_writer != nullptr);
-        auto chunk = RuntimeChunkHelper::new_chunk(tuple_desc->slots(), 8);
+        auto chunk = ChunkHelper::new_chunk(tuple_desc->slots(), 8);
         std::vector<uint32_t> indexes;
         indexes.reserve(8);
         for (size_t i = 0; i < 8; ++i) {
@@ -754,12 +736,12 @@ TEST_F(PublishVersionTaskTest, test_publish_version_replication_failed) {
     remote_snapshot_request.__set_schema_hash(1111);
     // current tablet visible version is at least 3 in previous tests
     remote_snapshot_request.__set_visible_version(3);
-    remote_snapshot_request.__set_src_token(get_master_token());
+    remote_snapshot_request.__set_src_token(ExecEnv::GetInstance()->token());
     remote_snapshot_request.__set_src_tablet_id(12345);
     remote_snapshot_request.__set_src_tablet_type(TTabletType::TABLET_TYPE_DISK);
     remote_snapshot_request.__set_src_schema_hash(1111);
     remote_snapshot_request.__set_src_visible_version(4);
-    remote_snapshot_request.__set_src_backends(std::vector<TBackend>{local_snapshot_backend_for_test()});
+    remote_snapshot_request.__set_src_backends(std::vector<TBackend>{TBackend()});
 
     TSnapshotInfo remote_snapshot_info;
     (void)StorageEngine::instance()->replication_txn_manager()->remote_snapshot(remote_snapshot_request,

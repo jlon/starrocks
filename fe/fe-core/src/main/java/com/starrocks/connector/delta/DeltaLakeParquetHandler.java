@@ -14,15 +14,13 @@
 
 package com.starrocks.connector.delta;
 
-import com.google.common.cache.Cache;
+import com.google.common.cache.LoadingCache;
 import com.google.common.collect.Lists;
 import com.starrocks.common.Pair;
 import com.starrocks.common.profile.Timer;
 import com.starrocks.common.profile.Tracers;
 import io.delta.kernel.data.ColumnarBatch;
 import io.delta.kernel.defaults.engine.DefaultParquetHandler;
-import io.delta.kernel.defaults.engine.hadoopio.HadoopFileIO;
-import io.delta.kernel.engine.FileReadResult;
 import io.delta.kernel.exceptions.KernelEngineException;
 import io.delta.kernel.expressions.Predicate;
 import io.delta.kernel.internal.replay.LogReplay;
@@ -41,23 +39,21 @@ import static java.lang.String.format;
 
 public class DeltaLakeParquetHandler extends DefaultParquetHandler {
     private final Configuration hadoopConf;
-    private final Cache<Pair<DeltaLakeFileStatus, StructType>, List<ColumnarBatch>> checkpointCache;
+    private final LoadingCache<Pair<DeltaLakeFileStatus, StructType>, List<ColumnarBatch>> checkpointCache;
 
-    public DeltaLakeParquetHandler(Configuration hadoopConf, Cache<Pair<DeltaLakeFileStatus, StructType>,
+    public DeltaLakeParquetHandler(Configuration hadoopConf, LoadingCache<Pair<DeltaLakeFileStatus, StructType>,
             List<ColumnarBatch>> checkpointCache) {
-        super(new HadoopFileIO(hadoopConf));
+        super(hadoopConf);
         this.hadoopConf = hadoopConf;
         this.checkpointCache = checkpointCache;
     }
 
-    public static List<ColumnarBatch> readParquetFile(String filePath, long fileSize, long modificationTime,
-                                                      StructType physicalSchema, Configuration hadoopConf) {
+    public static List<ColumnarBatch> readParquetFile(String filePath, StructType physicalSchema, Configuration hadoopConf) {
         try (Timer ignored = Tracers.watchScope(Tracers.get(), EXTERNAL,
                 "DeltaLakeParquetHandler.readParquetFileAndGetColumnarBatch")) {
             io.delta.kernel.defaults.internal.parquet.ParquetFileReader batchReader =
-                    new io.delta.kernel.defaults.internal.parquet.ParquetFileReader(new HadoopFileIO(hadoopConf));
-            CloseableIterator<ColumnarBatch> currentFileReader =
-                    batchReader.read(FileStatus.of(filePath, fileSize, modificationTime), physicalSchema, Optional.empty());
+                    new io.delta.kernel.defaults.internal.parquet.ParquetFileReader(hadoopConf);
+            CloseableIterator<ColumnarBatch> currentFileReader = batchReader.read(filePath, physicalSchema, Optional.empty());
 
             List<ColumnarBatch> result = Lists.newArrayList();
             while (currentFileReader != null && currentFileReader.hasNext()) {
@@ -69,7 +65,7 @@ public class DeltaLakeParquetHandler extends DefaultParquetHandler {
     }
 
     @Override
-    public CloseableIterator<FileReadResult> readParquetFiles(
+    public CloseableIterator<ColumnarBatch> readParquetFiles(
             CloseableIterator<FileStatus> fileIter,
             StructType physicalSchema,
             Optional<Predicate> predicate) {
@@ -119,8 +115,8 @@ public class DeltaLakeParquetHandler extends DefaultParquetHandler {
             }
 
             @Override
-            public FileReadResult next() {
-                return new FileReadResult(currentColumnarBatchList.get(currentReadColumnarBatchIndex++), currentFile);
+            public ColumnarBatch next() {
+                return currentColumnarBatchList.get(currentReadColumnarBatchIndex++);
             }
 
             private void tryGetNextFileColumnarBatch() throws ExecutionException {
@@ -129,12 +125,9 @@ public class DeltaLakeParquetHandler extends DefaultParquetHandler {
                     currentFile = deltaLakeFileStatus.getPath();
                     if (LogReplay.containsAddOrRemoveFileActions(physicalSchema)) {
                         Pair<DeltaLakeFileStatus, StructType> key = Pair.create(deltaLakeFileStatus, physicalSchema);
-                        currentColumnarBatchList = checkpointCache.get(key,
-                                () -> readParquetFile(deltaLakeFileStatus.getPath(), deltaLakeFileStatus.getSize(),
-                                        deltaLakeFileStatus.getModificationTime(), physicalSchema, hadoopConf));
+                        currentColumnarBatchList = checkpointCache.get(key);
                     } else {
-                        currentColumnarBatchList = readParquetFile(currentFile, deltaLakeFileStatus.getSize(),
-                                deltaLakeFileStatus.getModificationTime(), physicalSchema, hadoopConf);
+                        currentColumnarBatchList = readParquetFile(currentFile, physicalSchema, hadoopConf);
                     }
                     currentReadColumnarBatchIndex = 0;
                 }

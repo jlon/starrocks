@@ -14,9 +14,9 @@
 
 #pragma once
 
-#include "common/runtime_profile.h"
 #include "exec/pipeline/exchange/multi_cast_local_exchange.h"
-#include "exec_primitive/pipeline/operator_factory.h"
+#include "exec/pipeline/operator.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks::pipeline {
 
@@ -48,7 +48,7 @@ public:
 
     void set_execute_mode(int performance_level) override { return _exchanger->enter_release_memory_mode(); }
 
-    OperatorExecStatsSnapshot exec_stats_snapshot() const override { return OperatorExecStatsSnapshot::ignored(); }
+    void update_exec_stats(RuntimeState* state) override {}
 
 protected:
     bool _is_finished = false;

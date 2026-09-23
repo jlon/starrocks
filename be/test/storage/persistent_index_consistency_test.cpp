@@ -20,12 +20,6 @@
 #include <cstdlib>
 #include <random>
 
-#include "base/coding.h"
-#include "base/logging.h"
-#include "base/string/faststring.h"
-#include "base/testutil/assert.h"
-#include "base/testutil/parallel_test.h"
-#include "common/config_primary_key_fwd.h"
 #include "fs/fs_memory.h"
 #include "fs/fs_util.h"
 #include "storage/chunk_helper.h"
@@ -38,7 +32,12 @@
 #include "storage/storage_engine.h"
 #include "storage/tablet_manager.h"
 #include "storage/update_manager.h"
+#include "testutil/assert.h"
 #include "testutil/deterministic_test_utils.h"
+#include "testutil/parallel_test.h"
+#include "util/coding.h"
+#include "util/faststring.h"
+#include "util/logging.h"
 
 DEFINE_bool(debug, false, "debug mode");
 DEFINE_int64(seed, -1, "random seed");

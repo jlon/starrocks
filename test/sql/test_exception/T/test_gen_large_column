@@ -25,8 +25,4 @@ admin enable failpoint 'operator_return_large_column';
 [UC] select count(*) from t0;
 admin disable failpoint 'operator_return_large_column';
 
-CLEANUP {
-  admin disable failpoint 'operator_return_large_column';
-} END CLEANUP
-
 

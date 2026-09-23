@@ -17,9 +17,9 @@
 #include <type_traits>
 #include <utility>
 
-#include "base/container/raw_container.h"
 #include "column/column_helper.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
+#include "util/raw_container.h"
 
 namespace starrocks {
 
@@ -148,16 +148,15 @@ public:
     // reserve bytes_size bytes for Bytes. size of offsets
     // and null_column are deterministic, so proper memory
     // room can be allocated, but bytes' size is non-deterministic,
-    // so just reserve moderate memory room. Offset slots are initialized so
-    // scalar set() remains promotion-safe even when bytes_size is only an estimate.
-    // null_columns should be zero-out(resize), just slot corresponding to null
-    // elements is marked to 1.
+    // so just reserve moderate memory room. offsets need no
+    // initialization(raw::make_room), because it is overwritten
+    // fully. null_columns should be zero-out(resize), just
+    // slot corresponding to null elements is marked to 1.
     void resize(size_t num_rows, size_t bytes_size) {
         _column->get_bytes().reserve(bytes_size);
         auto& offsets = _column->get_offset();
-        offsets.ensure_width_for_value(bytes_size);
-        offsets.resize(num_rows + 1, 0);
-        offsets.set(0, 0);
+        raw::make_room(&offsets, num_rows + 1);
+        offsets[0] = 0;
         _null_column->get_data().resize(num_rows);
     }
 
@@ -167,21 +166,21 @@ public:
         Bytes& bytes = _column->get_bytes();
         Offsets& offsets = _column->get_offset();
         NullColumn::Container& nulls = _null_column->get_data();
-        offsets.set(i + 1, bytes.size());
+        offsets[i + 1] = bytes.size();
         nulls[i] = 1;
     }
 
     void append_empty(size_t i) {
         Bytes& bytes = _column->get_bytes();
         Offsets& offsets = _column->get_offset();
-        offsets.set(i + 1, bytes.size());
+        offsets[i + 1] = bytes.size();
     }
 
     void append(uint8_t* begin, uint8_t* end, size_t i) {
         Bytes& bytes = _column->get_bytes();
         Offsets& offsets = _column->get_offset();
         bytes.insert(bytes.end(), begin, end);
-        offsets.set(i + 1, bytes.size());
+        offsets[i + 1] = bytes.size();
     }
     // for concat and concat_ws, several columns are concatenated
     // together into a string, so append must be invoked as many times
@@ -203,7 +202,7 @@ public:
     void append_complete(size_t i) {
         Bytes& bytes = _column->get_bytes();
         Offsets& offsets = _column->get_offset();
-        offsets.set(i + 1, bytes.size());
+        offsets[i + 1] = bytes.size();
     }
 
     // move current ptr backwards for n bytes, used in concat_ws

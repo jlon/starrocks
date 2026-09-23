@@ -3,5 +3,4 @@ label: '系统配置和变量'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: config_vars
+  type: generated-index

@@ -60,14 +60,15 @@ public class DeltaUtils {
         String tblName = snapshot.getTableName();
         DeltaLakeEngine deltaLakeEngine = snapshot.getDeltaLakeEngine();
         SnapshotImpl snapshotImpl = snapshot.getSnapshot();
+        String path = snapshot.getPath();
 
-        StructType deltaSchema = snapshotImpl.getSchema();
+        StructType deltaSchema = snapshotImpl.getSchema(deltaLakeEngine);
         if (deltaSchema == null) {
             throw new IllegalArgumentException(String.format("Unable to find Schema information in Delta log for " +
                     "%s.%s.%s", catalog, dbName, tblName));
         }
 
-        String columnMappingMode = ColumnMapping.getColumnMappingMode(snapshotImpl.getMetadata().getConfiguration()).value;
+        String columnMappingMode = ColumnMapping.getColumnMappingMode(snapshotImpl.getMetadata().getConfiguration());
         List<Column> fullSchema = Lists.newArrayList();
         for (StructField field : deltaSchema.fields()) {
             DataType dataType = field.getDataType();
@@ -106,11 +107,11 @@ public class DeltaUtils {
         int columnUniqueId = COLUMN_UNIQUE_ID_INIT_VALUE;
         String physicalName = "";
 
-        if (columnMappingMode.equalsIgnoreCase(ColumnMapping.ColumnMappingMode.ID.value) &&
+        if (columnMappingMode.equalsIgnoreCase(ColumnMapping.COLUMN_MAPPING_MODE_ID) &&
                 field.getMetadata().contains(ColumnMapping.COLUMN_MAPPING_ID_KEY)) {
             columnUniqueId = ((Long) field.getMetadata().get(ColumnMapping.COLUMN_MAPPING_ID_KEY)).intValue();
         }
-        if (columnMappingMode.equalsIgnoreCase(ColumnMapping.ColumnMappingMode.NAME.value) &&
+        if (columnMappingMode.equalsIgnoreCase(ColumnMapping.COLUMN_MAPPING_MODE_NAME) &&
                 field.getMetadata().contains(ColumnMapping.COLUMN_MAPPING_PHYSICAL_NAME_KEY)) {
             physicalName = (String) field.getMetadata().get(ColumnMapping.COLUMN_MAPPING_PHYSICAL_NAME_KEY);
         }

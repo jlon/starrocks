@@ -1,5 +1,4 @@
 ---
-sidebar_position: 50
 displayed_sidebar: docs
 description: "StarRocks Iceberg catalog 支持 DDL 操作，包括创建和管理数据库、表及视图。"
 toc_max_heading_level: 5
@@ -238,9 +237,6 @@ ADD PARTITION COLUMN partition_expr [, partition_expr ...];
 
 ALTER TABLE [catalog.][database.]table_name
 DROP PARTITION COLUMN partition_expr [, partition_expr ...];
-
-ALTER TABLE [catalog.][database.]table_name
-REPLACE PARTITION COLUMN old_partition_expr WITH new_partition_expr;
 ```
 
 支持的 `partition_expr` 格式：
@@ -261,13 +257,6 @@ ADD PARTITION COLUMN month(sale_date), bucket(customer_id, 10);
 ```SQL
 ALTER TABLE sales_data
 DROP PARTITION COLUMN day(sale_date);
-```
-
-**替换分区列：**
-
-```SQL
-ALTER TABLE sales_data
-REPLACE PARTITION COLUMN day(sale_date) WITH month(sale_date);
 ```
 
 ---

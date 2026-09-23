@@ -104,12 +104,8 @@ public class JDBCScanNode extends ScanNode {
     public JDBCScanNode(PlanNodeId id, TupleDescriptor desc, JDBCTable tbl) {
         super(id, desc, "SCAN JDBC");
         table = tbl;
-        if (tbl.isQueryTable()) {
-            tableName = tbl.getCatalogTableName();
-        } else {
-            String objectIdentifier = getIdentifierSymbol();
-            tableName = wrapWithIdentifier(tbl.getCatalogTableName(), objectIdentifier);
-        }
+        String objectIdentifier = getIdentifierSymbol();
+        tableName = wrapWithIdentifier(tbl.getCatalogTableName(), objectIdentifier);
     }
 
     private String wrapWithIdentifier(String name, String identifier) {
@@ -382,7 +378,7 @@ public class JDBCScanNode extends ScanNode {
         }
         Pattern p = Pattern.compile("^(\\d{4})-(\\d{1,2})-(\\d{1,2})$");
         Matcher m = p.matcher(literalValue);
-        String keyword = 
+        String keyword =
                 (literalValue.length() <= ("0000-00-00").length()) ? (m.matches() ? "date" : "") : "timestamp";
         String escapedValue = literalValue.replace("'", "''");
         return new OracleTemporalLiteralExpr(keyword + " '" + escapedValue + "'");

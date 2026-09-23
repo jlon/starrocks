@@ -18,7 +18,6 @@
 #include <cmath>
 #include <memory>
 
-#include "exprs/agg/aggregate_factory.h"
 #include "exprs/agg/base_aggregate_test.h"
 #include "exprs/agg/combinator/agg_state_combine.h"
 #include "exprs/agg/combinator/agg_state_merge.h"
@@ -27,8 +26,8 @@
 #include "exprs/agg/combinator/state_function.h"
 #include "exprs/agg/combinator/state_merge_function.h"
 #include "exprs/agg/combinator/state_union_function.h"
+#include "runtime/types.h"
 #include "types/logical_type.h"
-#include "types/type_descriptor.h"
 
 namespace starrocks {
 
@@ -209,7 +208,7 @@ void test_agg_state_union_invalid_cases(FunctionContext* ctx, const std::string&
 
     // Test with invalid function name
     AggStateDesc invalid_desc("invalid_func", ret_type, arg_types, false, 1);
-    auto invalid_func = get_aggregate_function(invalid_desc);
+    auto invalid_func = AggStateDesc::get_agg_state_func(&invalid_desc);
     ASSERT_EQ(invalid_func, nullptr);
 }
 
@@ -499,7 +498,7 @@ void test_agg_state_merge_invalid_cases(FunctionContext* ctx, const std::string&
 
     // Test with invalid function name
     AggStateDesc invalid_desc("invalid_func", ret_type, arg_types, false, 1);
-    auto invalid_func = get_aggregate_function(invalid_desc);
+    auto invalid_func = AggStateDesc::get_agg_state_func(&invalid_desc);
     ASSERT_EQ(invalid_func, nullptr);
 }
 

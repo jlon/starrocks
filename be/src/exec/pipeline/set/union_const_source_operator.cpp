@@ -15,8 +15,6 @@
 #include "exec/pipeline/set/union_const_source_operator.h"
 
 #include "column/column_helper.h"
-#include "exprs/expr_executor.h"
-#include "runtime/runtime_state.h"
 
 namespace starrocks::pipeline {
 
@@ -60,11 +58,11 @@ Status UnionConstSourceOperatorFactory::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(OperatorFactory::prepare(state));
 
     for (const vector<ExprContext*>& exprs : _const_expr_lists) {
-        RETURN_IF_ERROR(ExprExecutor::prepare(exprs, state));
+        RETURN_IF_ERROR(Expr::prepare(exprs, state));
     }
 
     for (const vector<ExprContext*>& exprs : _const_expr_lists) {
-        RETURN_IF_ERROR(ExprExecutor::open(exprs, state));
+        RETURN_IF_ERROR(Expr::open(exprs, state));
     }
 
     return Status::OK();
@@ -72,7 +70,7 @@ Status UnionConstSourceOperatorFactory::prepare(RuntimeState* state) {
 
 void UnionConstSourceOperatorFactory::close(RuntimeState* state) {
     for (const vector<ExprContext*>& exprs : _const_expr_lists) {
-        ExprExecutor::close(exprs, state);
+        Expr::close(exprs, state);
     }
 
     OperatorFactory::close(state);

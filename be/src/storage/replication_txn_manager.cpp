@@ -20,13 +20,9 @@
 #include <filesystem>
 #include <set>
 
-#include "base/string/string_parser.hpp"
-#include "base/utility/defer_op.h"
-#include "common/config_http_fwd.h"
-#include "common/config_storage_fwd.h"
-#include "common/system/backend_options.h"
-#include "common/system/master_info.h"
-#include "common/util/thrift_client_cache.h"
+#include "agent/agent_server.h"
+#include "agent/master_info.h"
+#include "agent/task_signatures_manager.h"
 #include "fs/fs.h"
 #include "fs/fs_memory.h"
 #include "gen_cpp/BackendService.h"
@@ -35,9 +31,11 @@
 #include "gutil/strings/stringpiece.h"
 #include "gutil/strings/substitute.h"
 #include "gutil/strings/util.h"
-#include "platform/http/http_client.h"
-#include "platform/thrift_rpc_helper.h"
+#include "http/http_client.h"
+#include "runtime/client_cache.h"
 #include "runtime/current_thread.h"
+#include "runtime/exec_env.h"
+#include "service/backend_options.h"
 #include "storage/protobuf_file.h"
 #include "storage/replication_utils.h"
 #include "storage/rowset/rowset.h"
@@ -46,6 +44,9 @@
 #include "storage/snapshot_manager.h"
 #include "storage/tablet_manager.h"
 #include "storage/tablet_updates.h"
+#include "util/defer_op.h"
+#include "util/string_parser.hpp"
+#include "util/thrift_rpc_helper.h"
 
 namespace starrocks {
 
@@ -422,8 +423,7 @@ Status ReplicationTxnManager::make_remote_snapshot(const TRemoteSnapshotRequest&
         // Make snapshot in remote olap engine
         status = ReplicationUtils::make_remote_snapshot(src_be.host, src_be.be_port, request.src_tablet_id,
                                                         request.src_schema_hash, request.src_visible_version, timeout_s,
-                                                        missed_versions, missing_version_ranges, src_snapshot_path,
-                                                        _snapshot_client);
+                                                        missed_versions, missing_version_ranges, src_snapshot_path);
         if (!status.ok()) {
             continue;
         }
@@ -1056,8 +1056,7 @@ void ReplicationTxnManager::clear_txn_snapshots(TTransactionId transaction_id) {
         if (src_backend_host.empty() || src_backend_port == 0 || src_snapshot_path.empty()) {
             continue;
         }
-        (void)ReplicationUtils::release_remote_snapshot(src_backend_host, src_backend_port, src_snapshot_path,
-                                                        _snapshot_client);
+        (void)ReplicationUtils::release_remote_snapshot(src_backend_host, src_backend_port, src_snapshot_path);
     }
 
     for (DataDir* data_dir : StorageEngine::instance()->get_stores()) {

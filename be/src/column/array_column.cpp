@@ -16,21 +16,16 @@
 
 #include <cstdint>
 
-#ifdef __AVX2__
-#include <immintrin.h>
-#elif defined(__ARM_NEON) && defined(__aarch64__)
-#include <arm_neon.h>
-#endif
-
-#include "base/simd/simd.h"
 #include "column/column_helper.h"
+#include "column/column_view/column_view.h"
 #include "column/fixed_length_column.h"
-#include "column/mysql_row_buffer.h"
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
+#include "exprs/function_helper.h"
 #include "gutil/bits.h"
 #include "gutil/casts.h"
 #include "gutil/strings/fastmem.h"
+#include "util/mysql_row_buffer.h"
 
 namespace starrocks {
 void ArrayColumn::check_or_die() const {
@@ -55,6 +50,14 @@ size_t ArrayColumn::size() const {
 
 size_t ArrayColumn::capacity() const {
     return _offsets->capacity() - 1;
+}
+
+const uint8_t* ArrayColumn::raw_data() const {
+    return _elements->raw_data();
+}
+
+uint8_t* ArrayColumn::mutable_raw_data() {
+    return _elements->mutable_raw_data();
 }
 
 size_t ArrayColumn::byte_size(size_t from, size_t size) const {
@@ -82,9 +85,8 @@ void ArrayColumn::resize(size_t n) {
 void ArrayColumn::assign(size_t n, size_t idx) {
     DCHECK_LE(idx, this->size()) << "Range error when assign arrayColumn.";
     auto desc = this->clone_empty();
-    // Avoid Datum-based round-trip for nested complex/object elements (e.g. shredded VARIANT).
-    // Using column append path preserves element lifetimes and prevents dangling object pointers.
-    desc->append_value_multiple_times(*this, idx, n);
+    auto datum = get(idx); // just reference
+    desc->append_value_multiple_times(&datum, n);
     swap_column(*desc);
     desc->reset_column();
 }
@@ -121,7 +123,7 @@ void ArrayColumn::append(const Column& src, size_t offset, size_t count) {
 
 void ArrayColumn::append_selective(const Column& src, const uint32_t* indexes, uint32_t from, uint32_t size) {
     if (src.is_array_view()) {
-        src.append_selective_to(*this, indexes, from, size);
+        down_cast<const ColumnView*>(&src)->append_to(*this, indexes, from, size);
         return;
     }
     for (uint32_t i = 0; i < size; i++) {
@@ -173,20 +175,6 @@ void ArrayColumn::fill_default(const Filter& filter) {
     auto default_column = clone_empty();
     default_column->append_default(indexes.size());
     update_rows(*default_column, indexes.data());
-}
-
-bool ArrayColumn::null_rows_are_empty(const uint8_t* nulls, size_t num_rows) const {
-    const auto& offs = offsets().immutable_data();
-    if (offs.size() != num_rows + 1) {
-        // Not a 1:1 row mapping; be conservative.
-        return false;
-    }
-    for (size_t i = 0; i < num_rows; ++i) {
-        if (nulls[i] != 0 && offs[i + 1] != offs[i]) {
-            return false;
-        }
-    }
-    return true;
 }
 
 void ArrayColumn::update_rows(const Column& src, const uint32_t* indexes) {
@@ -376,44 +364,6 @@ size_t ArrayColumn::filter_range(const Filter& filter, size_t from, size_t to) {
                 zero_count = Bits::CountTrailingZeros32(mask);
                 result_offset += 1;
                 i += (zero_count + 1);
-            }
-        }
-        check_offset += kBatchSize;
-    }
-#elif defined(__ARM_NEON) && defined(__aarch64__)
-    const uint8_t* f_data = filter.data();
-
-    constexpr size_t kBatchSize = /*width of NEON registers*/ 128 / 8;
-
-    while (check_offset + kBatchSize < to) {
-        uint8x16_t f = vld1q_u8(f_data + check_offset);
-        // nibble_mask holds 4 bits per row: 0xf where the row is kept, 0x0 otherwise.
-        uint64_t nibble_mask = SIMD::get_nibble_mask(vtstq_u8(f, f));
-
-        if (nibble_mask == 0) {
-            // all no hit, pass
-        } else if (nibble_mask == 0xffff'ffff'ffff'ffffull) {
-            // all hit, copy all
-            auto element_size = offsets[check_offset + kBatchSize] - offsets[check_offset];
-            memset(element_filter.data() + offsets[check_offset], 1, element_size);
-            if (result_offset != check_offset) {
-                DCHECK_LE(offsets[result_offset], offsets[check_offset]);
-                auto delta = offsets[check_offset] - offsets[result_offset];
-                memmove(offsets + result_offset + 1, offsets + check_offset + 1, kBatchSize * sizeof(offsets[0]));
-                for (size_t i = 0; i < kBatchSize; i++) {
-                    offsets[result_offset + i + 1] -= delta;
-                }
-            }
-            result_offset += kBatchSize;
-        } else {
-            // Keep only the high bit of each nibble, then walk the kept rows one set bit at a time.
-            nibble_mask &= 0x8888'8888'8888'8888ull;
-            for (; nibble_mask > 0; nibble_mask &= nibble_mask - 1) {
-                size_t i = __builtin_ctzll(nibble_mask) >> 2;
-                auto array_size = offsets[check_offset + i + 1] - offsets[check_offset + i];
-                memset(element_filter.data() + offsets[check_offset + i], 1, array_size);
-                offsets[result_offset + 1] = offsets[result_offset] + array_size;
-                result_offset += 1;
             }
         }
         check_offset += kBatchSize;
@@ -712,15 +662,8 @@ bool ArrayColumn::is_all_array_lengths_equal(const ColumnPtr& v1, const ColumnPt
     if (v1->size() != v2->size()) {
         return false;
     }
-    auto unpack_const_data_column = [](const ColumnPtr& column) -> ColumnPtr {
-        if (column->is_constant()) {
-            return down_cast<const ConstColumn*>(column.get())->data_column();
-        }
-        return column;
-    };
-
-    auto data_v1 = unpack_const_data_column(v1);
-    auto data_v2 = unpack_const_data_column(v2);
+    auto data_v1 = FunctionHelper::get_data_column_of_const(v1);
+    auto data_v2 = FunctionHelper::get_data_column_of_const(v2);
     auto* array_v1 = down_cast<const ArrayColumn*>(data_v1.get());
     auto* array_v2 = down_cast<const ArrayColumn*>(data_v2.get());
     const auto& offsets_v1 = array_v1->offsets();

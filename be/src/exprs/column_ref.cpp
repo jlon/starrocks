@@ -16,7 +16,6 @@
 
 #include "column/chunk.h"
 #include "exprs/expr.h"
-#include "runtime/descriptors.h"
 
 namespace starrocks {
 

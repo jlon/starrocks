@@ -238,7 +238,6 @@ struct TQueryOptions {
 
   60: optional i32 query_delivery_timeout;
 
-  // Deprecated: BE query debug trace support was removed. Keep field 61 for wire compatibility.
   61: optional bool enable_query_debug_trace;
 
   62: optional Types.TCompressionType load_transmission_compression_type;
@@ -365,7 +364,6 @@ struct TQueryOptions {
   171: optional bool enable_parquet_reader_page_index;
   
   180: optional bool lower_upper_support_utf8;
-  181: optional bool ngram_search_support_utf8;
 
   190: optional i64 column_view_concat_rows_limit;
   191: optional i64 column_view_concat_bytes_limit;
@@ -376,10 +374,9 @@ struct TQueryOptions {
   // 0: fnv_hash (default, for backward compatibility)
   // 1: xxh3_hash (faster)
   201: optional i32 exchange_hash_function_version = 0;
-
-  // whether enable predicate column late materialization
+   // whether enable predicate column late materialization
   202: optional bool enable_predicate_col_late_materialize;
-
+  
   210: optional bool enable_global_late_materialization;
   211: optional bool enable_schedule_log;
 
@@ -392,41 +389,6 @@ struct TQueryOptions {
   215: optional string http_request_host_allowlist_regexp = "";
   216: optional bool http_request_allow_private_in_allowlist = false;
   217: optional bool enable_cache_udaf = false;
-
-  // Pre-built JSON anchor of the streaming source for a routine-load
-  // task fragment (e.g. {"format":"kafka","topic":"t","partitions":[0,1],
-  // "begin_offsets":[10,20]}). When set, BE writes it to the
-  // _statistics_.rejected_records.source_info column instead of the
-  // hardcoded "stream-load-pipe" filename. Optional and unused for
-  // non-routine-load query paths.
-  218: optional string routine_load_source_info;
-
-  // ---- TopN runtime-filter back-pressure tuning (lake/connector self-enabled path) ----
-  // Max concurrent IO tasks a scan may submit while a TopN runtime filter is still pending.
-  // Caps read-ahead so concurrent readers cannot overshoot the (non-concurrency-aware) row
-  // budget before the filter arrives. Full DOP resumes once the filter lands. <=0 disables
-  // the clamp (legacy overshoot behavior). Default 1.
-  219: optional i32 topn_filter_back_pressure_io_tasks = 1;
-  // Master switch for scans (both shared-nothing olap and shared-data lake/connector) to
-  // self-enable TopN back-pressure even when the FE-side topn_filter_back_pressure_mode is 0.
-  // Default true.
-  220: optional bool enable_topn_filter_back_pressure = true;
-  // Back-pressure throttle window parameters used by the lake/connector self-enabled path
-  // (the FE-driven olap path keeps using the per-scan-node thrift values). Defaults match the
-  // tuned values: finer, exponentially-backing-off throttle quanta.
-  221: optional i32 topn_back_pressure_max_rounds = 8;
-  222: optional i64 topn_back_pressure_num_rows = 1024;
-  223: optional i64 topn_back_pressure_throttle_time_ms = 8;
-  224: optional i64 topn_back_pressure_throttle_time_upper_bound_ms = 100;
-
-  // The lake prepared-physical-split scan treats an oversized tablet as a long-tail straggler (and splits
-  // it even when the scan-range count already reaches pipeline_dop) once its rows exceed this ratio times
-  // the per-driver ideal share. Only affects enable_lake_prepared_physical_split_scan. Default 1.5.
-  225: optional double lake_tablet_internal_parallel_skew_split_ratio = 1.5;
-
-  // Maximum number of elements in an array produced by an array function. The query fails once an
-  // array exceeds it. Only array_agg enforces it so far. <=0 disables the limit. Default 0.
-  226: optional i64 max_array_length = 0;
 }
 
 // A scan range plus the parameters needed to execute that scan.
@@ -491,9 +453,6 @@ struct TPlanFragmentExecParams {
   // Debug options: perform some action in a particular phase of a particular node
   74: optional list<TExecDebugOption> exec_debug_options
 
-  // used for global lazy materialization
-  75: optional map<Types.TPlanNodeId, i32> per_look_up_num_fetchers
-  76: optional map<Types.TPlanNodeId, Descriptors.TNodesInfo> per_fetch_target_nodes
 }
 
 // Global query parameters assigned by the coordinator.

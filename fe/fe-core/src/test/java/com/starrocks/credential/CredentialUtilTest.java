@@ -90,26 +90,6 @@ public class CredentialUtilTest {
     }
 
     @Test
-    public void testMaskHuaweiOBSCredential() {
-        Map<String, String> properties = new HashMap<>();
-
-        // Test underscore format
-        properties.put(CloudConfigurationConstants.HUAWEI_OBS_ACCESS_KEY, "AKIAIOSFODNN7EXAMPLE");
-        properties.put(CloudConfigurationConstants.HUAWEI_OBS_SECRET_KEY, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
-        CredentialUtil.maskCredential(properties);
-        Assertions.assertEquals("AK******LE", properties.get(CloudConfigurationConstants.HUAWEI_OBS_ACCESS_KEY));
-        Assertions.assertEquals("wJ******EY", properties.get(CloudConfigurationConstants.HUAWEI_OBS_SECRET_KEY));
-
-        // Test dot format
-        properties.clear();
-        properties.put(CloudConfigurationConstants.HUAWEI_OBS_ACCESS_KEY_DOT, "AKIAIOSFODNN7EXAMPLE");
-        properties.put(CloudConfigurationConstants.HUAWEI_OBS_SECRET_KEY_DOT, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
-        CredentialUtil.maskCredential(properties);
-        Assertions.assertEquals("AK******LE", properties.get(CloudConfigurationConstants.HUAWEI_OBS_ACCESS_KEY_DOT));
-        Assertions.assertEquals("wJ******EY", properties.get(CloudConfigurationConstants.HUAWEI_OBS_SECRET_KEY_DOT));
-    }
-
-    @Test
     public void testMaskTencentCOSCredential() {
         Map<String, String> properties = new HashMap<>();
         properties.put(CloudConfigurationConstants.TENCENT_COS_ACCESS_KEY, "test_cos_access_key");

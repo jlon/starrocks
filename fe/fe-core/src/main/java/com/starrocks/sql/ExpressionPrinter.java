@@ -111,12 +111,8 @@ public class ExpressionPrinter<C> extends ScalarOperatorVisitor<String, C> {
                 return print(call.getChild(0), context) + " / " + print(call.getChild(1), context);
         }
 
-        int argumentCount = call.getChildren().size();
-        if (call.getFunction() != null && call.getFunction().isAi()) {
-            argumentCount = call.getFunction().getNumArgs();
-        }
-        return fnName + "(" + call.getChildren().subList(0, argumentCount).stream()
-                .map(p -> print(p, context)).collect(Collectors.joining(", ")) + ")";
+        return fnName + "(" +
+                call.getChildren().stream().map(p -> print(p, context)).collect(Collectors.joining(", ")) + ")";
     }
 
     @Override

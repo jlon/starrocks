@@ -81,8 +81,7 @@ final class FilesPreSplitSource implements InsertPreSplitSource {
         List<Column> partitionColumns =
                 target.getPartitionInfo().getPartitionColumns(target.getIdToColumn());
         return new PreSplitFlow.Prepared(scanContext, sortKeyColumns, partitionColumns,
-                sumFileBytes(sourceTable), context.getCurrentComputeResource(),
-                SecondaryIndexSpec.forVisibleRollups(target));
+                sumFileBytes(sourceTable), context.getCurrentComputeResource());
     }
 
     /**

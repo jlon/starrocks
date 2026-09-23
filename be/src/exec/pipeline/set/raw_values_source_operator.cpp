@@ -16,7 +16,6 @@
 
 #include "column/column_helper.h"
 #include "glog/logging.h"
-#include "runtime/runtime_state.h"
 
 namespace starrocks::pipeline {
 

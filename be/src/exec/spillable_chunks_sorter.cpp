@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "compute_env/spill/mem_tracker_guard.h"
-#include "compute_env/spill/spiller.h"
-#include "compute_env/spill/spiller.hpp"
 #include "exec/chunks_sorter_full_sort.h"
-#include "exec/runtime_compat/runtime_state_helper.h"
+#include "exec/spill/executor.h"
+#include "exec/spill/spiller.h"
+#include "exec/spill/spiller.hpp"
 #include "exec/spillable_chunks_sorter_sort.h"
 
 namespace starrocks {
@@ -26,7 +25,7 @@ template <DerivedFromChunksSorter TChunksSorter>
 void SpillableChunksSorter<TChunksSorter>::setup_runtime(RuntimeState* state, RuntimeProfile* profile,
                                                          MemTracker* parent_mem_tracker) {
     TChunksSorter::setup_runtime(state, profile, parent_mem_tracker);
-    _spiller->set_metrics(spill::SpillProcessMetrics(profile, RuntimeStateHelper::mutable_total_spill_bytes(state)));
+    _spiller->set_metrics(spill::SpillProcessMetrics(profile, state->mutable_total_spill_bytes()));
 }
 
 template <DerivedFromChunksSorter TChunksSorter>

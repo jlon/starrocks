@@ -15,24 +15,19 @@
 #include "exec/pipeline/exchange/sink_buffer.h"
 
 #include <bthread/bthread.h>
-#include <fmt/std.h>
 
 #include <cerrno>
 #include <cstddef>
 #include <mutex>
 #include <string_view>
 
-#include "base/time/time.h"
-#include "base/uid_util.h"
-#include "base/utility/defer_op.h"
-#include "common/brpc/brpc_stub_cache.h"
-#include "common/brpc_helper.h"
-#include "common/config_exec_flow_fwd.h"
-#include "exec/exec_env.h"
-#include "exec/pipeline/fragment_context.h"
-#include "exec/pipeline/fragment_context_cancel.h"
-#include "exec/pipeline/query_context.h"
+#include "common/config.h"
 #include "fmt/core.h"
+#include "runtime/exec_env.h"
+#include "util/brpc_stub_cache.h"
+#include "util/defer_op.h"
+#include "util/time.h"
+#include "util/uid_util.h"
 
 namespace starrocks::pipeline {
 
@@ -80,15 +75,6 @@ SinkBuffer::~SinkBuffer() {
     DCHECK(is_finished());
 
     _sink_ctxs.clear();
-}
-
-DeferOp<std::function<void()>> SinkBuffer::defer_notify() {
-    return DeferOp<std::function<void()>>([this]() {
-        _observable.notify_sink_observers();
-        if (bthread_self()) {
-            CHECK(tls_thread_status.mem_tracker() == RuntimeEnv::GetInstance()->process_mem_tracker());
-        }
-    });
 }
 
 void SinkBuffer::incr_sinker(RuntimeState* state) {
@@ -263,7 +249,7 @@ void SinkBuffer::cancel_one_sinker(RuntimeState* const state) {
         bthread_id_list_destroy(&tmplist);
     }
 
-    if (state != nullptr && state->query_runtime_state() && state->query_runtime_state()->is_query_expired()) {
+    if (state != nullptr && state->query_ctx() && state->query_ctx()->is_query_expired()) {
         // check how many cancel operations are issued, and show the state of that time.
         VLOG_OPERATOR << fmt::format(
                 "fragment_instance_id {}, _is_finishing {}, _num_remaining_eos {}, "
@@ -432,14 +418,14 @@ Status SinkBuffer::_try_to_send_rpc(const TUniqueId& instance_id, const std::fun
             ++context.num_finished_rpcs;
             --context.num_in_flight_rpcs;
             _buffered_mem_usage->release(request_byte_size);
-            RuntimeEnv::GetInstance()->brpc_iobuf_mem_tracker()->set(butil::IOBuf::block_memory());
+            GlobalEnv::GetInstance()->brpc_iobuf_mem_tracker()->set(butil::IOBuf::block_memory());
 
             const auto& dest_addr = context.dest_addrs;
             std::string err_msg =
                     fmt::format("transmit chunk rpc failed [dest_instance_id={}] [dest={}:{}] detail:{}",
                                 print_id(ctx.instance_id), dest_addr.hostname, dest_addr.port, rpc_error_msg);
 
-            cancel_fragment_context(_fragment_ctx, Status::ThriftRpcError(err_msg));
+            _fragment_ctx->cancel(Status::ThriftRpcError(err_msg));
             LOG(WARNING) << err_msg;
         };
 
@@ -455,11 +441,11 @@ Status SinkBuffer::_try_to_send_rpc(const TUniqueId& instance_id, const std::fun
             ++context.num_finished_rpcs;
             --context.num_in_flight_rpcs;
             _buffered_mem_usage->release(request_byte_size);
-            RuntimeEnv::GetInstance()->brpc_iobuf_mem_tracker()->set(butil::IOBuf::block_memory());
+            GlobalEnv::GetInstance()->brpc_iobuf_mem_tracker()->set(butil::IOBuf::block_memory());
 
             if (!status.ok()) {
                 _is_finishing = true;
-                cancel_fragment_context(_fragment_ctx, status);
+                _fragment_ctx->cancel(status);
 
                 const auto& dest_addr = context.dest_addrs;
                 LOG(WARNING) << fmt::format("transmit chunk rpc failed [dest_instance_id={}] [dest={}:{}] [msg={}]",
@@ -485,7 +471,7 @@ Status SinkBuffer::_try_to_send_rpc(const TUniqueId& instance_id, const std::fun
 
         closure->cntl.Reset();
         closure->cntl.set_timeout_ms(_brpc_timeout_ms);
-        set_ignore_overcrowded_for_query(closure->cntl);
+        SET_IGNORE_OVERCROWDED(closure->cntl, query);
 
         // The call id must be obtained before launching the RPC, as per bRPC doc.
         const auto call_id = closure->cntl.call_id();

@@ -58,9 +58,6 @@ jobs:
             docs/en/**/*.md
             docs/ja/**/*.md
             docs/zh/**/*.md
-            docs/en/**/*.mdx
-            docs/ja/**/*.mdx
-            docs/zh/**/*.mdx
 
       - name: Install Vale
         if: steps.changed-files.outputs.any_changed == 'true'

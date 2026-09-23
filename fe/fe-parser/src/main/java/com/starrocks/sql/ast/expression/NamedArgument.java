@@ -15,7 +15,6 @@
 package com.starrocks.sql.ast.expression;
 
 import com.starrocks.sql.ast.AstVisitor;
-import com.starrocks.sql.parser.NodePosition;
 
 public class NamedArgument extends Expr {
     private final String name;
@@ -23,19 +22,11 @@ public class NamedArgument extends Expr {
     private Expr expr;
 
     public NamedArgument(String name, Expr expr) {
-        super(NodePosition.ZERO);
-        this.name = name;
-        this.expr = expr;
-    }
-
-    public NamedArgument(String name, Expr expr, NodePosition pos) {
-        super(pos);
         this.name = name;
         this.expr = expr;
     }
 
     public NamedArgument(NamedArgument other) {
-        super(other.pos);
         this.name = other.name;
         this.expr = other.expr;
     }
@@ -54,7 +45,7 @@ public class NamedArgument extends Expr {
 
     @Override
     public Expr clone() {
-        return new NamedArgument(name, expr, pos);
+        return new NamedArgument(name, expr);
     }
 
     @Override

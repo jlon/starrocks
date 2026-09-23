@@ -1,5 +1,4 @@
 ---
-sidebar_position: 40
 description: "Apache Iceberg を使用したデータレイクハウス"
 displayed_sidebar: docs
 ---
@@ -241,4 +240,4 @@ MinIO のユーザー名とパスワードは docker-compose.yml ファイルに
 
 #### 詳しく学ぶ
 
-Iceberg と StarRocks を使い始めた今、[StarRocks-Iceberg ドキュメント](../data_source/catalog/iceberg/iceberg.md)をチェックして、さらに学びましょう！
+Iceberg と StarRocks を使い始めた今、[StarRocks-Iceberg ドキュメント](../data_source/catalog/iceberg/iceberg_catalog.md)をチェックして、さらに学びましょう！

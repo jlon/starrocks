@@ -16,14 +16,12 @@
 
 #include <fmt/format.h>
 
-#include "base/string/string_util.h"
 #include "column/chunk.h"
-#include "common/config_cache_fwd.h"
-#include "common/config_primary_key_fwd.h"
-#include "common/config_rowset_fwd.h"
+#include "column/datum.h"
+#include "common/config.h"
 #include "fs/fs.h"
 #include "fs/fs_util.h"
-#include "platform/key_cache.h"
+#include "fs/key_cache.h"
 #include "runtime/mem_tracker.h"
 #include "storage/lake/filenames.h"
 #include "storage/lake/tablet_manager.h"
@@ -36,8 +34,7 @@
 #include "storage/sstable/options.h"
 #include "storage/sstable/table.h"
 #include "storage/sstable/table_builder.h"
-#include "storage/storage_metrics.h"
-#include "types/datum.h"
+#include "util/starrocks_metrics.h"
 
 namespace starrocks::lake {
 
@@ -62,7 +59,7 @@ Status PkTabletUnsortSSTWriter::reset_sst_writer(const std::shared_ptr<LocationP
     _deleted_rowids.clear();
     _delete_keys.reset();
     _intermediate_ssts.clear();
-    _keys_heap_size = 0;
+    _map_mem_usage = 0;
     _next_rowid = 0;
     return Status::OK();
 }
@@ -94,9 +91,10 @@ void PkTabletUnsortSSTWriter::reconcile_entry(std::string_view key, uint64_t ord
     // not allocate; only a first-seen key materializes the owning std::string on the emplace branch.
     auto it = _map.find(key);
     if (it == _map.end()) {
-        auto [inserted_it, inserted] = _map.emplace(std::string(key), Entry{order, rowid});
-        DCHECK(inserted);
-        _keys_heap_size += is_string_heap_allocated(inserted_it->first) ? inserted_it->first.capacity() : 0;
+        // Rough per-entry footprint: encoded key bytes + value + btree node overhead.
+        static constexpr size_t kBtreeEntryOverhead = 24;
+        _map_mem_usage += key.size() + sizeof(Entry) + kBtreeEntryOverhead;
+        _map.emplace(std::string(key), Entry{order, rowid});
     } else if (order > it->second.order) {
         if (it->second.rowid != kDeleteRowid) {
             _deleted_rowids.push_back(it->second.rowid);
@@ -131,7 +129,7 @@ Status PkTabletUnsortSSTWriter::append_records(const Chunk& data, const std::vec
         RETURN_IF_ERROR(project_pk_columns(data, *column_indexes, &pk_chunk));
         pk_data = &pk_chunk;
     }
-    Buffer<Slice> keys;
+    std::vector<Slice> keys;
     MutableColumnPtr owned_column;
     ASSIGN_OR_RETURN(const Slice* vkeys, encode_pk_keys(*pk_data, &keys, &owned_column));
     for (size_t i = 0; i < num_rows; i++) {
@@ -179,7 +177,7 @@ bool PkTabletUnsortSSTWriter::is_map_full() const {
     // map keeps the writer's combined footprint near the bound instead of letting _map independently
     // pile another l0_max_mem_usage on top of the loser vector. (_delete_keys is filled only at flush,
     // never during append, so it is not part of the footprint at this spill check.)
-    const size_t mem_usage = memory_usage();
+    const size_t mem_usage = _map_mem_usage + _deleted_rowids.size() * sizeof(uint32_t);
     if (mem_usage >= static_cast<size_t>(config::l0_max_mem_usage)) {
         return true;
     }
@@ -191,18 +189,6 @@ bool PkTabletUnsortSSTWriter::is_map_full() const {
         return true;
     }
     return false;
-}
-
-size_t PkTabletUnsortSSTWriter::map_memory_usage() const {
-    // Same accounting as PersistentIndexMemtable::memory_usage(): _keys_heap_size is the memory of the
-    // heap-allocated std::string keys, and _map.bytes_used() is the memory of the btree itself.
-    // Asking the container is exact by construction -- an incrementally maintained byte counter has to
-    // be kept in step with every single allocation and deallocation, and any drift is silent.
-    return _keys_heap_size + _map.bytes_used();
-}
-
-size_t PkTabletUnsortSSTWriter::memory_usage() const {
-    return map_memory_usage() + _deleted_rowids.capacity() * sizeof(uint32_t);
 }
 
 Status PkTabletUnsortSSTWriter::flush_map_to_intermediate_sst() {
@@ -244,7 +230,7 @@ Status PkTabletUnsortSSTWriter::flush_map_to_intermediate_sst() {
     RETURN_IF_ERROR(wf->close());
     _intermediate_ssts.push_back({location, size, std::move(encryption_meta)});
     _map.clear();
-    _keys_heap_size = 0;
+    _map_mem_usage = 0;
     return Status::OK();
 }
 
@@ -271,15 +257,8 @@ Status PkTabletUnsortSSTWriter::merge_intermediates_into(sstable::TableBuilder* 
             ASSIGN_OR_RETURN(rf, fs::new_random_access_file(opts, sst.location));
         }
         std::unique_ptr<sstable::Table> table;
-        // Verify block checksums when re-reading the intermediate ssts this load just
-        // wrote: corrupted bytes (usually a bad local cache copy) must fail as
-        // Corruption instead of being silently merged into a wrong dedup result.
-        sstable::Options open_options;
-        open_options.paranoid_checks = config::lake_pk_index_sst_verify_checksum;
-        RETURN_IF_ERROR(sstable::Table::Open(open_options, rf.get(), sst.size, table));
-        sstable::ReadOptions read_options;
-        read_options.verify_checksums = config::lake_pk_index_sst_verify_checksum;
-        auto* iter = table->NewIterator(read_options);
+        RETURN_IF_ERROR(sstable::Table::Open(sstable::Options{}, rf.get(), sst.size, table));
+        auto* iter = table->NewIterator(sstable::ReadOptions{});
         iter_holders.emplace_back(iter);
         child_iters.push_back(iter);
         rfs.push_back(std::move(rf));
@@ -369,7 +348,7 @@ StatusOr<std::pair<FileInfo, PersistentIndexSstableRangePB>> PkTabletUnsortSSTWr
         RETURN_IF_ERROR(merge_intermediates_into(&builder));
     }
     if (auto st = builder.Finish(); !st.ok()) {
-        StorageMetrics::instance()->pk_index_sst_write_error_total.increment(1);
+        StarRocksMetrics::instance()->pk_index_sst_write_error_total.increment(1);
         LOG(WARNING) << "Failed to finish unsort PersistentIndex SST, error: " << st;
         return st;
     }
@@ -397,7 +376,7 @@ StatusOr<std::pair<FileInfo, PersistentIndexSstableRangePB>> PkTabletUnsortSSTWr
     _wf.reset();
     _map.clear();
     _intermediate_ssts.clear();
-    _keys_heap_size = 0;
+    _map_mem_usage = 0;
     _next_rowid = 0;
     return std::make_pair(file_info, range_pb);
 }

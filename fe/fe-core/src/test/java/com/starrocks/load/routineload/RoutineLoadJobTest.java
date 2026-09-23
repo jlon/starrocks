@@ -125,7 +125,7 @@ public class RoutineLoadJobTest {
         String txnStatusChangeReasonString = TxnStatusChangeReason.OFFSET_OUT_OF_RANGE.toString();
         RoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
         Deencapsulation.setField(routineLoadJob, "routineLoadTaskInfoList", routineLoadTaskInfoList);
-        routineLoadJob.afterAborted(transactionState, txnStatusChangeReasonString);
+        routineLoadJob.afterAborted(transactionState, true, txnStatusChangeReasonString);
 
         Assertions.assertEquals(RoutineLoadJob.JobState.PAUSED, routineLoadJob.getState());
     }
@@ -185,7 +185,7 @@ public class RoutineLoadJobTest {
         TableMetricsEntity entity =
                 TableMetricsRegistry.getInstance().getMetricsEntity(routineLoadTaskInfo.getJob().tableId);
         long prevValue = entity.counterRoutineLoadAbortedTasksTotal.getValue();
-        routineLoadJob.afterAborted(transactionState, txnStatusChangeReasonString);
+        routineLoadJob.afterAborted(transactionState, true, txnStatusChangeReasonString);
 
         Assertions.assertEquals(RoutineLoadJob.JobState.RUNNING, routineLoadJob.getState());
         Assertions.assertEquals(Long.valueOf(1), Deencapsulation.getField(routineLoadJob, "abortedTaskNum"));
@@ -194,7 +194,7 @@ public class RoutineLoadJobTest {
         Assertions.assertEquals(Long.valueOf(prevValue + 1), entity.counterRoutineLoadAbortedTasksTotal.getValue());
 
         routineLoadTaskInfoList.clear();
-        routineLoadJob.afterAborted(transactionState, txnStatusChangeReasonString);
+        routineLoadJob.afterAborted(transactionState, true, txnStatusChangeReasonString);
         Assertions.assertEquals(Long.valueOf(2), Deencapsulation.getField(routineLoadJob, "abortedTaskNum"));
         Assertions.assertEquals(Long.valueOf(prevValue + 2), entity.counterRoutineLoadAbortedTasksTotal.getValue());
     }
@@ -253,7 +253,7 @@ public class RoutineLoadJobTest {
         TableMetricsEntity entity =
                 TableMetricsRegistry.getInstance().getMetricsEntity(routineLoadTaskInfo.getJob().tableId);
         long prevValue = entity.counterRoutineLoadCommittedTasksTotal.getValue();
-        routineLoadJob.afterCommitted(transactionState);
+        routineLoadJob.afterCommitted(transactionState, true);
 
         Assertions.assertEquals(RoutineLoadJob.JobState.RUNNING, routineLoadJob.getState());
         Assertions.assertEquals(Long.valueOf(1), Deencapsulation.getField(routineLoadJob, "committedTaskNum"));
@@ -1047,7 +1047,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         "COLUMNS TERMINATED BY ';'", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY ';' " +
                 "PROPERTIES (\"desired_concurrent_number\"=\"1\") " +
                 "FROM KAFKA (\"kafka_topic\" = \"my_topic\")", routineLoadJob.getOrigStmt().originStmt);
@@ -1057,7 +1057,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         "ROWS TERMINATED BY '\n'", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY ';', " +
                 "ROWS TERMINATED BY '\n' " +
                 "PROPERTIES (\"desired_concurrent_number\"=\"1\") " +
@@ -1068,7 +1068,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         "COLUMNS(`a`, `b`, `c`=1)", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY ';', " +
                 "ROWS TERMINATED BY '\n', " +
                 "COLUMNS(`a`, `b`, `c` = 1) " +
@@ -1080,7 +1080,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         "TEMPORARY PARTITION(`p1`, `p2`)", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY ';', " +
                 "ROWS TERMINATED BY '\n', " +
                 "COLUMNS(`a`, `b`, `c` = 1), " +
@@ -1093,7 +1093,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         "WHERE a = 1", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY ';', " +
                 "ROWS TERMINATED BY '\n', " +
                 "COLUMNS(`a`, `b`, `c` = 1), " +
@@ -1107,7 +1107,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         "COLUMNS TERMINATED BY '\t'", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY '\t', " +
                 "ROWS TERMINATED BY '\n', " +
                 "COLUMNS(`a`, `b`, `c` = 1), " +
@@ -1121,7 +1121,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         "ROWS TERMINATED BY 'a'", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY '\t', " +
                 "ROWS TERMINATED BY 'a', " +
                 "COLUMNS(`a`, `b`, `c` = 1), " +
@@ -1135,7 +1135,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         "COLUMNS(`a`)", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY '\t', " +
                 "ROWS TERMINATED BY 'a', " +
                 "COLUMNS(`a`), " +
@@ -1148,7 +1148,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         " PARTITION(`p1`, `p2`)", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY '\t', " +
                 "ROWS TERMINATED BY 'a', " +
                 "COLUMNS(`a`), " +
@@ -1162,7 +1162,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         "WHERE a = 5", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY '\t', " +
                 "ROWS TERMINATED BY 'a', " +
                 "COLUMNS(`a`), " +
@@ -1176,7 +1176,7 @@ public class RoutineLoadJobTest {
                 "ALTER ROUTINE LOAD FOR job " +
                         "WHERE a = 5 and b like 'c1%' and c between 1 and 100 and substring(d,1,5) = 'cefd' ", 0), null);
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `unknown` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `unknown` " +
                 "COLUMNS TERMINATED BY '\t', " +
                 "ROWS TERMINATED BY 'a', " +
                 "COLUMNS(`a`), " +
@@ -1211,47 +1211,12 @@ public class RoutineLoadJobTest {
         routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
 
         // The regenerated statement must keep the reserved-keyword table name backquoted.
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `order` " +
+        Assertions.assertEquals("CREATE ROUTINE LOAD job ON `order` " +
                 "COLUMNS(`a`, `b`, `c` = 1) " +
                 "PROPERTIES (\"desired_concurrent_number\"=\"1\") " +
                 "FROM KAFKA (\"kafka_topic\" = \"my_topic\")", routineLoadJob.getOrigStmt().originStmt);
 
         // Re-parsing the persisted statement must succeed (this is what happens on FE restart).
-        RoutineLoadDesc reparsed = CreateRoutineLoadStmt.getLoadDesc(routineLoadJob.getOrigStmt(), null);
-        Assertions.assertNotNull(reparsed);
-    }
-
-    @Test
-    public void testMergeLoadDescToOriginStatementWithBackquoteInTableName() throws Exception {
-        // A table name that itself contains a backquote must have the embedded backquote doubled
-        // (ta`ble -> `ta``ble`), otherwise the regenerated statement is malformed and cannot be
-        // re-parsed on FE restart. Naive string concatenation (`%s`) would produce `ta`ble`, which
-        // is unparseable.
-        KafkaRoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob(1L, "job",
-                2L, 3L, "192.168.1.2:10000", "topic") {
-            @Override
-            public String getTableName() {
-                return "ta`ble";
-            }
-        };
-        String originStmt = "CREATE ROUTINE LOAD `job` ON `ta``ble` " +
-                "PROPERTIES (\"desired_concurrent_number\"=\"1\") " +
-                "FROM KAFKA (\"kafka_topic\" = \"my_topic\")";
-        routineLoadJob.setOrigStmt(new OriginStatementInfo(originStmt, 0));
-
-        RoutineLoadDesc loadDesc = CreateRoutineLoadStmt.getLoadDesc(new OriginStatementInfo(
-                "ALTER ROUTINE LOAD FOR job COLUMNS(`a`, `b`, `c` = 1)", 0), null);
-        routineLoadJob.mergeLoadDescToOriginStatement(loadDesc);
-
-        // The embedded backquote must be escaped (doubled) in the regenerated statement.
-        Assertions.assertEquals("CREATE ROUTINE LOAD `job` ON `ta``ble` " +
-                "COLUMNS(`a`, `b`, `c` = 1) " +
-                "PROPERTIES (\"desired_concurrent_number\"=\"1\") " +
-                "FROM KAFKA (\"kafka_topic\" = \"my_topic\")", routineLoadJob.getOrigStmt().originStmt);
-
-        // Re-parsing the persisted statement must succeed: `ta``ble` is a single valid
-        // BACKQUOTED_IDENTIFIER token, so getLoadDesc() parses it and routineLoadDesc is preserved.
-        // Naive concatenation (`ta`ble`) would instead be a parse error, dropping routineLoadDesc.
         RoutineLoadDesc reparsed = CreateRoutineLoadStmt.getLoadDesc(routineLoadJob.getOrigStmt(), null);
         Assertions.assertNotNull(reparsed);
     }
@@ -1293,7 +1258,7 @@ public class RoutineLoadJobTest {
         RoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
         Deencapsulation.setField(routineLoadJob, "routineLoadTaskInfoList", routineLoadTaskInfoList);
         Deencapsulation.setField(routineLoadJob, "state", RoutineLoadJob.JobState.RUNNING);
-        routineLoadJob.afterAborted(transactionState, txnStatusChangeReasonString);
+        routineLoadJob.afterAborted(transactionState, true, txnStatusChangeReasonString);
 
         Assertions.assertEquals(RoutineLoadJob.JobState.PAUSED, routineLoadJob.getState());
     }
@@ -1354,7 +1319,7 @@ public class RoutineLoadJobTest {
         Deencapsulation.setField(routineLoadJob, "state", RoutineLoadJob.JobState.RUNNING);
         Deencapsulation.setField(routineLoadJob, "routineLoadTaskInfoList", routineLoadTaskInfoList);
         Deencapsulation.setField(routineLoadJob, "progress", currentProgress);
-        routineLoadJob.afterAborted(transactionState, txnStatusChangeReasonString);
+        routineLoadJob.afterAborted(transactionState, true, txnStatusChangeReasonString);
 
         Assertions.assertEquals(RoutineLoadJob.JobState.RUNNING, routineLoadJob.getState());
     }
@@ -1406,7 +1371,7 @@ public class RoutineLoadJobTest {
             RoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
             Deencapsulation.setField(routineLoadJob, "routineLoadTaskInfoList", routineLoadTaskInfoList);
             Deencapsulation.setField(routineLoadJob, "state", RoutineLoadJob.JobState.RUNNING);
-            routineLoadJob.afterAborted(transactionState,
+            routineLoadJob.afterAborted(transactionState, true,
                     TxnStatusChangeReason.PARSE_ERROR.toString());
             System.out.println(routineLoadJob.getPauseReason());
             Assertions.assertEquals(RoutineLoadJob.JobState.RUNNING, routineLoadJob.getState());
@@ -1421,24 +1386,12 @@ public class RoutineLoadJobTest {
             Deencapsulation.setField(routineLoadJob, "state", RoutineLoadJob.JobState.RUNNING);
             ((Map<String, String>) Deencapsulation.getField(routineLoadJob, "jobProperties"))
                     .put("pause_on_fatal_parse_error", "true");
-            routineLoadJob.afterAborted(transactionState,
+            routineLoadJob.afterAborted(transactionState, true,
                     TxnStatusChangeReason.PARSE_ERROR.toString());
             Assertions.assertEquals(RoutineLoadJob.JobState.PAUSED, routineLoadJob.getState());
             String errorMsg =
                     "ErrorReason{errCode = 5611, msg='parse error. Check the 'TrackingSQL' field for detailed information.'}";
             Assertions.assertEquals(errorMsg, routineLoadJob.getPauseReason());
         }
-    }
-
-    @Test
-    public void testRoutineLoadEnvelope() throws StarRocksException {
-        Map<String, String> jobProperties = Maps.newHashMap();
-        jobProperties.put(CreateRoutineLoadStmt.FORMAT, "json");
-        jobProperties.put(CreateRoutineLoadStmt.ENVELOPE, CreateRoutineLoadStmt.ENVELOPE_DEBEZIUM);
-
-        RoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
-        Deencapsulation.setField(routineLoadJob, "jobProperties", jobProperties);
-
-        Assertions.assertEquals(CreateRoutineLoadStmt.ENVELOPE_DEBEZIUM, routineLoadJob.getEnvelope());
     }
 }

@@ -16,8 +16,6 @@
 #include <gtest/gtest.h>
 
 #include "butil/time.h"
-#include "column/geo_column.h"
-#include "column/nullable_column.h"
 #include "exprs/geo_functions.h"
 #include "exprs/mock_vectorized_expr.h"
 #include "geo/geo_types.h"
@@ -48,7 +46,7 @@ TEST_F(geographyFunctionsTest, st_pointTest) {
         result = GeoFunctions::st_as_wkt(ctx.get(), columns).value();
 
         auto v = ColumnHelper::as_column<BinaryColumn>(result);
-        ASSERT_EQ("POINT (24.7 56.7)", v->get_slice(0).to_string());
+        ASSERT_EQ("POINT (24.7 56.7)", v->get_data()[0].to_string());
     }
 
     {
@@ -64,7 +62,7 @@ TEST_F(geographyFunctionsTest, st_pointTest) {
         columns.emplace_back(std::move(str_2));
         ColumnPtr result = GeoFunctions::st_point(ctx.get(), columns).value();
         auto v = ColumnHelper::as_column<BinaryColumn>(result);
-        auto str_value = v->get_slice(0);
+        auto str_value = v->get_data()[0];
 
         GeoPoint point;
         auto res = point.decode_from(str_value.data, str_value.size);
@@ -153,7 +151,7 @@ TEST_F(geographyFunctionsTest, as_wktTest) {
     auto result = GeoFunctions::st_as_wkt(ctx.get(), columns).value();
     auto v = ColumnHelper::as_column<BinaryColumn>(result);
 
-    ASSERT_EQ("POINT (134 63)", v->get_slice(0).to_string());
+    ASSERT_EQ("POINT (134 63)", v->get_data()[0].to_string());
 }
 
 TEST_F(geographyFunctionsTest, st_from_wktGeneralTest) {
@@ -176,7 +174,7 @@ TEST_F(geographyFunctionsTest, st_from_wktGeneralTest) {
     auto v = ColumnHelper::as_column<BinaryColumn>(result);
 
     GeoPoint point;
-    auto res = point.decode_from(v->get_slice(0).data, v->get_slice(0).size);
+    auto res = point.decode_from(v->get_data()[0].data, v->get_data()[0].size);
 
     ASSERT_TRUE(res);
     ASSERT_DOUBLE_EQ(10.1, point.x());
@@ -223,7 +221,7 @@ TEST_F(geographyFunctionsTest, st_lineGeneralTest) {
     auto result = GeoFunctions::st_line(ctx.get(), columns).value();
     auto v = ColumnHelper::as_column<BinaryColumn>(result);
     GeoLine line_obj;
-    auto res = line_obj.decode_from(v->get_slice(0).data, v->get_slice(0).size);
+    auto res = line_obj.decode_from(v->get_data()[0].data, v->get_data()[0].size);
     ASSERT_TRUE(res);
     GeoFunctions::st_from_wkt_close(ctx.get(), FunctionContext::FRAGMENT_LOCAL);
 }
@@ -261,7 +259,7 @@ TEST_F(geographyFunctionsTest, st_polygonGeneralTest) {
     auto str2 = GeoFunctions::st_polygon(ctx.get(), columns).value();
     auto result = ColumnHelper::as_column<BinaryColumn>(str2);
     ASSERT_FALSE(str2->is_null(0));
-    auto v = result->get_slice(0);
+    auto v = result->get_data()[0];
 
     GeoPolygon polygon;
     auto res = polygon.decode_from(v.data, v.size);
@@ -312,7 +310,7 @@ TEST_F(geographyFunctionsTest, st_circleGeneralTest) {
     ASSERT_FALSE(result->is_null(0));
 
     auto v = ColumnHelper::as_column<BinaryColumn>(result);
-    auto cir_str = v->get_slice(0);
+    auto cir_str = v->get_data()[0];
 
     GeoCircle circle;
     auto res = circle.decode_from(cir_str.data, cir_str.size);
@@ -412,7 +410,7 @@ TEST_F(geographyFunctionsTest, st_containsWithUnexpectedInputTest) {
     auto varchar_column = ColumnHelper::cast_to<TYPE_VARCHAR>(result1);
     ASSERT_TRUE(varchar_column->size() == 1);
     ASSERT_FALSE(varchar_column->is_null(0));
-    auto value = varchar_column->get_slice(0);
+    auto value = varchar_column->get_data()[0];
     std::string string_value(value.get_data(), value.get_size());
     string_value.append("A");
     auto input_column = ColumnHelper::create_const_column<TYPE_VARCHAR>(Slice(string_value), varchar_column->size());
@@ -460,77 +458,6 @@ TEST_F(geographyFunctionsTest, st_containsConstTest) {
     auto res = GeoFunctions::st_contains(ctx.get(), columns).value();
     ASSERT_TRUE(ColumnHelper::get_const_value<TYPE_BOOLEAN>(res));
     GeoFunctions::st_contains_close(ctx.get(), FunctionContext::FRAGMENT_LOCAL);
-}
-
-TEST_F(geographyFunctionsTest, nativeGeographyWktAndWkbRoundTrip) {
-    GeoTypeDescriptor descriptor{GEO_LOGICAL_TYPE_GEOGRAPHY, GEO_COORDINATE_SYSTEM_SPHERICAL,
-                                 GEO_EDGE_ALGORITHM_SPHERICAL, "OGC:CRS84", 4326};
-    auto geography = TypeDescriptor::create_geo_type(TYPE_GEOGRAPHY, descriptor);
-    std::unique_ptr<FunctionContext> constructor(FunctionContext::create_test_context(
-            {TypeDescriptor::create_varchar_type(TypeDescriptor::MAX_VARCHAR_LENGTH)}, geography));
-
-    auto input = BinaryColumn::create();
-    input->append("GEOMETRYCOLLECTION (POINT EMPTY, LINESTRING (1 2, 3 4))");
-    auto native = GeoFunctions::st_geog_from_text(constructor.get(), {input}).value();
-    ASSERT_FALSE(native->is_null(0));
-
-    std::unique_ptr<FunctionContext> text_serializer(FunctionContext::create_test_context(
-            {geography}, TypeDescriptor::create_varchar_type(TypeDescriptor::MAX_VARCHAR_LENGTH)));
-    auto text = GeoFunctions::st_geography_as_text(text_serializer.get(), {native}).value();
-    EXPECT_EQ("GEOMETRYCOLLECTION (POINT EMPTY, LINESTRING (1 2, 3 4))", text->get(0).get_slice().to_string());
-
-    std::unique_ptr<FunctionContext> wkb_serializer(FunctionContext::create_test_context(
-            {geography}, TypeDescriptor::create_varbinary_type(TypeDescriptor::MAX_VARCHAR_LENGTH)));
-    auto wkb = GeoFunctions::st_geography_as_wkb(wkb_serializer.get(), {native}).value();
-    std::unique_ptr<FunctionContext> wkb_constructor(FunctionContext::create_test_context(
-            {TypeDescriptor::create_varbinary_type(TypeDescriptor::MAX_VARCHAR_LENGTH)}, geography));
-    auto reconstructed = GeoFunctions::st_geog_from_wkb(wkb_constructor.get(), {wkb}).value();
-    auto reconstructed_text = GeoFunctions::st_geography_as_text(text_serializer.get(), {reconstructed}).value();
-    EXPECT_EQ(text->get(0).get_slice().to_string(), reconstructed_text->get(0).get_slice().to_string());
-}
-
-TEST_F(geographyFunctionsTest, nativeGeographyRejectsInvalidInputAndSrid) {
-    GeoTypeDescriptor descriptor{GEO_LOGICAL_TYPE_GEOGRAPHY, GEO_COORDINATE_SYSTEM_SPHERICAL,
-                                 GEO_EDGE_ALGORITHM_SPHERICAL, "OGC:CRS84", 4326};
-    auto geography = TypeDescriptor::create_geo_type(TYPE_GEOGRAPHY, descriptor);
-    std::unique_ptr<FunctionContext> context(FunctionContext::create_test_context(
-            {TypeDescriptor::create_varchar_type(TypeDescriptor::MAX_VARCHAR_LENGTH), TypeDescriptor(TYPE_INT)},
-            geography));
-    auto input = BinaryColumn::create();
-    input->append("POINT (181 0)");
-    input->append("POINT (1 2)");
-    input->append_default();
-    input->append("POINT (1 2)");
-    auto nulls = NullColumn::create();
-    nulls->append(0);
-    nulls->append(0);
-    nulls->append(1);
-    nulls->append(0);
-    auto srid = Int32Column::create();
-    srid->append(4326);
-    srid->append(3857);
-    srid->append(4326);
-    srid->append(4326);
-
-    auto result = GeoFunctions::st_geog_from_text(context.get(), {NullableColumn::create(input, nulls), srid}).value();
-    EXPECT_TRUE(result->is_null(0));
-    EXPECT_TRUE(result->is_null(1));
-    EXPECT_TRUE(result->is_null(2));
-    EXPECT_FALSE(result->is_null(3));
-}
-
-TEST_F(geographyFunctionsTest, nativeGeographySerializerChecksBoundaryDescriptor) {
-    GeoTypeDescriptor type{GEO_LOGICAL_TYPE_GEOGRAPHY, GEO_COORDINATE_SYSTEM_CARTESIAN, GEO_EDGE_ALGORITHM_PLANAR,
-                           "OGC:CRS84", 4326};
-    GeoColumnDescriptor descriptor{type,
-                                   {GEO_ENCODING_WKB, GEO_DIMENSION_XY, GEO_VALIDATION_STATE_SEMANTICALLY_VALIDATED}};
-    auto column = GeoColumn::create(std::move(descriptor));
-    const char point[] = {1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    column->append_wkb(Slice(point, sizeof(point)));
-
-    auto result = GeoFunctions::st_geography_as_text(nullptr, {column});
-    ASSERT_FALSE(result.ok());
-    EXPECT_TRUE(result.status().is_not_supported());
 }
 
 } // namespace starrocks

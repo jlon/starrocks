@@ -14,7 +14,6 @@
 
 #include "formats/orc/orc_min_max_decoder.h"
 
-#include "base/time/timezone_utils.h"
 #include "cctz/civil_time.h"
 #include "cctz/time_zone.h"
 #include "column/array_column.h"
@@ -23,6 +22,7 @@
 #include "exprs/literal.h"
 #include "formats/orc/utils.h"
 #include "types/logical_type.h"
+#include "util/timezone_utils.h"
 
 namespace starrocks {
 

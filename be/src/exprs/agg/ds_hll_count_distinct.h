@@ -15,13 +15,12 @@
 #pragma once
 
 #include "column/binary_column.h"
-#include "column/column_helper.h"
 #include "column/object_column.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "column/vectorized_fwd.h"
 #include "exprs/agg/aggregate.h"
-#include "exprs/agg/data_sketch/ds_hll.h"
 #include "gutil/casts.h"
+#include "types/hll_sketch.h"
 
 namespace starrocks {
 
@@ -39,9 +38,6 @@ template <LogicalType LT, typename T = RunTimeCppType<LT>>
 class HllSketchAggregateFunction final
         : public AggregateFunctionBatchHelper<HLLSketchState, HllSketchAggregateFunction<LT, T>> {
 public:
-    // ds_hll_count_distinct returns a cardinality (0, never NULL), even over a nullable input or an empty frame.
-    bool is_result_non_nullable() const override { return true; }
-
     using ColumnType = RunTimeColumnType<LT>;
 
     void reset(FunctionContext* ctx, const Columns& args, AggDataPtr state) const override {
@@ -62,9 +58,16 @@ public:
         // init state if needed
         _init_if_needed(ctx, columns, state);
 
-        const auto& v = GetContainer<LT>::get_data(columns[0], row_num);
-        uint64_t value = HashUtil::murmur_hash64A<T>(v, HashUtil::MURMUR_SEED);
+        uint64_t value = 0;
+        const ColumnType* column = down_cast<const ColumnType*>(columns[0]);
 
+        if constexpr (lt_is_string_or_binary<LT>) {
+            Slice s = column->get_slice(row_num);
+            value = HashUtil::murmur_hash64A(s.data, s.size, HashUtil::MURMUR_SEED);
+        } else {
+            const auto v = column->immutable_data();
+            value = HashUtil::murmur_hash64A(&v[row_num], sizeof(v[row_num]), HashUtil::MURMUR_SEED);
+        }
         update_state(ctx, state, value);
     }
 
@@ -73,11 +76,26 @@ public:
                                               int64_t frame_end) const override {
         // init state if needed
         _init_if_needed(ctx, columns, state);
-        const auto& datas = GetContainer<LT>::get_data(columns[0]);
-        for (size_t i = frame_start; i < frame_end; ++i) {
-            uint64_t value = HashUtil::murmur_hash64A<T>(datas[i], HashUtil::MURMUR_SEED);
-            if (value != 0) {
-                update_state(ctx, state, value);
+        const ColumnType* column = down_cast<const ColumnType*>(columns[0]);
+        if constexpr (lt_is_string_or_binary<LT>) {
+            uint64_t value = 0;
+            for (size_t i = frame_start; i < frame_end; ++i) {
+                Slice s = column->get_slice(i);
+                value = HashUtil::murmur_hash64A(s.data, s.size, HashUtil::MURMUR_SEED);
+
+                if (value != 0) {
+                    update_state(ctx, state, value);
+                }
+            }
+        } else {
+            uint64_t value = 0;
+            const auto v = column->immutable_data();
+            for (size_t i = frame_start; i < frame_end; ++i) {
+                value = HashUtil::murmur_hash64A(&v[i], sizeof(v[i]), HashUtil::MURMUR_SEED);
+
+                if (value != 0) {
+                    update_state(ctx, state, value);
+                }
             }
         }
     }
@@ -124,7 +142,7 @@ public:
 
     void convert_to_serialize_format([[maybe_unused]] FunctionContext* ctx, const Columns& src, size_t chunk_size,
                                      MutableColumnPtr& dst) const override {
-        const auto& datas = GetContainer<LT>::get_data(src[0]);
+        const ColumnType* column = down_cast<const ColumnType*>(src[0].get());
         auto* result = down_cast<BinaryColumn*>(dst.get());
 
         Bytes& bytes = result->get_bytes();
@@ -132,6 +150,7 @@ public:
         result->get_offset().resize(chunk_size + 1);
 
         size_t old_size = bytes.size();
+        uint64_t value = 0;
         uint8_t log_k;
         datasketches::target_hll_type tgt_type;
         // convert to const Column*
@@ -144,7 +163,13 @@ public:
         for (size_t i = 0; i < chunk_size; ++i) {
             int64_t memory_usage = 0;
             DataSketchesHll hll{log_k, tgt_type, &memory_usage};
-            uint64_t value = HashUtil::murmur_hash64A<T>(datas[i], HashUtil::MURMUR_SEED);
+            if constexpr (lt_is_string_or_binary<LT>) {
+                Slice s = column->get_slice(i);
+                value = HashUtil::murmur_hash64A(s.data, s.size, HashUtil::MURMUR_SEED);
+            } else {
+                auto v = column->immutable_data()[i];
+                value = HashUtil::murmur_hash64A(&v, sizeof(v), HashUtil::MURMUR_SEED);
+            }
             if (value != 0) {
                 hll.update(value);
             }
@@ -153,7 +178,7 @@ public:
             bytes.resize(new_size);
             hll.serialize(bytes.data() + old_size);
 
-            result->get_offset().set(i + 1, new_size);
+            result->get_offset()[i + 1] = new_size;
             old_size = new_size;
         }
     }

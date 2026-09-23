@@ -78,11 +78,7 @@ public class SortNode extends PlanNode implements RuntimeFilterBuildNode {
     // also added to TopNNode to hint that local shuffle operator is prepended to TopNNode in
     // order to eliminate merging operation in pipeline execution engine.
     private List<Expr> analyticPartitionExprs = Collections.emptyList();
-
-    // When true, forces the SortNode to produce a single merged output stream instead of
-    // partition-sorted streams. Required when the downstream AnalyticNode consumes a single,
-    // globally-ordered input (currently the skewed-partition path).
-    private boolean analyticNeedsMerge = false;
+    private boolean analyticPartitionSkewed = false;
 
     // info_.sortTupleSlotExprs_ substituted with the outputSmap_ for materialized slots in init().
     public List<Expr> resolvedTupleExprs;
@@ -100,8 +96,8 @@ public class SortNode extends PlanNode implements RuntimeFilterBuildNode {
         this.analyticPartitionExprs = exprs;
     }
 
-    public void setAnalyticNeedsMerge(boolean needsMerge) {
-        analyticNeedsMerge = needsMerge;
+    public void setAnalyticPartitionSkewed(boolean isSkewed) {
+        analyticPartitionSkewed = isSkewed;
     }
 
     private DataPartition inputPartition;
@@ -262,7 +258,7 @@ public class SortNode extends PlanNode implements RuntimeFilterBuildNode {
         msg.sort_node.setIs_asc_order(info.getIsAscOrder());
         msg.sort_node.setNulls_first(info.getNullsFirst());
         msg.sort_node.setAnalytic_partition_exprs(ExprToThrift.treesToThrift(analyticPartitionExprs));
-        msg.sort_node.setAnalytic_need_merge(analyticNeedsMerge);
+        msg.sort_node.setAnalytic_partition_skewed(analyticPartitionSkewed);
         if (info.getSortTupleSlotExprs() != null) {
             msg.sort_node.setSort_tuple_slot_exprs(ExprToThrift.treesToThrift(info.getSortTupleSlotExprs()));
         }
@@ -404,20 +400,6 @@ public class SortNode extends PlanNode implements RuntimeFilterBuildNode {
     }
 
     @Override
-    public boolean pushDownRuntimeFilters(RuntimeFilterPushDownContext context, Expr probeExpr,
-                                          List<Expr> partitionByExprs) {
-        // A full (non-TopN) blocking sort is a deterministic pipeline breaker: a TopN runtime filter
-        // pushed through it cannot reach a scan below in time, so mark the path so the scan skips
-        // back-pressure. (TopN sorts return false in canPushDownRuntimeFilter and never push below.)
-        context.enterNonAggPipelineBreaker();
-        try {
-            return super.pushDownRuntimeFilters(context, probeExpr, partitionByExprs);
-        } finally {
-            context.exitNonAggPipelineBreaker();
-        }
-    }
-
-    @Override
     public boolean extractConjunctsToNormalize(FragmentNormalizer normalizer) {
         if (!useTopN) {
             return super.extractConjunctsToNormalize(normalizer);
@@ -450,12 +432,5 @@ public class SortNode extends PlanNode implements RuntimeFilterBuildNode {
         planNode.setSort_node(sortNode);
         planNode.setNode_type(TPlanNodeType.SORT_NODE);
         normalizeConjuncts(normalizer, planNode, conjuncts);
-    }
-
-    @Override
-    public boolean canEvaluateRuntimeFilter() {
-        // Decomposes into a partition-sort sink plus a (parallel) merge-sort source, which never calls
-        // Operator::eval_runtime_bloom_filters(): a filter parked here is silently never applied.
-        return false;
     }
 }

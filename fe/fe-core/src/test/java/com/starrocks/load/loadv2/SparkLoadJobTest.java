@@ -38,7 +38,6 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.FakeEditLog;
 import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.OlapTable;
@@ -62,7 +61,6 @@ import com.starrocks.lake.LakeTablet;
 import com.starrocks.load.EtlJobType;
 import com.starrocks.load.EtlStatus;
 import com.starrocks.load.loadv2.etl.EtlJobConfig;
-import com.starrocks.persist.EditLog;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.BrokerDesc;
@@ -259,19 +257,8 @@ public class SparkLoadJobTest {
     }
 
     @Test
-    public void testOnPendingTaskFinished(@Mocked GlobalStateMgr globalStateMgr,
-                                          @Mocked EditLog editLog,
-                                          @Injectable String originStmt) throws MetaNotFoundException {
-        new FakeEditLog();
-        new Expectations() {
-            {
-                GlobalStateMgr.getCurrentState();
-                result = globalStateMgr;
-
-                globalStateMgr.getEditLog();
-                result = editLog;
-            }
-        };
+    public void testOnPendingTaskFinished(@Mocked GlobalStateMgr globalStateMgr, @Injectable String originStmt)
+            throws MetaNotFoundException {
         ResourceDesc resourceDesc = new ResourceDesc(resourceName, Maps.newHashMap());
         SparkLoadJob job = new SparkLoadJob(dbId, label, resourceDesc, new OriginStatement(originStmt, 0));
         SparkPendingTaskAttachment attachment = new SparkPendingTaskAttachment(pendingTaskId);
@@ -379,22 +366,10 @@ public class SparkLoadJobTest {
     public void testUpdateEtlStatusFinishedAndCommitTransaction(
             @Mocked GlobalStateMgr globalStateMgr, @Injectable String originStmt,
             @Mocked SparkEtlJobHandler handler, @Mocked AgentTaskExecutor executor,
-            @Mocked EditLog editLog,
             @Injectable Database db, @Injectable OlapTable table, @Injectable Partition partition,
             @Injectable PhysicalPartition physicalPartition,
             @Injectable MaterializedIndex index, @Injectable LocalTablet tablet, @Injectable Replica replica,
             @Injectable GlobalTransactionMgr transactionMgr) throws Exception {
-        new FakeEditLog();
-        new Expectations() {
-            {
-                GlobalStateMgr.getCurrentState();
-                result = globalStateMgr;
-
-                globalStateMgr.getEditLog();
-                result = editLog;
-            }
-        };
-
         EtlStatus status = new EtlStatus();
         status.setState(TEtlState.FINISHED);
         status.getCounters().put("dpp.norm.ALL", "9");
@@ -491,24 +466,11 @@ public class SparkLoadJobTest {
     public void testUpdateEtlStatusFinishedAndCommitTransactionForLake(
             @Mocked GlobalStateMgr globalStateMgr, @Injectable String originStmt,
             @Mocked SparkEtlJobHandler handler, @Mocked AgentTaskExecutor executor,
-            @Mocked EditLog editLog,
             @Injectable Database db, @Injectable LakeTable table,
             @Injectable Partition partition,
             @Injectable PhysicalPartition physicalPartition,
             @Injectable MaterializedIndex index, @Injectable LakeTablet tablet, @Injectable Replica replica,
             @Injectable GlobalTransactionMgr transactionMgr) throws Exception {
-
-        new FakeEditLog();
-        new Expectations() {
-            {
-                GlobalStateMgr.getCurrentState();
-                result = globalStateMgr;
-
-                globalStateMgr.getEditLog();
-                result = editLog;
-            }
-        };
-
         EtlStatus status = new EtlStatus();
         status.setState(TEtlState.FINISHED);
         status.getCounters().put("dpp.norm.ALL", "9");

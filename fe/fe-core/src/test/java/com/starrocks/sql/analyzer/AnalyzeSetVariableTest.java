@@ -300,6 +300,7 @@ public class AnalyzeSetVariableTest {
         long rg1ID = 1;
         TWorkGroup rg1 = new TWorkGroup();
         rg1.setId(rg1ID);
+        ResourceGroupMgr mgr = GlobalStateMgr.getCurrentState().getResourceGroupMgr();
 
         new MockUp<ResourceGroupMgr>() {
             @Mock

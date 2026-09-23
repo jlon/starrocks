@@ -16,7 +16,6 @@ package com.starrocks.sql.ast;
 
 import com.starrocks.sql.parser.NodePosition;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -29,7 +28,6 @@ public class AddRollupClause extends AlterTableClause {
     private final List<String> columnNames;
     private String baseRollupName;
     private final List<String> dupKeys;
-    private final List<String> sortKeys;
 
     private final Map<String, String> properties;
 
@@ -45,10 +43,6 @@ public class AddRollupClause extends AlterTableClause {
         return dupKeys;
     }
 
-    public List<String> getSortKeys() {
-        return sortKeys;
-    }
-
     public String getBaseRollupName() {
         return baseRollupName;
     }
@@ -56,23 +50,16 @@ public class AddRollupClause extends AlterTableClause {
     public AddRollupClause(String rollupName, List<String> columnNames,
                            List<String> dupKeys, String baseRollupName,
                            Map<String, String> properties) {
-        this(rollupName, columnNames, dupKeys, Collections.emptyList(), baseRollupName, properties, NodePosition.ZERO);
+        this(rollupName, columnNames, dupKeys, baseRollupName, properties, NodePosition.ZERO);
     }
 
     public AddRollupClause(String rollupName, List<String> columnNames,
                            List<String> dupKeys, String baseRollupName,
                            Map<String, String> properties, NodePosition pos) {
-        this(rollupName, columnNames, dupKeys, Collections.emptyList(), baseRollupName, properties, pos);
-    }
-
-    public AddRollupClause(String rollupName, List<String> columnNames,
-                           List<String> dupKeys, List<String> sortKeys, String baseRollupName,
-                           Map<String, String> properties, NodePosition pos) {
         super(pos);
         this.rollupName = rollupName;
         this.columnNames = columnNames;
         this.dupKeys = dupKeys;
-        this.sortKeys = sortKeys == null ? Collections.emptyList() : sortKeys;
         this.baseRollupName = baseRollupName;
         this.properties = properties;
     }
@@ -98,18 +85,6 @@ public class AddRollupClause extends AlterTableClause {
             idx++;
         }
         stringBuilder.append(")");
-        if (!sortKeys.isEmpty()) {
-            stringBuilder.append(" ORDER BY (");
-            int skIdx = 0;
-            for (String key : sortKeys) {
-                if (skIdx != 0) {
-                    stringBuilder.append(", ");
-                }
-                stringBuilder.append("`").append(key).append("`");
-                skIdx++;
-            }
-            stringBuilder.append(")");
-        }
         if (baseRollupName != null) {
             stringBuilder.append(" FROM `").append(baseRollupName).append("`");
         }

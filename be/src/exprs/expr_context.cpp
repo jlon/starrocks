@@ -35,28 +35,20 @@
 #include "exprs/expr_context.h"
 
 #include <fmt/format.h>
+#include <storage/chunk_helper.h>
 
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 
 #include "column/chunk.h"
-#include "column/column_helper.h"
 #include "common/statusor.h"
+#include "exprs/column_ref.h"
 #include "exprs/expr.h"
+#include "runtime/mem_pool.h"
 #include "runtime/runtime_state.h"
 
 namespace starrocks {
-
-namespace {
-
-ChunkPtr create_dummy_chunk() {
-    auto dummy_chunk = std::make_shared<Chunk>();
-    auto column = ColumnHelper::create_const_column<TYPE_INT>(1, 1);
-    dummy_chunk->append_column(std::move(column), 0);
-    return dummy_chunk;
-}
-
-} // namespace
 
 ExprContext::ExprContext(Expr* root) : _root(root) {}
 
@@ -74,8 +66,10 @@ Status ExprContext::prepare(RuntimeState* state) {
     if (_prepared) {
         return Status::OK();
     }
+    DCHECK(_pool.get() == nullptr);
     _prepared = true;
     _runtime_state = state;
+    _pool = std::make_unique<MemPool>();
     return _root->prepare(state, this);
 }
 
@@ -85,14 +79,22 @@ Status ExprContext::open(RuntimeState* state) {
         return Status::OK();
     }
     _opened = true;
-    // Clones inherit the original's fragment-local state (copied in clone()) and per-thread
-    // state now lives in the FunctionContext thread-state registry, so open is a run-once
-    // fragment-local operation.
+    // Fragment-local state is only initialized for original contexts. Clones inherit the
+    // original's fragment state and only need to have thread-local state initialized.
+    FunctionContext::FunctionStateScope scope =
+            _is_clone ? FunctionContext::THREAD_LOCAL : FunctionContext::FRAGMENT_LOCAL;
     try {
-        return _root->open(state, this, FunctionContext::FRAGMENT_LOCAL);
+        return _root->open(state, this, scope);
     } catch (std::runtime_error& e) {
         return Status::RuntimeError(fmt::format("Expr evaluate meet error: {}", e.what()));
     }
+}
+
+Status ExprContext::open(std::vector<ExprContext*> evals, RuntimeState* state) {
+    for (auto& eval : evals) {
+        RETURN_IF_ERROR(eval->open(state));
+    }
+    return Status::OK();
 }
 
 void ExprContext::close(RuntimeState* state) {
@@ -103,20 +105,19 @@ void ExprContext::close(RuntimeState* state) {
     if (!_closed.compare_exchange_strong(expected, true)) {
         return;
     }
-    // Only the original owns the shared fragment-local state; clones must not free it again.
-    // A clone's per-thread state lives in the FunctionContext thread-state registry and is
-    // released when the (cloned) FunctionContext is destroyed.
-    if (!_is_clone) {
-        _root->close(state, this, FunctionContext::FRAGMENT_LOCAL);
+    FunctionContext::FunctionStateScope scope =
+            _is_clone ? FunctionContext::THREAD_LOCAL : FunctionContext::FRAGMENT_LOCAL;
+    _root->close(state, this, scope);
+    // _pool can be nullptr if Prepare() was never called
+    if (_pool != nullptr) {
+        _pool->free_all();
     }
+    _pool.reset();
 }
 
 int ExprContext::register_func(RuntimeState* state, const FunctionContext::TypeDesc& return_type,
                                const std::vector<FunctionContext::TypeDesc>& arg_types) {
-    // Scalar-function and UDF FunctionContexts never allocate from their MemPool (only
-    // aggregate functions use FunctionContext::mem_pool(), and those contexts are created by
-    // the aggregator/analytor with its own pool), so no backing pool is needed here.
-    _fn_contexts.push_back(FunctionContext::create_context(state, nullptr, return_type, arg_types));
+    _fn_contexts.push_back(FunctionContext::create_context(state, _pool.get(), return_type, arg_types));
     return _fn_contexts.size() - 1;
 }
 
@@ -126,8 +127,9 @@ Status ExprContext::clone(RuntimeState* state, ObjectPool* pool, ExprContext** n
     DCHECK(*new_ctx == nullptr);
 
     *new_ctx = pool->add(new ExprContext(_root));
+    (*new_ctx)->_pool = std::make_unique<MemPool>();
     for (auto& _fn_context : _fn_contexts) {
-        (*new_ctx)->_fn_contexts.push_back(_fn_context->clone());
+        (*new_ctx)->_fn_contexts.push_back(_fn_context->clone((*new_ctx)->_pool.get()));
     }
 
     (*new_ctx)->_is_clone = true;
@@ -135,10 +137,7 @@ Status ExprContext::clone(RuntimeState* state, ObjectPool* pool, ExprContext** n
     (*new_ctx)->_opened = true;
     (*new_ctx)->_runtime_state = state;
 
-    // The clone shares the original's fragment-local state (copied above via
-    // FunctionContext::clone); per-thread state is obtained lazily during evaluation from the
-    // FunctionContext thread-state registry, so there is no per-clone open work to do.
-    return Status::OK();
+    return _root->open(state, *new_ctx, FunctionContext::THREAD_LOCAL);
 }
 
 Status ExprContext::get_udf_error() {
@@ -174,7 +173,7 @@ StatusOr<ColumnPtr> ExprContext::evaluate(Expr* e, Chunk* chunk, uint8_t* filter
     // but some expr can not handle situation that input chunk is nullptr or empty correctly
     // so we create chunk with one column and one raw
     if (chunk == nullptr) {
-        dummy_chunk = create_dummy_chunk();
+        dummy_chunk = ChunkHelper::createDummyChunk();
         chunk = dummy_chunk.get();
     }
 #ifndef NDEBUG
@@ -214,6 +213,26 @@ bool ExprContext::is_index_only_filter() const {
 
 bool ExprContext::error_if_overflow() const {
     return _runtime_state != nullptr && _runtime_state->error_if_overflow();
+}
+
+Status ExprContext::rewrite_jit_expr(ObjectPool* pool) {
+    if (_runtime_state == nullptr || !_runtime_state->is_jit_enabled()) {
+        return Status::OK();
+    }
+#ifdef STARROCKS_JIT_ENABLE
+    bool replaced = false;
+    auto st = _root->replace_compilable_exprs(&_root, pool, _runtime_state, replaced);
+    if (!st.ok()) {
+        LOG(WARNING) << "Can't replace compilable exprs.\n" << st.message() << "\n" << (root())->debug_string();
+        // Fall back to the non-JIT path.
+        return Status::OK();
+    }
+    if (replaced) { // only prepare jit_expr
+        WARN_IF_ERROR(_root->prepare_jit_expr(_runtime_state, this), "prepare rewritten expr failed");
+    }
+#endif
+
+    return Status::OK();
 }
 
 bool ExprContext::error_for_division_by_zero() const {

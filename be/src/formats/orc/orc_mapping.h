@@ -25,7 +25,7 @@
 #include "formats/utils.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/descriptors.h"
-#include "types/type_descriptor.h"
+#include "runtime/types.h"
 
 namespace starrocks {
 

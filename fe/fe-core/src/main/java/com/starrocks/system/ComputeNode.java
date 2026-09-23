@@ -749,14 +749,8 @@ public class ComputeNode implements IComputable, Writable, GsonPostProcessable {
         }
 
         ResourceGroupUsage usage = currGroupIdToUsage.get(groupId);
-        if (usage.group.isMaxCpuCoresEffective() && usage.isCpuCoreUsagePermilleEffective() &&
-                usage.cpuCoreUsagePermille >= usage.group.getMaxCpuCores() * 1000) {
-            return true;
-        }
-
-        // Treat the group as overloaded when its effective memory usage exceeds the threshold
-        return usage.group.isMemUsedPctLimitEffective() && usage.isMemUsagePctEffective() &&
-                usage.getMemUsagePct() >= usage.group.getMemUsedPctLimit();
+        return usage.group.isMaxCpuCoresEffective() && usage.isCpuCoreUsagePermilleEffective() &&
+                usage.cpuCoreUsagePermille >= usage.group.getMaxCpuCores() * 1000;
     }
 
     public Status getStatus() {
@@ -822,31 +816,12 @@ public class ComputeNode implements IComputable, Writable, GsonPostProcessable {
             return memUsageBytes;
         }
 
-        public long getEffectiveMemUsageBytes() {
-            return isSharedMemPool() ? memPoolMemUsageBytes : memUsageBytes;
-        }
-
         public int getNumRunningQueries() {
             return numRunningQueries;
         }
 
         public long getMemLimitBytes() {
             return memLimitBytes;
-        }
-
-        public long getEffectiveMemLimitBytes() {
-            return isSharedMemPool() ? memPoolMemLimitBytes : memLimitBytes;
-        }
-
-        public boolean isMemUsagePctEffective() {
-            return getEffectiveMemLimitBytes() > 0;
-        }
-
-        // For a group with a shared named mem_pool memLimitBytes holds the pool's limit
-        // So the usage must be compared against the pool-level usage and limit instead
-        public double getMemUsagePct() {
-            long limitBytes = getEffectiveMemLimitBytes();
-            return limitBytes > 0 ? (double) getEffectiveMemUsageBytes() / limitBytes : 0.0;
         }
 
         public String getMemPool() {
@@ -861,8 +836,5 @@ public class ComputeNode implements IComputable, Writable, GsonPostProcessable {
             return memPoolMemLimitBytes;
         }
 
-        public boolean isSharedMemPool() {
-            return memPool != null && !ResourceGroup.DEFAULT_MEM_POOL.equals(memPool);
-        }
     }
 }

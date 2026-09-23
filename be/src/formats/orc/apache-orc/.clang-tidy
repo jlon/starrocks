@@ -1,2 +1,4 @@
-# Apache ORC vendored code: keep only naming checks.
-Checks: '-*,readability-identifier-naming'
+---
+Checks: >
+    -*,
+    readability-identifier-naming,

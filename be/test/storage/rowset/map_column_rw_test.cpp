@@ -14,7 +14,6 @@
 
 #include <gtest/gtest.h>
 
-#include "base/testutil/assert.h"
 #include "column/array_column.h"
 #include "column/binary_column.h"
 #include "column/column.h"
@@ -31,6 +30,7 @@
 #include "storage/rowset/map_column_iterator.h"
 #include "storage/rowset/segment.h"
 #include "storage/tablet_schema_helper.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 

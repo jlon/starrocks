@@ -42,22 +42,17 @@
 #include <fstream>
 #include <sstream>
 
+#include "agent/master_info.h"
 #include "agent/task_worker_pool.h"
-#include "base/network/network_util.h"
-#include "common/config_network_fwd.h"
-#include "common/config_rowset_fwd.h"
-#include "common/config_starlet_fwd.h"
 #include "common/process_exit.h"
 #include "common/status.h"
-#include "common/system/backend_options.h"
-#include "common/system/cpu_info.h"
-#include "common/system/master_info.h"
-#include "common/util/debug_util.h"
-#include "common/util/thrift_server.h"
 #include "gen_cpp/HeartbeatService.h"
 #include "runtime/heartbeat_flags.h"
-#include "runtime/runtime_env.h"
+#include "service/backend_options.h"
 #include "storage/storage_engine.h"
+#include "util/debug_util.h"
+#include "util/network_util.h"
+#include "util/thrift_server.h"
 
 using std::fstream;
 using std::nothrow;
@@ -149,7 +144,7 @@ void HeartbeatServer::heartbeat(THeartbeatResult& heartbeat_result, const TMaste
 #endif
         heartbeat_result.backend_info.__set_version(get_short_version());
         heartbeat_result.backend_info.__set_num_hardware_cores(num_hardware_cores);
-        heartbeat_result.backend_info.__set_mem_limit_bytes(RuntimeEnv::GetInstance()->process_mem_tracker()->limit());
+        heartbeat_result.backend_info.__set_mem_limit_bytes(GlobalEnv::GetInstance()->process_mem_tracker()->limit());
         if (reboot_time == 0) {
             std::time_t currTime = std::time(nullptr);
             reboot_time = static_cast<int64_t>(currTime);
@@ -288,7 +283,7 @@ StatusOr<HeartbeatServer::CmpResult> HeartbeatServer::compare_master_info(const 
     }
 
     if (master_info.__isset.heartbeat_flags) {
-        HeartbeatFlags* heartbeat_flags = RuntimeEnv::GetInstance()->heartbeat_flags();
+        HeartbeatFlags* heartbeat_flags = ExecEnv::GetInstance()->heartbeat_flags();
         heartbeat_flags->update(master_info.heartbeat_flags);
     }
 
@@ -298,13 +293,14 @@ StatusOr<HeartbeatServer::CmpResult> HeartbeatServer::compare_master_info(const 
     return kUnchanged;
 }
 
-StatusOr<std::unique_ptr<ThriftServer>> create_heartbeat_server(MetricRegistry* metrics, uint32_t server_port,
+StatusOr<std::unique_ptr<ThriftServer>> create_heartbeat_server(ExecEnv* exec_env, uint32_t server_port,
                                                                 uint32_t worker_thread_num) {
     auto* heartbeat_server = new HeartbeatServer();
     heartbeat_server->init_cluster_id_or_die();
 
     std::shared_ptr<HeartbeatServer> handler(heartbeat_server);
     std::shared_ptr<TProcessor> server_processor(new HeartbeatServiceProcessor(handler));
-    return std::make_unique<ThriftServer>("heartbeat", server_processor, server_port, metrics, worker_thread_num);
+    return std::make_unique<ThriftServer>("heartbeat", server_processor, server_port, exec_env->metrics(),
+                                          worker_thread_num);
 }
 } // namespace starrocks

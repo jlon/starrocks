@@ -3,5 +3,4 @@ label: 'SQL statements'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: sql-statements
+  type: generated-index

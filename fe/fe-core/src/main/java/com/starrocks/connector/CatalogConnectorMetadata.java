@@ -18,7 +18,6 @@ import com.google.common.collect.ImmutableList;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.IcebergTable;
-import com.starrocks.catalog.MvId;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.AlreadyExistsException;
@@ -44,7 +43,7 @@ import com.starrocks.sql.ast.AlterTableStmt;
 import com.starrocks.sql.ast.AlterViewStmt;
 import com.starrocks.sql.ast.CancelRefreshMaterializedViewStmt;
 import com.starrocks.sql.ast.CreateMaterializedViewStatement;
-import com.starrocks.sql.ast.CreateSyncMVStmt;
+import com.starrocks.sql.ast.CreateMaterializedViewStmt;
 import com.starrocks.sql.ast.CreateTableLikeStmt;
 import com.starrocks.sql.ast.CreateTableStmt;
 import com.starrocks.sql.ast.CreateViewStmt;
@@ -74,7 +73,7 @@ import static java.util.Objects.requireNonNull;
 
 // CatalogConnectorMetadata provides a uniform interface to provide normal tables and information schema tables.
 // The database name/id is used to route request to specific metadata.
-public class CatalogConnectorMetadata implements ConnectorMetadata, DelegatingConnectorMetadata {
+public class CatalogConnectorMetadata implements ConnectorMetadata {
     private final ConnectorMetadata normal;
     private final ConnectorMetadata informationSchema;
     private final ConnectorMetadata tableMetadata;
@@ -160,12 +159,8 @@ public class CatalogConnectorMetadata implements ConnectorMetadata, DelegatingCo
         if (metadata == null) {
             metadata = metadataOfDb(dbName);
         }
-        return metadata.getTableComment(context, dbName, tblName);
-    }
 
-    @Override
-    public Table getTableFromQuery(ConnectContext context, String dbName, String query) {
-        return normal.getTableFromQuery(context, dbName, query);
+        return metadata.getTableComment(context, dbName, tblName);
     }
 
     @Override
@@ -176,16 +171,6 @@ public class CatalogConnectorMetadata implements ConnectorMetadata, DelegatingCo
         }
 
         return metadata.getCurrentTvrSnapshot(dbName, table);
-    }
-
-    @Override
-    public TvrTableSnapshot acquireTvrSnapshot(String dbName, Table table, MvId mvId) {
-        ConnectorMetadata metadata = metadataOfTable(table);
-        if (metadata == null) {
-            metadata = metadataOfDb(dbName);
-        }
-
-        return metadata.acquireTvrSnapshot(dbName, table, mvId);
     }
 
     @Override
@@ -244,15 +229,14 @@ public class CatalogConnectorMetadata implements ConnectorMetadata, DelegatingCo
     }
 
     @Override
-    public SerializedMetaSpec getSerializedMetaSpec(String dbName, String tableName,
-                                                    long snapshotId, String serializedPredicate, MetadataTableType type) {
-        return normal.getSerializedMetaSpec(dbName, tableName, snapshotId, serializedPredicate, type);
+    public List<PartitionInfo> getRemotePartitions(Table table, List<String> partitionNames) {
+        return normal.getRemotePartitions(table, partitionNames);
     }
 
     @Override
-    public ConnectorMetadata delegateFor(Table table) {
-        ConnectorMetadata metadata = metadataOfTable(table);
-        return metadata == null ? normal : metadata;
+    public SerializedMetaSpec getSerializedMetaSpec(String dbName, String tableName,
+                                                    long snapshotId, String serializedPredicate, MetadataTableType type) {
+        return normal.getSerializedMetaSpec(dbName, tableName, snapshotId, serializedPredicate, type);
     }
 
     @Override
@@ -389,7 +373,7 @@ public class CatalogConnectorMetadata implements ConnectorMetadata, DelegatingCo
     }
 
     @Override
-    public void createMaterializedView(CreateSyncMVStmt stmt) throws AnalysisException, DdlException {
+    public void createMaterializedView(CreateMaterializedViewStmt stmt) throws AnalysisException, DdlException {
         normal.createMaterializedView(stmt);
     }
 

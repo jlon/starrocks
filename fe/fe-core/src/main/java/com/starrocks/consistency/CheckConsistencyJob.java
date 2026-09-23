@@ -379,7 +379,7 @@ public class CheckConsistencyJob {
         }
 
         // Wait for edit log write finish out of db lock.
-        EditLog.waitForCommit(journalTask);
+        EditLog.waitInfinity(journalTask);
         return 1;
     }
 

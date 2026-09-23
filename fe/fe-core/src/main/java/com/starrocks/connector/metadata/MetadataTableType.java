@@ -22,8 +22,7 @@ public enum MetadataTableType {
     SNAPSHOTS("snapshots"),
     MANIFESTS("manifests"),
     FILES("files"),
-    PARTITIONS("partitions"),
-    PROPERTIES("properties");
+    PARTITIONS("partitions");
 
     public final String typeString;
 

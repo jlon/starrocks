@@ -16,19 +16,17 @@
 
 #include "common/statusor.h"
 #include "exprs/expr.h"
-#include "exprs/expr_factory.h"
-#include "runtime/descriptors.h"
+#include "storage/column_mapping.h"
+#include "storage/convert_helper.h"
 #include "storage/tablet.h"
 #include "storage/tablet_meta.h"
 #include "storage/tablet_reader.h"
 #include "storage/tablet_reader_params.h"
 #include "storage/tablet_schema.h"
-#include "storage_primitive/column_mapping.h"
 
 namespace starrocks {
 
 class ChunkChanger;
-class ExecEnv;
 
 struct AlterMaterializedViewParam {
     std::string column_name;
@@ -39,7 +37,7 @@ using MaterializedViewParamMap = std::unordered_map<std::string, AlterMaterializ
 
 class ChunkChanger {
 public:
-    ChunkChanger(TabletSchemaCSPtr base_schema, const TabletSchemaCSPtr& new_schema,
+    ChunkChanger(const TabletSchemaCSPtr& base_schema, const TabletSchemaCSPtr& new_schema,
                  std::vector<std::string>& base_table_column_names, TAlterJobType::type alter_job_type);
     ChunkChanger(const TabletSchemaCSPtr& new_schema);
     ~ChunkChanger();
@@ -48,7 +46,7 @@ public:
 
     Status prepare_where_expr(const TExpr& where_expr) {
         VLOG(2) << "parse contain where expr";
-        RETURN_IF_ERROR(ExprFactory::create_expr_tree(&_obj_pool, where_expr, &_where_expr, _state));
+        RETURN_IF_ERROR(Expr::create_expr_tree(&_obj_pool, where_expr, &_where_expr, _state));
         RETURN_IF_ERROR(_where_expr->prepare(_state));
         RETURN_IF_ERROR(_where_expr->open(_state));
         return Status::OK();
@@ -68,11 +66,10 @@ public:
 
     Status fill_generated_columns(ChunkPtr& new_chunk);
 
-    void init_runtime_state(const TQueryOptions& query_options, const TQueryGlobals& query_globals, ExecEnv* exec_env);
+    void init_runtime_state(const TQueryOptions& query_options, const TQueryGlobals& query_globals);
 
     Status append_generated_columns(ChunkPtr& read_chunk, ChunkPtr& new_chunk,
-                                    const std::vector<uint32_t>& all_ref_columns_ids,
-                                    const std::vector<uint32_t>& new_columns_ids);
+                                    const std::vector<uint32_t>& all_ref_columns_ids, int base_schema_columns);
 
     const std::vector<ColumnId>& get_selected_column_indexes() const { return _selected_column_indexes; }
     std::vector<ColumnId>* get_mutable_selected_column_indexes() { return &_selected_column_indexes; }

@@ -17,26 +17,25 @@
 #include <memory>
 #include <string>
 
-#include "base/testutil/assert.h"
 #include "column/chunk.h"
 #include "column/column_builder.h"
 #include "column/column_helper.h"
 #include "column/column_viewer.h"
 #include "column/const_column.h"
-#include "column/global_dict/config.h"
 #include "column/vectorized_fwd.h"
 #include "common/object_pool.h"
-#include "compute_env/global_dict/fragment_dict_state.h"
 #include "exprs/column_ref.h"
+#include "exprs/dictmapping_expr.h"
 #include "exprs/expr_context.h"
 #include "exprs/placeholder_ref.h"
-#include "exprs_ext/dict/dictmapping_expr.h"
 #include "gen_cpp/Types_types.h"
 #include "runtime/exception.h"
+#include "runtime/global_dict/config.h"
 #include "runtime/mem_pool.h"
 #include "runtime/runtime_state.h"
+#include "runtime/types.h"
+#include "testutil/assert.h"
 #include "types/logical_type.h"
-#include "types/type_descriptor.h"
 
 namespace starrocks {
 
@@ -72,16 +71,13 @@ public:
         list.emplace_back(dict);
         state._obj_pool = std::make_shared<ObjectPool>();
         state._instance_mem_pool = std::make_unique<MemPool>();
-        _fragment_dict_state = std::make_unique<FragmentDictState>();
-        state.set_fragment_dict_state(_fragment_dict_state.get());
-        ASSERT_OK(_fragment_dict_state->init_query_global_dict(&state, list));
+        ASSERT_OK(state.init_query_global_dict(list));
     }
 
 public:
     TExprNode node;
     ObjectPool pool;
     RuntimeState state;
-    std::unique_ptr<FragmentDictState> _fragment_dict_state;
     Expr* dict_expr;
     Expr* origin;
     ExprContext* context;

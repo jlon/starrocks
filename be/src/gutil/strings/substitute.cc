@@ -2,7 +2,8 @@
 
 #include "gutil/strings/substitute.h"
 
-#include "gutil/logging.h"
+#include <common/logging.h>
+
 #include "gutil/macros.h"
 #include "gutil/stl_util.h"
 #include "gutil/strings/ascii_ctype.h"

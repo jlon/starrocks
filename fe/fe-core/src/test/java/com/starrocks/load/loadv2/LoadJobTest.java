@@ -37,7 +37,6 @@ package com.starrocks.load.loadv2;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.starrocks.catalog.FakeEditLog;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.DuplicatedRequestException;
@@ -307,7 +306,6 @@ public class LoadJobTest {
 
     @Test
     public void testProcessTimeout(@Mocked EditLog editLog) {
-        new FakeEditLog();
         LoadJob loadJob = new BrokerLoadJob();
         Deencapsulation.setField(loadJob, "timeoutSecond", 0);
         new Expectations() {
@@ -497,7 +495,6 @@ public class LoadJobTest {
         loadInfo = loadJob.toThrift();
         Assertions.assertEquals("", loadInfo.getWarehouse());
     }
-
     @Test
     public void testToThrift_timestampMsFields() {
         // Regression coverage: BE materializes information_schema.loads DATETIME
@@ -551,24 +548,5 @@ public class LoadJobTest {
         Assertions.assertFalse(unsetInfo.isSetLoad_start_time_ms());
         Assertions.assertFalse(unsetInfo.isSetLoad_commit_time_ms());
         Assertions.assertFalse(unsetInfo.isSetLoad_finish_time_ms());
-    }
-
-    @Test
-    public void testJsonOptionsEnvelope() throws DdlException {
-        Map<String, String> properties = Maps.newHashMap();
-        properties.put(LoadStmt.ENVELOPE, LoadStmt.ENVELOPE_DEBEZIUM);
-
-        LoadJob loadJob = new BrokerLoadJob();
-        loadJob.setJobProperties(properties);
-        Assertions.assertEquals(LoadStmt.ENVELOPE_DEBEZIUM, loadJob.jsonOptions.envelope);
-
-        // Mutually exclusive: json_root and envelope
-        properties.put(LoadStmt.JSONROOT, "$.root");
-        Assertions.assertThrows(DdlException.class, () -> loadJob.setJobProperties(properties));
-
-        // Mutually exclusive: strip_outer_array and envelope
-        properties.remove(LoadStmt.JSONROOT);
-        properties.put(LoadStmt.STRIP_OUTER_ARRAY, "true");
-        Assertions.assertThrows(DdlException.class, () -> loadJob.setJobProperties(properties));
     }
 }

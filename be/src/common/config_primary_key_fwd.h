@@ -65,6 +65,9 @@ CONF_mDouble(pk_index_compaction_score_ratio, "1.5");
 // early sst compaction threshold for primary key index in shared-data mode.
 CONF_mInt32(pk_index_early_sst_compaction_threshold, "5");
 
+// Whether enable parallel get for primary key index in shared-data mode.
+CONF_mBool(enable_pk_index_parallel_execution, "true");
+
 // The minimum rows threshold to enable parallel get for primary key index in shared-data mode.
 CONF_mInt64(pk_index_parallel_execution_min_rows, "16384");
 
@@ -149,10 +152,9 @@ CONF_mBool(experimental_lake_ignore_pk_consistency_check, "false");
 // (rollback, or a not-yet-upgraded node / cross-version OpReplication target) treats deletes as
 // "after all segments" and would erase that key on index rebuild while the delvec keeps it live,
 // turning a benign "missing row" into a duplicate primary key. Leaving op_offset unset keeps the
-// whole apply/persist/rebuild chain on the legacy "delete after all segments" path. Enabled by
-// default; set it to false before rolling back to (or running a mixed cluster with) a pre-fix BE so
-// the legacy path is used and no incompatible on-disk state is written.
-CONF_mBool(lake_enable_pk_preserve_txn_delete_order, "true");
+// whole apply/persist/rebuild chain on the legacy "delete after all segments" path. Enable only
+// after the cluster is fully upgraded and no rollback to a pre-fix BE is expected.
+CONF_mBool(lake_enable_pk_preserve_txn_delete_order, "false");
 
 CONF_mBool(enable_primary_key_recover, "false");
 
@@ -163,13 +165,8 @@ CONF_mInt32(lake_pk_index_sst_min_compaction_versions, "2");
 
 CONF_mInt32(lake_pk_index_sst_max_compaction_versions, "100");
 
-// Verify sstable block checksums on cloud-native PK index reads (open, point lookup,
-// and compaction merge), so corrupted bytes (usually a bad local cache copy) fail
-// deterministically as Corruption — and get healed by the drop-corrupted-cache
-// fallback — instead of being misparsed or silently returning wrong index values.
-// Mutable so the verification can be switched off quickly if the crc32c overhead
-// ever becomes a concern on a hot read path.
-CONF_mBool(lake_pk_index_sst_verify_checksum, "true");
+// When the ratio of cumulative level to base level is greater than this config, use base merge.
+CONF_mDouble(lake_pk_index_cumulative_base_compaction_ratio, "0.1");
 
 CONF_Int32(lake_pk_index_block_cache_limit_percent, "10");
 

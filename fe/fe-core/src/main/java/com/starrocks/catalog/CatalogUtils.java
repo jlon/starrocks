@@ -487,31 +487,21 @@ public class CatalogUtils {
         return backendNum;
     }
 
-    // Count compute nodes for bucket sizing. Light-weight tablet creation can succeed
-    // without any alive CN, so when invoked from that path (useTotalNodes = true) we
-    // include configured-but-offline CNs so auto-bucket still produces a sensible value.
-    // Regular CREATE TABLE keeps the original "only count alive CNs" behavior.
-    private static int computeNodeCountForBucketSizing(boolean useTotalNodes) {
-        return useTotalNodes
-                ? GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getTotalComputeNodeNumber()
-                : GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getAliveComputeNodeNumber();
-    }
-
-    public static int calPhysicalPartitionBucketNum(boolean lightWeight) {
+    public static int calPhysicalPartitionBucketNum() {
         int backendNum = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendIds().size();
 
         if (RunMode.isSharedDataMode()) {
-            backendNum = backendNum + computeNodeCountForBucketSizing(lightWeight);
+            backendNum = backendNum + GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getAliveComputeNodeNumber();
         }
 
         return divisibleBucketNum(backendNum);
     }
 
-    public static int calBucketNumAccordingToBackends(boolean lightWeight) {
+    public static int calBucketNumAccordingToBackends() {
         int backendNum = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendIds().size();
 
         if (RunMode.isSharedDataMode()) {
-            backendNum = backendNum + computeNodeCountForBucketSizing(lightWeight);
+            backendNum = backendNum + GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getAliveComputeNodeNumber();
         }
 
         // When POC, the backends is not greater than three most of the time.
@@ -535,7 +525,7 @@ public class CatalogUtils {
         //    Or the Config.enable_auto_tablet_distribution is disabled
         int bucketNum = 0;
         if (olapTable.getPartitions().size() < recentPartitionNum || !enableAutoTabletDistribution) {
-            bucketNum = CatalogUtils.calBucketNumAccordingToBackends(olapTable.isLightWeightTabletCreation());
+            bucketNum = CatalogUtils.calBucketNumAccordingToBackends();
             // If table is not partitioned, the bucketNum should be at least DEFAULT_UNPARTITIONED_TABLE_BUCKET_NUM
             if (!olapTable.getPartitionInfo().isPartitioned()) {
                 bucketNum = bucketNum > FeConstants.DEFAULT_UNPARTITIONED_TABLE_BUCKET_NUM ?
@@ -554,7 +544,7 @@ public class CatalogUtils {
             }
         }
 
-        bucketNum = CatalogUtils.calBucketNumAccordingToBackends(olapTable.isLightWeightTabletCreation());
+        bucketNum = CatalogUtils.calBucketNumAccordingToBackends();
         if (!dataImported) {
             return bucketNum;
         }

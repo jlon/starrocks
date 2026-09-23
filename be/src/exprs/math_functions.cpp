@@ -16,23 +16,21 @@
 #include <immintrin.h>
 #endif
 
-#include <base/decimal_types.h>
-#include <types/decimalv3.h>
+#include <runtime/decimalv3.h>
 #include <types/logical_type.h>
+#include <util/decimal_types.h>
 
 #include <cmath>
 #include <random>
 
-#include "base/hash/murmur_hash3.h"
 #include "column/array_column.h"
-#include "column/column_builder.h"
 #include "column/column_helper.h"
-#include "column/column_viewer.h"
 #include "exprs/expr.h"
 #include "exprs/function_helper.h"
 #include "exprs/math_functions.h"
+#include "runtime/datetime_value.h"
 #include "runtime/runtime_state.h"
-#include "types/datetime_value.h"
+#include "util/murmur_hash3.h"
 
 namespace starrocks {
 
@@ -287,9 +285,9 @@ DEFINE_MATH_UNARY_FN_WITH_IMPL(abs_float, TYPE_FLOAT, TYPE_FLOAT, std::fabs);
 
 // integer abs
 // std::abs(TYPE_MIN) is still TYPE_MIN, so integers except largeint need to cast to ResultType
-// before std::abs. largeint uses starrocks::abs so int128 remains portable across libstdc++ and libc++.
-DEFINE_MATH_UNARY_FN_WITH_IMPL(abs_largeint, TYPE_LARGEINT, TYPE_LARGEINT, starrocks::abs);
-DEFINE_MATH_UNARY_FN_CAST_WITH_IMPL(abs_bigint, TYPE_BIGINT, TYPE_LARGEINT, starrocks::abs);
+// before std::abs.
+DEFINE_MATH_UNARY_FN_WITH_IMPL(abs_largeint, TYPE_LARGEINT, TYPE_LARGEINT, std::abs);
+DEFINE_MATH_UNARY_FN_CAST_WITH_IMPL(abs_bigint, TYPE_BIGINT, TYPE_LARGEINT, std::abs);
 DEFINE_MATH_UNARY_FN_CAST_WITH_IMPL(abs_int, TYPE_INT, TYPE_BIGINT, std::abs);
 DEFINE_MATH_UNARY_FN_CAST_WITH_IMPL(abs_smallint, TYPE_SMALLINT, TYPE_INT, std::abs);
 DEFINE_MATH_UNARY_FN_CAST_WITH_IMPL(abs_tinyint, TYPE_TINYINT, TYPE_SMALLINT, std::abs);
@@ -297,7 +295,7 @@ DEFINE_MATH_UNARY_FN_CAST_WITH_IMPL(abs_tinyint, TYPE_TINYINT, TYPE_SMALLINT, st
 // decimal abs
 DEFINE_MATH_UNARY_FN_WITH_IMPL(abs_decimal32, TYPE_DECIMAL32, TYPE_DECIMAL32, std::abs);
 DEFINE_MATH_UNARY_FN_WITH_IMPL(abs_decimal64, TYPE_DECIMAL64, TYPE_DECIMAL64, std::abs);
-DEFINE_MATH_UNARY_FN_WITH_IMPL(abs_decimal128, TYPE_DECIMAL128, TYPE_DECIMAL128, starrocks::abs);
+DEFINE_MATH_UNARY_FN_WITH_IMPL(abs_decimal128, TYPE_DECIMAL128, TYPE_DECIMAL128, std::abs);
 DEFINE_MATH_UNARY_FN_WITH_IMPL(abs_decimal256, TYPE_DECIMAL256, TYPE_DECIMAL256, std::abs);
 
 // degrees
@@ -376,40 +374,50 @@ static Status check_iceberg_transform_width(int64_t width) {
 
 template <LogicalType Type>
 StatusOr<ColumnPtr> MathFunctions::iceberg_truncate_decimal(FunctionContext* context, const Columns& columns) {
-    RETURN_IF_COLUMNS_ONLY_NULL(columns);
-
-    const int size = columns[0]->size();
-    ColumnViewer<Type> viewer(columns[0]);
-    int64_t width = ColumnViewer<TYPE_INT>(columns[1]).value(0);
+    ColumnPtr c0 = columns[0];
+    ColumnPtr c1 = columns[1];
+    NullColumn::MutablePtr null_flags;
+    bool has_null = false;
+    PREPARE_COLUMN_WITH_CONST_AND_NULL_FOR_ICEBERG_FUNC(c0, c1);
+    const int size = c0->size();
+    int64_t width = c1->get(0).get_int32();
     RETURN_IF_ERROR(check_iceberg_transform_width(width));
-
-    const int32_t original_scale = viewer.column()->scale();
-    const int32_t original_precision = viewer.column()->precision();
+    auto decimalv3_col = ColumnHelper::cast_to_raw<Type>(c0);
+    const int32_t original_scale = decimalv3_col->scale();
+    const int32_t original_precision = decimalv3_col->precision();
+    auto& null_data = null_flags->get_data();
+    uint8_t* raw_null_flags = null_data.data();
     RunTimeCppType<Type> max_val = 1;
-    for (int32_t p = original_precision; p > 0; p--) {
+    int32 pow = original_precision;
+    while (pow > 0) {
         max_val *= 10;
+        pow--;
     }
 
+    const RunTimeCppType<Type>* raw_c0 = decimalv3_col->get_data().data();
+    MutableColumnPtr res = RunTimeColumnType<Type>::create(original_precision, original_scale);
+    res->resize_uninitialized(size);
+
+    // result column is mutable, use non-const raw pointer
+    RunTimeCppType<Type>* raw_res = ColumnHelper::cast_to_raw<Type>(res.get())->get_data().data();
+    for (auto i = 0; i < size; i++) {
+        raw_res[i] = raw_c0[i] - ((raw_c0[i] % width) + width) % width;
+    }
 #define ABS(x) ((x) < 0 ? -(x) : (x))
-    ColumnBuilder<Type> builder(size, original_precision, original_scale);
     for (int i = 0; i < size; i++) {
-        if (viewer.is_null(i)) {
-            builder.append_null();
-        } else {
-            RunTimeCppType<Type> val = viewer.value(i);
-            RunTimeCppType<Type> res = val - ((val % width) + width) % width;
-            if (ABS(res) >= max_val) {
-                std::stringstream error;
-                error << "Truncate to decimal(" << original_precision << ", " << original_scale
-                      << ") failed, because the result is overflow.";
-                context->set_error(error.str().c_str());
-                return Status::RuntimeError(error.str());
-            }
-            builder.append(res);
+        if (raw_null_flags[i] != 1 && ABS(raw_res[i]) >= max_val) {
+            std::stringstream error;
+            error << "Truncate to decimal(" << original_precision << ", " << original_scale
+                  << ") failed, because the result is overflow.";
+            context->set_error(error.str().c_str());
+            return Status::RuntimeError(error.str());
         }
     }
 #undef ABS
-    return builder.build(ColumnHelper::is_all_const(columns));
+    if (has_null) {
+        res = NullableColumn::create(std::move(res), std::move(null_flags));
+    }
+    return res;
 }
 
 template StatusOr<ColumnPtr> MathFunctions::iceberg_truncate_decimal<TYPE_DECIMAL32>(FunctionContext*, const Columns&);
@@ -418,104 +426,130 @@ template StatusOr<ColumnPtr> MathFunctions::iceberg_truncate_decimal<TYPE_DECIMA
 
 template <LogicalType Type>
 StatusOr<ColumnPtr> MathFunctions::iceberg_truncate_int(FunctionContext* context, const Columns& columns) {
-    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+    ColumnPtr c0 = columns[0];
+    ColumnPtr c1 = columns[1];
+    NullColumn::MutablePtr null_flags;
+    bool has_null = false;
+    PREPARE_COLUMN_WITH_CONST_AND_NULL_FOR_ICEBERG_FUNC(c0, c1);
+    const int size = c0->size();
+    int64_t width = c1->get(0).get_int32();
 
-    const int size = columns[0]->size();
-    ColumnViewer<Type> viewer(columns[0]);
-    int64_t width = ColumnViewer<TYPE_INT>(columns[1]).value(0);
     RETURN_IF_ERROR(check_iceberg_transform_width(width));
+    const auto& raw_null_flags = null_flags->immutable_data();
+    auto int_col = ColumnHelper::cast_to_raw<Type>(c0);
+    const auto& raw_c0 = int_col->immutable_data();
+    MutableColumnPtr res = RunTimeColumnType<Type>::create();
+    res->resize_uninitialized(size);
 
+    // result column is mutable, use non-const raw pointer
+    auto& raw_res = ColumnHelper::cast_to_raw<Type>(res.get())->get_data();
+    for (auto i = 0; i < size; i++) {
+        raw_res[i] = raw_c0[i] - ((raw_c0[i] % width) + width) % width;
+    }
 #define haveDifferentSigns(x, y) (((x) ^ (y)) < 0)
-    ColumnBuilder<Type> builder(size);
     for (int i = 0; i < size; i++) {
-        if (viewer.is_null(i)) {
-            builder.append_null();
-        } else {
-            RunTimeCppType<Type> val = viewer.value(i);
-            RunTimeCppType<Type> res = val - ((val % width) + width) % width;
-            if (haveDifferentSigns(res, val)) {
-                std::stringstream error;
-                error << "Truncate to integer failed, because the result is overflow.";
-                context->set_error(error.str().c_str());
-                return Status::RuntimeError(error.str());
-            }
-            builder.append(res);
+        if (raw_null_flags[i] != 1 && haveDifferentSigns(raw_res[i], raw_c0[i])) {
+            std::stringstream error;
+            error << "Truncate to integer failed, because the result is overflow.";
+            context->set_error(error.str().c_str());
+            return Status::RuntimeError(error.str());
         }
     }
 #undef haveDifferentSigns
-    return builder.build(ColumnHelper::is_all_const(columns));
+    if (has_null) {
+        res = NullableColumn::create(std::move(res), std::move(null_flags));
+    }
+    return res;
 }
 template StatusOr<ColumnPtr> MathFunctions::iceberg_truncate_int<TYPE_INT>(FunctionContext*, const Columns&);
 template StatusOr<ColumnPtr> MathFunctions::iceberg_truncate_int<TYPE_BIGINT>(FunctionContext*, const Columns&);
 
 template <LogicalType Type>
 StatusOr<ColumnPtr> MathFunctions::iceberg_bucket_int(FunctionContext* context, const Columns& columns) {
-    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+    ColumnPtr c0 = columns[0];
+    ColumnPtr c1 = columns[1];
+    NullColumn::MutablePtr null_flags;
+    bool has_null = false;
+    PREPARE_COLUMN_WITH_CONST_AND_NULL_FOR_ICEBERG_FUNC(c0, c1);
+    const int size = c0->size();
+    int64_t width = c1->get(0).get_int32();
 
-    const int size = columns[0]->size();
-    ColumnViewer<Type> viewer(columns[0]);
-    int64_t width = ColumnViewer<TYPE_INT>(columns[1]).value(0);
     RETURN_IF_ERROR(check_iceberg_transform_width(width));
-
-    ColumnBuilder<TYPE_INT> builder(size);
-    for (int i = 0; i < size; i++) {
-        if (viewer.is_null(i)) {
-            builder.append_null();
-        } else {
-            int64_t val = viewer.value(i);
-            int32_t hash;
-            murmur_hash3_x86_32(&val, sizeof(val), 0, &hash);
-            builder.append(static_cast<int32_t>((hash & INT_MAX) % width));
-        }
+    auto col = ColumnHelper::cast_to_raw<Type>(c0);
+    MutableColumnPtr res = RunTimeColumnType<TYPE_INT>::create();
+    res->resize_uninitialized(size);
+    const auto& raw_c0 = col->immutable_data();
+    // result column is mutable, use non-const raw pointer
+    auto& raw_res = ColumnHelper::cast_to_raw<TYPE_INT>(res.get())->get_data();
+    for (auto i = 0; i < size; i++) {
+        int64_t val = raw_c0[i];
+        murmur_hash3_x86_32(&val, sizeof(val), 0, (void*)&raw_res[i]);
+        raw_res[i] = (raw_res[i] & INT_MAX) % width;
     }
-    return builder.build(ColumnHelper::is_all_const(columns));
+
+    if (has_null) {
+        res = NullableColumn::create(std::move(res), std::move(null_flags));
+    }
+    return res;
 }
 
 template StatusOr<ColumnPtr> MathFunctions::iceberg_bucket_int<TYPE_INT>(FunctionContext*, const Columns&);
 template StatusOr<ColumnPtr> MathFunctions::iceberg_bucket_int<TYPE_BIGINT>(FunctionContext*, const Columns&);
 
 StatusOr<ColumnPtr> MathFunctions::iceberg_bucket_string(FunctionContext* context, const Columns& columns) {
-    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+    ColumnPtr c0 = columns[0];
+    ColumnPtr c1 = columns[1];
+    NullColumn::MutablePtr null_flags;
+    bool has_null = false;
+    PREPARE_COLUMN_WITH_CONST_AND_NULL_FOR_ICEBERG_FUNC(c0, c1);
+    const int size = c0->size();
+    int64_t width = c1->get(0).get_int32();
 
-    const int size = columns[0]->size();
-    ColumnViewer<TYPE_VARCHAR> viewer(columns[0]);
-    int64_t width = ColumnViewer<TYPE_INT>(columns[1]).value(0);
     RETURN_IF_ERROR(check_iceberg_transform_width(width));
+    auto col = ColumnHelper::cast_to_raw<TYPE_VARCHAR>(c0);
+    MutableColumnPtr res = RunTimeColumnType<TYPE_INT>::create();
+    res->resize_uninitialized(size);
+    auto raw_c0 = col->get_proxy_data();
+    auto& raw_res = ColumnHelper::cast_to_raw<TYPE_INT>(res.get())->get_data();
 
-    ColumnBuilder<TYPE_INT> builder(size);
-    for (int i = 0; i < size; i++) {
-        if (viewer.is_null(i)) {
-            builder.append_null();
-        } else {
-            auto val = viewer.value(i);
-            int32_t hash;
-            murmur_hash3_x86_32(val.data, val.size, 0, &hash);
-            builder.append(static_cast<int32_t>((hash & INT_MAX) % width));
-        }
+    for (auto i = 0; i < size; i++) {
+        murmur_hash3_x86_32(raw_c0[i].data, raw_c0[i].size, 0, &raw_res[i]);
+        raw_res[i] = (raw_res[i] & INT_MAX) % width;
     }
-    return builder.build(ColumnHelper::is_all_const(columns));
+
+    if (has_null) {
+        res = NullableColumn::create(std::move(res), std::move(null_flags));
+    }
+    return res;
 }
 
 StatusOr<ColumnPtr> MathFunctions::iceberg_bucket_date(FunctionContext* context, const Columns& columns) {
-    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+    ColumnPtr c0 = columns[0];
+    ColumnPtr c1 = columns[1];
+    NullColumn::MutablePtr null_flags;
+    bool has_null = false;
+    PREPARE_COLUMN_WITH_CONST_AND_NULL_FOR_ICEBERG_FUNC(c0, c1);
+    const int size = c0->size();
+    int64_t width = c1->get(0).get_int32();
 
-    const int size = columns[0]->size();
-    ColumnViewer<TYPE_DATE> viewer(columns[0]);
-    int64_t width = ColumnViewer<TYPE_INT>(columns[1]).value(0);
     RETURN_IF_ERROR(check_iceberg_transform_width(width));
+    auto col = ColumnHelper::cast_to_raw<TYPE_DATE>(c0);
+    MutableColumnPtr res = RunTimeColumnType<TYPE_INT>::create();
+    res->resize_uninitialized(size);
+    const auto& raw_c0 = col->immutable_data();
+    // result column is mutable, use non-const raw pointer
+    auto& raw_res = ColumnHelper::cast_to_raw<TYPE_INT>(res.get())->get_data();
 
-    ColumnBuilder<TYPE_INT> builder(size);
-    for (int i = 0; i < size; i++) {
-        if (viewer.is_null(i)) {
-            builder.append_null();
-        } else {
-            int64_t val = viewer.value(i).julian() - date::UNIX_EPOCH_JULIAN;
-            int32_t hash;
-            murmur_hash3_x86_32(&val, sizeof(int64_t), 0, &hash);
-            builder.append(static_cast<int32_t>((hash & INT_MAX) % width));
-        }
+    for (auto i = 0; i < size; i++) {
+        int64_t val = raw_c0[i].julian() - date::UNIX_EPOCH_JULIAN;
+        murmur_hash3_x86_32(&val, sizeof(int64_t), 0, (void*)&raw_res[i]);
+        raw_res[i] = (raw_res[i] & INT_MAX) % width;
     }
-    return builder.build(ColumnHelper::is_all_const(columns));
+
+    if (has_null) {
+        res = NullableColumn::create(std::move(res), std::move(null_flags));
+    }
+    return res;
 }
 
 StatusOr<ColumnPtr> MathFunctions::iceberg_bucket_datetime(FunctionContext* context, const Columns& columns) {
@@ -591,26 +625,31 @@ template vector<uint8_t> MathFunctions::int_to_byte_array<int128_t>(int128_t val
 
 template <LogicalType Type>
 StatusOr<ColumnPtr> MathFunctions::iceberg_bucket_decimal(FunctionContext* context, const Columns& columns) {
-    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+    ColumnPtr c0 = columns[0];
+    ColumnPtr c1 = columns[1];
+    NullColumn::MutablePtr null_flags;
+    bool has_null = false;
+    PREPARE_COLUMN_WITH_CONST_AND_NULL_FOR_ICEBERG_FUNC(c0, c1);
+    const int size = c0->size();
+    int64_t width = c1->get(0).get_int32();
+    auto decimalv3_col = ColumnHelper::cast_to_raw<Type>(c0);
 
-    const int size = columns[0]->size();
-    ColumnViewer<Type> viewer(columns[0]);
-    int64_t width = ColumnViewer<TYPE_INT>(columns[1]).value(0);
     RETURN_IF_ERROR(check_iceberg_transform_width(width));
-
-    ColumnBuilder<TYPE_INT> builder(size);
-    for (int i = 0; i < size; i++) {
-        if (viewer.is_null(i)) {
-            builder.append_null();
-        } else {
-            auto val = viewer.value(i);
-            auto byte_array = int_to_byte_array(val);
-            int32_t hash;
-            murmur_hash3_x86_32(byte_array.data(), byte_array.size(), 0, &hash);
-            builder.append(static_cast<int32_t>((hash & INT_MAX) % width));
-        }
+    MutableColumnPtr res = RunTimeColumnType<TYPE_INT>::create();
+    res->resize_uninitialized(size);
+    const auto& raw_c0 = decimalv3_col->immutable_data();
+    auto& raw_res = ColumnHelper::cast_to_raw<TYPE_INT>(res.get())->get_data();
+    for (auto i = 0; i < size; i++) {
+        auto result = raw_c0[i];
+        auto byte_array = int_to_byte_array(result);
+        murmur_hash3_x86_32(byte_array.data(), byte_array.size(), 0, (void*)&raw_res[i]);
+        raw_res[i] = (raw_res[i] & INT_MAX) % width;
     }
-    return builder.build(ColumnHelper::is_all_const(columns));
+
+    if (has_null) {
+        res = NullableColumn::create(std::move(res), std::move(null_flags));
+    }
+    return res;
 }
 
 template StatusOr<ColumnPtr> MathFunctions::iceberg_bucket_decimal<TYPE_DECIMAL32>(FunctionContext*, const Columns&);
@@ -803,10 +842,11 @@ template <DecimalRoundRule rule>
 StatusOr<ColumnPtr> MathFunctions::decimal_round(FunctionContext* context, const Columns& columns) {
     const auto& type = context->get_return_type();
 
-    RETURN_IF_COLUMNS_ONLY_NULL(columns);
-
     ColumnPtr c0 = columns[0];
     ColumnPtr c1 = columns[1];
+    if (c0->only_null() || c1->only_null()) {
+        return ColumnHelper::create_const_null_column(c0->size());
+    }
 
     NullColumn::MutablePtr null_flags;
     bool has_null = false;
@@ -1012,7 +1052,7 @@ StatusOr<ColumnPtr> MathFunctions::conv_string(FunctionContext* context, const C
 }
 
 Status MathFunctions::rand_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope) {
-    if (scope == FunctionContext::FRAGMENT_LOCAL) {
+    if (scope == FunctionContext::THREAD_LOCAL) {
         if (context->get_num_args() == 1) {
             // This is a call to RandSeed, initialize the seed
             // TODO: should we support non-constant seed?
@@ -1251,18 +1291,12 @@ static inline float sum_squares_float(const float* data, size_t dim) {
     return sum;
 }
 
-enum class VectorSimilarityAlgorithm {
-    kCosineSimilarity,
-    kNormalizedCosineSimilarity,
-    kInnerProduct,
-};
-
-template <VectorSimilarityAlgorithm algorithm>
-static inline void vector_similarity_fixed_query(const float* base_vec, size_t dim, const float* column_data,
-                                                 size_t num_rows, float* out) {
+template <bool isNorm>
+static inline void vector_cosine_similarity(const float* base_vec, size_t dim, const float* column_data,
+                                            size_t num_rows, float* out) {
     float base_sum = 0.0f;
     float base_inv_norm = 0.0f;
-    if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+    if constexpr (!isNorm) {
         base_sum = sum_squares_float(base_vec, dim);
         if (base_sum == 0.0f) {
             for (size_t i = 0; i < num_rows; ++i) {
@@ -1290,23 +1324,25 @@ static inline void vector_similarity_fixed_query(const float* base_vec, size_t d
             __m256 target_vec_data = _mm256_loadu_ps(target + j);
             __m256 mul_vec = _mm256_mul_ps(base_vec_data, target_vec_data);
             sum_vec = _mm256_add_ps(sum_vec, mul_vec);
-            if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+            if constexpr (!isNorm) {
                 __m256 target_mul_vec = _mm256_mul_ps(target_vec_data, target_vec_data);
                 target_sum_vec = _mm256_add_ps(target_sum_vec, target_mul_vec);
             }
         }
         sum += sum_m256(sum_vec);
-        if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+        if constexpr (!isNorm) {
             target_sum += sum_m256(target_sum_vec);
         }
 #endif
         for (; j < dim; ++j) {
             sum += base_vec[j] * target[j];
-            if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+            if constexpr (!isNorm) {
                 target_sum += target[j] * target[j];
             }
         }
-        if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+        if constexpr (isNorm) {
+            out[i] = sum;
+        } else {
             if (target_sum == 0.0f) {
                 out[i] = 0.0f;
             } else {
@@ -1317,14 +1353,12 @@ static inline void vector_similarity_fixed_query(const float* base_vec, size_t d
                 out[i] = sum * base_inv_norm / std::sqrt(target_sum);
 #endif
             }
-        } else {
-            out[i] = sum;
         }
     }
 }
 
-template <VectorSimilarityAlgorithm algorithm>
-static inline void vector_similarity_fixed_dim_float(const float* base_data, const float* target_data, size_t num_rows,
+template <bool isNorm>
+static inline void cosine_similarity_fixed_dim_float(const float* base_data, const float* target_data, size_t num_rows,
                                                      size_t dim, float* out) {
     for (size_t i = 0; i < num_rows; ++i) {
         const float* base = base_data + i * dim;
@@ -1344,7 +1378,7 @@ static inline void vector_similarity_fixed_dim_float(const float* base_data, con
             __m256 mul_vec = _mm256_mul_ps(base_data_vec, target_data_vec);
             sum_vec = _mm256_add_ps(sum_vec, mul_vec);
 
-            if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+            if constexpr (!isNorm) {
                 __m256 base_mul_vec = _mm256_mul_ps(base_data_vec, base_data_vec);
                 base_sum_vec = _mm256_add_ps(base_sum_vec, base_mul_vec);
                 __m256 target_mul_vec = _mm256_mul_ps(target_data_vec, target_data_vec);
@@ -1352,33 +1386,32 @@ static inline void vector_similarity_fixed_dim_float(const float* base_data, con
             }
         }
         sum += sum_m256(sum_vec);
-        if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+        if constexpr (!isNorm) {
             base_sum += sum_m256(base_sum_vec);
             target_sum += sum_m256(target_sum_vec);
         }
 #endif
         for (; j < dim; ++j) {
             sum += base[j] * target[j];
-            if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+            if constexpr (!isNorm) {
                 base_sum += base[j] * base[j];
                 target_sum += target[j] * target[j];
             }
         }
-        if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+        if constexpr (isNorm) {
+            out[i] = sum;
+        } else {
             if (base_sum == 0.0f || target_sum == 0.0f) {
                 out[i] = 0.0f;
             } else {
                 out[i] = sum / (std::sqrt(base_sum) * std::sqrt(target_sum));
             }
-        } else {
-            out[i] = sum;
         }
     }
 }
 
-template <LogicalType TYPE, VectorSimilarityAlgorithm algorithm>
-static StatusOr<ColumnPtr> vector_similarity(FunctionContext* context, const Columns& columns,
-                                             const char* function_name) {
+template <LogicalType TYPE, bool isNorm>
+StatusOr<ColumnPtr> MathFunctions::cosine_similarity(FunctionContext* context, const Columns& columns) {
     DCHECK_EQ(columns.size(), 2);
 
     const Column* base = columns[0].get();
@@ -1386,12 +1419,14 @@ static StatusOr<ColumnPtr> vector_similarity(FunctionContext* context, const Col
     size_t target_size = target->size();
     if (base->size() != target_size) {
         return Status::InvalidArgument(
-                fmt::format("{} requires equal length arrays. base array size is {} and target array size is {}.",
-                            function_name, base->size(), target->size()));
+                fmt::format("cosine_similarity requires equal length arrays. base array size is {} and target "
+                            "array size is {}.",
+                            base->size(), target->size()));
     }
     if (base->has_null() || target->has_null()) {
-        return Status::InvalidArgument(fmt::format("{} does not support null values. {} array has null value.",
-                                                   function_name, base->has_null() ? "base" : "target"));
+        return Status::InvalidArgument(
+                fmt::format("cosine_similarity does not support null values. {} array has null value.",
+                            base->has_null() ? "base" : "target"));
     }
 
     bool base_is_const = base->is_constant();
@@ -1442,7 +1477,7 @@ static StatusOr<ColumnPtr> vector_similarity(FunctionContext* context, const Col
             down_cast<const ArrayColumn*>(target_arr_for_meta)->offsets().immutable_data().data();
 
     if (base_flat_meta->has_null() || target_flat_meta->has_null()) {
-        return Status::InvalidArgument(fmt::format("{} does not support null values", function_name));
+        return Status::InvalidArgument("cosine_similarity does not support null values");
     }
     if (base_flat_meta->is_nullable()) {
         base_flat_meta = down_cast<const NullableColumn*>(base_flat_meta)->data_column().get();
@@ -1477,13 +1512,13 @@ static StatusOr<ColumnPtr> vector_similarity(FunctionContext* context, const Col
             uint32_t dim = base_offset_meta[1] - base_offset_meta[0];
             if (!offsets_equal_dim(target_offset, target_size, dim)) {
                 return Status::InvalidArgument(fmt::format(
-                        "{} requires equal length arrays in each row. base array dimension size is {}, target array "
-                        "dimension size is {}.",
-                        function_name, dim, target_offset[1] - target_offset[0]));
+                        "cosine_similarity requires equal length arrays in each row. base array dimension size "
+                        "is {}, target array dimension size is {}.",
+                        dim, target_offset[1] - target_offset[0]));
             }
             const float* base_vec = reinterpret_cast<const float*>(base_data_head);
             const float* target_data = reinterpret_cast<const float*>(target_data_head);
-            vector_similarity_fixed_query<algorithm>(base_vec, dim, target_data, target_size, result_data);
+            vector_cosine_similarity<isNorm>(base_vec, dim, target_data, target_size, result_data);
             return result;
         }
         // target is const (size-1), base has N rows.
@@ -1492,30 +1527,29 @@ static StatusOr<ColumnPtr> vector_similarity(FunctionContext* context, const Col
             uint32_t dim = target_offset_meta[1] - target_offset_meta[0];
             if (!offsets_equal_dim(base_offset, target_size, dim)) {
                 return Status::InvalidArgument(fmt::format(
-                        "{} requires equal length arrays in each row. base array dimension size is {}, target array "
-                        "dimension size is {}.",
-                        function_name, base_offset[1] - base_offset[0], dim));
+                        "cosine_similarity requires equal length arrays in each row. base array dimension size "
+                        "is {}, target array dimension size is {}.",
+                        base_offset[1] - base_offset[0], dim));
             }
             const float* target_vec = reinterpret_cast<const float*>(target_data_head);
             const float* base_data = reinterpret_cast<const float*>(base_data_head);
-            vector_similarity_fixed_query<algorithm>(target_vec, dim, base_data, target_size, result_data);
+            vector_cosine_similarity<isNorm>(target_vec, dim, base_data, target_size, result_data);
             return result;
         }
         uint32_t dim = target_offset[1] - target_offset[0];
         if (offsets_equal_dim_two(base_offset, target_offset, target_size, dim)) {
             if (dim == 0) {
-                return Status::InvalidArgument(fmt::format("{} requires non-empty arrays in each row", function_name));
+                return Status::InvalidArgument("cosine_similarity requires non-empty arrays in each row");
             }
-            vector_similarity_fixed_dim_float<algorithm>(reinterpret_cast<const float*>(base_data_head),
-                                                         reinterpret_cast<const float*>(target_data_head), target_size,
-                                                         dim, result_data);
+            cosine_similarity_fixed_dim_float<isNorm>(reinterpret_cast<const float*>(base_data_head),
+                                                      reinterpret_cast<const float*>(target_data_head), target_size,
+                                                      dim, result_data);
             return result;
         }
         if (!offsets_equal_nonzero(base_offset, target_offset, target_size)) {
-            return Status::InvalidArgument(fmt::format(
-                    "{} requires equal length arrays in each row. base array dimension size is inconsistent with "
-                    "target array dimension size",
-                    function_name));
+            return Status::InvalidArgument(
+                    "cosine_similarity requires equal length arrays in each row. base array dimension size is "
+                    "inconsistent with target array dimension size");
         }
     }
 
@@ -1523,13 +1557,13 @@ static StatusOr<ColumnPtr> vector_similarity(FunctionContext* context, const Col
         size_t t_dim_size = target_offset[i + 1] - target_offset[i];
         size_t b_dim_size = base_offset[i + 1] - base_offset[i];
         if (t_dim_size != b_dim_size) {
-            return Status::InvalidArgument(fmt::format(
-                    "{} requires equal length arrays in each row. base array dimension size is {}, target array "
-                    "dimension size is {}.",
-                    function_name, b_dim_size, t_dim_size));
+            return Status::InvalidArgument(
+                    fmt::format("cosine_similarity requires equal length arrays in each row. base array dimension size "
+                                "is {}, target array dimension size is {}.",
+                                b_dim_size, t_dim_size));
         }
         if (t_dim_size == 0) {
-            return Status::InvalidArgument(fmt::format("{} requires non-empty arrays in each row", function_name));
+            return Status::InvalidArgument("cosine_similarity requires non-empty arrays in each row");
         }
     }
 
@@ -1543,12 +1577,12 @@ static StatusOr<ColumnPtr> vector_similarity(FunctionContext* context, const Col
         CppType result_value = 0;
         for (size_t j = 0; j < dim_size; j++) {
             sum += base_data[j] * target_data[j];
-            if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+            if constexpr (!isNorm) {
                 base_sum += base_data[j] * base_data[j];
                 target_sum += target_data[j] * target_data[j];
             }
         }
-        if constexpr (algorithm == VectorSimilarityAlgorithm::kCosineSimilarity) {
+        if constexpr (!isNorm) {
             if (base_sum == 0 || target_sum == 0) {
                 result_value = 0;
             } else {
@@ -1564,26 +1598,11 @@ static StatusOr<ColumnPtr> vector_similarity(FunctionContext* context, const Col
     return result;
 }
 
-template <LogicalType TYPE, bool isNorm>
-StatusOr<ColumnPtr> MathFunctions::cosine_similarity(FunctionContext* context, const Columns& columns) {
-    if constexpr (isNorm) {
-        return vector_similarity<TYPE, VectorSimilarityAlgorithm::kNormalizedCosineSimilarity>(context, columns,
-                                                                                               "cosine_similarity");
-    }
-    return vector_similarity<TYPE, VectorSimilarityAlgorithm::kCosineSimilarity>(context, columns, "cosine_similarity");
-}
-
-template <LogicalType TYPE>
-StatusOr<ColumnPtr> MathFunctions::inner_product(FunctionContext* context, const Columns& columns) {
-    return vector_similarity<TYPE, VectorSimilarityAlgorithm::kInnerProduct>(context, columns, "inner_product");
-}
-
 // explicitly instantiate template function.
 template StatusOr<ColumnPtr> MathFunctions::cosine_similarity<TYPE_FLOAT, true>(FunctionContext* context,
                                                                                 const Columns& columns);
 template StatusOr<ColumnPtr> MathFunctions::cosine_similarity<TYPE_FLOAT, false>(FunctionContext* context,
                                                                                  const Columns& columns);
-template StatusOr<ColumnPtr> MathFunctions::inner_product<TYPE_FLOAT>(FunctionContext* context, const Columns& columns);
 
 template <LogicalType TYPE>
 StatusOr<ColumnPtr> MathFunctions::l2_distance(FunctionContext* context, const Columns& columns) {

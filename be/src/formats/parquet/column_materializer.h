@@ -19,8 +19,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "cache/scan/shared_buffered_input_stream.h"
-#include "column/chunk.h"
 #include "common/global_types.h"
 #include "common/status.h"
 #include "common/statusor.h"
@@ -28,7 +26,8 @@
 #include "formats/parquet/column_read_order_ctx.h"
 #include "formats/parquet/column_reader.h"
 #include "formats/parquet/group_reader.h"
-#include "storage_primitive/range.h"
+#include "io/shared_buffered_input_stream.h"
+#include "storage/range.h"
 
 namespace starrocks::parquet {
 
@@ -42,7 +41,7 @@ public:
     ColumnMaterializer(const GroupReaderParam& param, ColumnReaderMap* column_readers);
 
     ReadRangePlanner* read_range_planner() const { return _read_range_planner.get(); }
-    FormatScannerStats* stats() const { return _param.stats; }
+    HdfsScannerStats* stats() const { return _param.stats; }
 
     void clear_classification();
     void add_active_column(int col_idx);
@@ -52,8 +51,7 @@ public:
     void rebuild_read_order_ctx();
 
     // Classify physical read_cols as active/lazy and populate dict-filter /
-    // post-read conjunct buckets.  _deferred_source_slots_ are variant-backed
-    // slots whose conjuncts are deferred until after projection.
+    // post-read conjunct buckets.
     void classify_columns(const std::unordered_set<SlotId>& deferred_source_slots, bool* out_has_reserved_field_filter);
 
     const std::vector<int>& active_column_indices() const { return _active_column_indices; }
@@ -158,7 +156,7 @@ public:
     bool lazy_column_needed() const { return _lazy_column_needed; }
     void set_lazy_column_needed(bool v) { _lazy_column_needed = v; }
 
-    void collect_io_ranges(std::vector<SharedBufferedInputStream::IORange>* ranges, int64_t* end,
+    void collect_io_ranges(std::vector<io::SharedBufferedInputStream::IORange>* ranges, int64_t* end,
                            ColumnIOTypeFlags types);
 
 private:
@@ -166,14 +164,11 @@ private:
     ColumnReaderMap* _column_readers = nullptr;
 
     // Physical read column classification:
-    // - _active_column_indices and _lazy_column_indices partition physical
-    //   entries from GroupReaderParam::read_cols, excluding variant virtual
-    //   projection slots that do not have their own physical reader.
+    // - _active_column_indices and _lazy_column_indices partition entries from
+    //   GroupReaderParam::read_cols.
     // - Active columns are read before predicate evaluation can finish; lazy
     //   columns are read only after row filtering has produced the final row set.
-    // - *_slot_ids mirror those column-index sets for Chunk construction and
-    //   may additionally include hidden variant source slots. Therefore slot-id
-    //   lists are not a strict projection of read_cols.
+    // - *_slot_ids mirror those column-index sets for Chunk construction.
     std::vector<int> _active_column_indices;
     std::vector<int> _lazy_column_indices;
     std::vector<SlotId> _active_slot_ids;
@@ -185,9 +180,9 @@ private:
     //   dictionary values before full decode; subfield paths record which part
     //   of a complex value the dict predicate targets.
     // - _post_read_conjuncts_by_slot contains remaining conjuncts keyed by the
-    //   slot they need. A slot may be a physical read_col, a reserved field, or
-    //   a promoted variant virtual slot. These conjuncts run immediately after
-    //   their slot's column is read into the working chunk.
+    //   slot they need. A slot may be a physical read_col or a reserved field.
+    //   These conjuncts run immediately after their slot's column is read into
+    //   the working chunk.
     // - A conjunct belongs to exactly one of the dict-filter bucket or the
     //   post-read bucket; slots without predicates appear in neither bucket.
     std::vector<int> _dict_column_indices;

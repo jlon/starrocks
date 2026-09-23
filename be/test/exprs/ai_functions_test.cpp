@@ -19,11 +19,11 @@
 
 #include "column/array_column.h"
 #include "column/binary_column.h"
+#include "column/const_column.h"
 #include "column/json_column.h"
 #include "column/nullable_column.h"
-#include "exprs/builtin_functions.h"
 #include "exprs/mock_vectorized_expr.h"
-#include "types/json_value.h"
+#include "util/json.h"
 
 namespace starrocks {
 
@@ -89,12 +89,12 @@ protected:
     }
 
     // Helper method to validate sentiment analysis responses
-    static void validateSentimentResponses(const ColumnPtr& result_column, size_t expected_size) {
+    void validateSentimentResponses(const ColumnPtr& result_column, size_t expected_size) {
         ASSERT_EQ(result_column->size(), expected_size);
         const auto* binary_column = down_cast<const BinaryColumn*>(result_column.get());
 
         for (size_t i = 0; i < expected_size; ++i) {
-            std::string response = binary_column->get_slice(i).to_string();
+            std::string response = binary_column->get_data()[i].to_string();
             ASSERT_TRUE(response == "positive" || response == "negative")
                     << "Response at index " << i << " is neither 'positive' nor 'negative': " << response;
         }
@@ -111,6 +111,103 @@ protected:
     static constexpr const char* DEEPSEEK_MODEL = "deepseek-chat";
 };
 
+TEST_F(AiFunctionsTest, ValidConfigParsing) {
+    auto config = createTestConfig();
+    auto config_result = AiFunctions::parse_model_config(config);
+    ASSERT_TRUE(config_result.ok());
+
+    ModelConfig parsed_config = config_result.value();
+    ASSERT_EQ("https://api.openai.com/v1/chat/completions", parsed_config.endpoint);
+    ASSERT_EQ("gpt-3.5-turbo", parsed_config.model);
+    ASSERT_EQ("test-api-key", parsed_config.api_key);
+    ASSERT_EQ(0.7, parsed_config.temperature);
+    ASSERT_EQ(1000, parsed_config.max_tokens);
+    ASSERT_EQ(0.9, parsed_config.top_p);
+}
+
+TEST_F(AiFunctionsTest, ConfigParsingWithDefaults) {
+    auto config = createMinimalTestConfig();
+    auto config_result = AiFunctions::parse_model_config(config);
+    ASSERT_TRUE(config_result.ok());
+
+    ModelConfig parsed_config = config_result.value();
+    ASSERT_EQ("https://api.openai.com/v1/chat/completions", parsed_config.endpoint);
+    ASSERT_EQ("gpt-3.5-turbo", parsed_config.model);
+    ASSERT_EQ("test-api-key", parsed_config.api_key);
+    ASSERT_EQ(kDefaultTemperature, parsed_config.temperature);
+    ASSERT_EQ(kDefaultMaxTokens, parsed_config.max_tokens);
+    ASSERT_EQ(kDefaultTopP, parsed_config.top_p);
+}
+
+TEST_F(AiFunctionsTest, InvalidTemperatureConfig) {
+    auto config = createTestConfig("https://api.openai.com/v1/chat/completions", "gpt-3.5-turbo", TEST_API_KEY, 3.0);
+    auto config_result = AiFunctions::parse_model_config(config);
+    ASSERT_FALSE(config_result.ok());
+    ASSERT_TRUE(config_result.status().message().find("temperature must be between 0 and 2") != std::string::npos);
+}
+
+TEST_F(AiFunctionsTest, InvalidMaxTokensConfig) {
+    auto config =
+            createTestConfig("https://api.openai.com/v1/chat/completions", "gpt-3.5-turbo", TEST_API_KEY, 0.7, -10);
+    auto config_result = AiFunctions::parse_model_config(config);
+    ASSERT_FALSE(config_result.ok());
+    ASSERT_TRUE(config_result.status().message().find("max_tokens must be positive") != std::string::npos);
+}
+
+TEST_F(AiFunctionsTest, InvalidTopPConfig) {
+    auto config = createTestConfig("https://api.openai.com/v1/chat/completions", "gpt-3.5-turbo", TEST_API_KEY, 0.7,
+                                   1000, 1.5);
+    auto config_result = AiFunctions::parse_model_config(config);
+    ASSERT_FALSE(config_result.ok());
+    ASSERT_TRUE(config_result.status().message().find("top_p must be between 0 and 1") != std::string::npos);
+}
+
+TEST_F(AiFunctionsTest, MissingRequiredFieldsConfig) {
+    std::string json_str = R"({
+        "api_key": ")" + std::string(TEST_API_KEY) +
+                           R"("
+    })";
+
+    JsonValue json;
+    ASSERT_TRUE(JsonValue::parse(json_str, &json).ok());
+
+    auto config_result = AiFunctions::parse_model_config(json);
+    ASSERT_FALSE(config_result.ok());
+}
+
+TEST_F(AiFunctionsTest, EnvironmentVariableApiKey) {
+    // Set up test environment variable
+    const char* env_var = "TEST_AI_KEY";
+    setenv(env_var, "env-test-key", 1);
+
+    std::string json_str = R"({
+        "model": "gpt-3.5-turbo",
+        "api_key": "env.TEST_AI_KEY"
+    })";
+    JsonValue json;
+    ASSERT_TRUE(JsonValue::parse(json_str, &json).ok());
+
+    auto config_result = AiFunctions::parse_model_config(json);
+    ASSERT_TRUE(config_result.ok());
+    ASSERT_EQ("env-test-key", config_result->api_key);
+
+    // Clean up
+    unsetenv(env_var);
+}
+
+TEST_F(AiFunctionsTest, EnvironmentVariableNotFound) {
+    std::string json_str = R"({
+        "model": "gpt-3.5-turbo",
+        "api_key": "env.NON_EXISTENT_VAR"
+    })";
+    JsonValue json;
+    ASSERT_TRUE(JsonValue::parse(json_str, &json).ok());
+
+    auto config_result = AiFunctions::parse_model_config(json);
+    ASSERT_FALSE(config_result.ok());
+    ASSERT_TRUE(config_result.status().message().find("Environment variable not found") != std::string::npos);
+}
+
 TEST_F(AiFunctionsTest, AiQueryWrongArgumentCount) {
     std::unique_ptr<FunctionContext> ctx(FunctionContext::create_test_context());
     Columns columns;
@@ -123,53 +220,6 @@ TEST_F(AiFunctionsTest, AiQueryWrongArgumentCount) {
     ASSERT_FALSE(result.ok());
     ASSERT_TRUE(result.status().message().find("Ai_query function only call by ai_query(prompt, config)") !=
                 std::string::npos);
-}
-
-TEST_F(AiFunctionsTest, AiQueryBuiltinRegistrationPreservesNullRows) {
-    const auto* descriptor = BuiltinFunctions::find_builtin_function(200000);
-    ASSERT_NE(nullptr, descriptor);
-    EXPECT_EQ("ai_query", descriptor->name);
-    EXPECT_EQ(2, descriptor->args_nums);
-    EXPECT_STREQ("VARCHAR", descriptor->return_type);
-    ASSERT_EQ(2, descriptor->arg_types.size());
-    EXPECT_STREQ("VARCHAR", descriptor->arg_types[0]);
-    EXPECT_STREQ("JSON", descriptor->arg_types[1]);
-    ASSERT_TRUE(descriptor->scalar_function);
-
-    auto prompt_data = BinaryColumn::create();
-    prompt_data->append("Hello");
-    prompt_data->append("World");
-    auto prompt_nulls = NullColumn::create();
-    prompt_nulls->append(0);
-    prompt_nulls->append(1);
-
-    auto config = createMinimalTestConfig(DEEPSEEK_MODEL, TEST_API_KEY);
-    auto config_data = JsonColumn::create();
-    config_data->append(&config);
-    config_data->append(&config);
-    auto config_nulls = NullColumn::create();
-    config_nulls->append(1);
-    config_nulls->append(0);
-
-    Columns columns{NullableColumn::create(prompt_data, prompt_nulls),
-                    NullableColumn::create(config_data, config_nulls)};
-    std::unique_ptr<FunctionContext> ctx(FunctionContext::create_test_context());
-    auto result = descriptor->scalar_function(ctx.get(), columns);
-
-    ASSERT_TRUE(result.ok()) << result.status().message();
-    const auto* nullable_result = dynamic_cast<const NullableColumn*>(result.value().get());
-    ASSERT_NE(nullptr, nullable_result);
-    ASSERT_EQ(2, nullable_result->size());
-    EXPECT_TRUE(nullable_result->is_null(0));
-    EXPECT_TRUE(nullable_result->is_null(1));
-}
-
-TEST_F(AiFunctionsTest, AiCompleteIsExcludedFromOrdinaryBuiltinDescriptorTable) {
-    // ai_complete is dispatched asynchronously by AIProject and must not enter the ordinary synchronous
-    // builtin descriptor table.
-    for (int64_t function_id : {200100, 200101, 200102, 200103}) {
-        EXPECT_EQ(nullptr, BuiltinFunctions::find_builtin_function(function_id));
-    }
 }
 
 TEST_F(AiFunctionsTest, AiQueryWithNullValues) {
@@ -223,7 +273,7 @@ TEST_F(AiFunctionsTest, AiQueryWithNullValues) {
 
         // Verify that null inputs produce some predictable output (empty string or error message)
         for (size_t i = 0; i < 2; ++i) {
-            std::string response = binary_result->get_slice(i).to_string();
+            std::string response = binary_result->get_data()[i].to_string();
             EXPECT_TRUE(response.empty() || response.find("null") != std::string::npos ||
                         response.find("error") != std::string::npos)
                     << "Row " << i << " should handle null input appropriately, got: " << response;
@@ -248,7 +298,7 @@ TEST_F(AiFunctionsTest, DISABLED_SingleSentimentAnalysisCall) {
 
     // For this specific positive test case, we expect "positive"
     const auto* binary_column = down_cast<const BinaryColumn*>(result_column.get());
-    std::string response = binary_column->get_slice(0).to_string();
+    std::string response = binary_column->get_data()[0].to_string();
     ASSERT_EQ(response, "positive");
 }
 
@@ -276,7 +326,7 @@ TEST_F(AiFunctionsTest, DISABLED_MultipleSameSentimentAnalysisCalls) {
     // For these specific positive test cases, we expect all "positive"
     const auto* binary_column = down_cast<const BinaryColumn*>(result_column.get());
     for (int i = 0; i < num_calls; ++i) {
-        std::string response = binary_column->get_slice(i).to_string();
+        std::string response = binary_column->get_data()[i].to_string();
         ASSERT_EQ(response, "positive") << "Response at index " << i << " should be positive";
     }
 }

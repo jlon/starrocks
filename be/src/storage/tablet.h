@@ -44,20 +44,20 @@
 #include <unordered_map>
 #include <vector>
 
-#include "base/concurrency/once.h"
-#include "base/phmap/phmap.h"
 #include "common/statusor.h"
-#include "common/storage_define.h"
 #include "gen_cpp/AgentService_types.h"
 #include "gen_cpp/MasterService_types.h"
 #include "gen_cpp/olap_file.pb.h"
 #include "storage/base_tablet.h"
 #include "storage/data_dir.h"
+#include "storage/olap_define.h"
+#include "storage/olap_tuple.h"
 #include "storage/rowset/rowset.h"
 #include "storage/tablet_meta.h"
 #include "storage/utils.h"
 #include "storage/version_graph.h"
-#include "storage_primitive/olap_tuple.h"
+#include "util/once.h"
+#include "util/phmap/phmap.h"
 
 namespace starrocks {
 
@@ -67,7 +67,6 @@ class RowsetReadOptions;
 class Tablet;
 class TabletMeta;
 class TabletUpdates;
-class TableMetricsManager;
 class CompactionTask;
 class BaseRowset;
 struct CompactionCandidate;
@@ -83,10 +82,9 @@ using ChunkIteratorPtr = std::shared_ptr<ChunkIterator>;
 
 class Tablet : public BaseTablet {
 public:
-    static TabletSharedPtr create_tablet_from_meta(const TabletMetaSharedPtr& tablet_meta, DataDir* data_dir = nullptr,
-                                                   TableMetricsManager* table_metrics_mgr = nullptr);
+    static TabletSharedPtr create_tablet_from_meta(const TabletMetaSharedPtr& tablet_meta, DataDir* data_dir = nullptr);
 
-    Tablet(const TabletMetaSharedPtr& tablet_meta, DataDir* data_dir, TableMetricsManager* table_metrics_mgr = nullptr);
+    Tablet(const TabletMetaSharedPtr& tablet_meta, DataDir* data_dir);
 
     Tablet() = delete;
     Tablet(const Tablet&) = delete;
@@ -128,6 +126,7 @@ public:
     size_t num_rows_per_row_block_with_max_version() const;
     size_t next_unique_id() const;
     size_t field_index_with_max_version(const string& field_name) const;
+    size_t field_index(const string& field_name, const string& extra_column_name) const;
     std::string schema_debug_string() const;
     std::string debug_string() const;
     bool enable_shortcut_compaction() const;
@@ -492,7 +491,6 @@ private:
     // The KeysType of a Tablet cannot be changed after creation. It is retrieved from the TabletSchema,
     // and the redundant storage is designed to avoid unnecessary locking and reduce performance overhead.
     KeysType _keys_type;
-    TableMetricsManager* _table_metrics_mgr = nullptr;
 };
 
 inline bool Tablet::init_succeeded() {
@@ -537,6 +535,10 @@ inline size_t Tablet::next_unique_id() const {
 
 inline size_t Tablet::field_index_with_max_version(const string& field_name) const {
     return tablet_schema()->field_index(field_name);
+}
+
+inline size_t Tablet::field_index(const string& field_name, const string& extra_column_name) const {
+    return tablet_schema()->field_index(field_name, extra_column_name);
 }
 
 inline bool Tablet::enable_shortcut_compaction() const {

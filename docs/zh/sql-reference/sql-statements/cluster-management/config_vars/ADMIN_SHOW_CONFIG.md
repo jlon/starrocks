@@ -9,7 +9,7 @@ description: "ADMIN SHOW CONFIG 显示当前集群的 FE 配置项信息。"
 
 该语句用于展示当前集群的配置（当前仅支持展示 FE 的配置项）。
 
-关于每个配置项的含义，参见[FE 配置项](../../../../administration/configuration/FE_parameters/FE_parameters.md)。
+关于每个配置项的含义，参见[FE 配置项](../../../../administration/management/FE_configuration.md)。
 
 如果要动态设置或修改集群的配置项，参见 [ADMIN SET CONFIG](ADMIN_SET_CONFIG.md)。
 
@@ -32,10 +32,10 @@ ADMIN SHOW FRONTEND CONFIG [LIKE "pattern"]
 ```plain text
 1. Key         配置项名称
 2. AliasNames  配置项别名
-3. Value       配置项取值
-4. Type        配置项数据类型
-5. IsMutable   是否可以通过 ADMIN SET CONFIG 命令动态设置
-6. Comment     配置项说明
+2. Value       配置项取值
+3. Type        配置项数据类型
+4. IsMutable   是否可以通过 ADMIN SET CONFIG 命令动态设置
+5. Comment     配置项说明
 ```
 
 ## 示例
@@ -49,11 +49,12 @@ ADMIN SHOW FRONTEND CONFIG [LIKE "pattern"]
 2. 使用 like 谓词搜索当前 FE 节点的配置。
 
     ```plain text
-    mysql> ADMIN SHOW FRONTEND CONFIG LIKE '%vectorized_load_enable%';
-    +------------------------+------------+-------+---------+-----------+---------+
-    | Key                    | AliasNames | Value | Type    | IsMutable | Comment |
-    +------------------------+------------+-------+---------+-----------+---------+
-    | vectorized_load_enable | []         | true  | boolean | true      |         |
-    +------------------------+------------+-------+---------+-----------+---------+
+    mysql> ADMIN SHOW FRONTEND CONFIG LIKE '%check_java_version%';
+    +--------------------+------------+-------+---------+-----------+---------+
+    | Key                | AliasNames | Value | Type    | IsMutable | Comment |
+    +--------------------+------------+-------+---------+-----------+---------+
+    | check_java_version | []         | true  | boolean | false     |         |
+    +--------------------+------------+-------+---------+-----------+---------+
     1 row in set (0.00 sec)
+
     ```

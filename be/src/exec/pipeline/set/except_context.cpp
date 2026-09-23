@@ -14,11 +14,7 @@
 
 #include "exec/pipeline/set/except_context.h"
 
-#include "exec/exec_env.h"
-#include "exprs/expr.h"
 #include "runtime/current_thread.h"
-#include "runtime/descriptors.h"
-#include "runtime/runtime_state.h"
 
 namespace starrocks::pipeline {
 

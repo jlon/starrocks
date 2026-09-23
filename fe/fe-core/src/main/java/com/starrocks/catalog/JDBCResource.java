@@ -54,7 +54,6 @@ public class JDBCResource extends Resource {
     public static final String PASSWORD = "password";
     public static final String CHECK_SUM = "checksum";
     public static final String DRIVER_CLASS = "driver_class";
-    public static final String SCHEMA_RESOLVER = "schema_resolver";
 
     // @TODO is this necessary?
     // private static final String JDBC_TYPE = "jdbc_type";
@@ -111,8 +110,7 @@ public class JDBCResource extends Resource {
         Preconditions.checkState(properties != null);
         for (String key : properties.keySet()) {
             if (!DRIVER_URL.equals(key) && !URI.equals(key) && !USER.equals(key) && !PASSWORD.equals(key)
-                    && !TYPE.equals(key) && !NAME.equals(key) && !DRIVER_CLASS.equals(key)
-                    && !SCHEMA_RESOLVER.equals(key)) {
+                    && !TYPE.equals(key) && !NAME.equals(key) && !DRIVER_CLASS.equals(key)) {
                 throw new DdlException("Property " + key + " is unknown");
             }
         }

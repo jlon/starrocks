@@ -3,5 +3,4 @@ label: 'SQL blacklist'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: sql_blacklist
+  type: generated-index

@@ -3,5 +3,4 @@ label: 'Map'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: map-functions
+  type: generated-index

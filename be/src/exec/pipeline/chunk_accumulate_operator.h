@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "exec_primitive/pipeline/operator_factory.h"
+#include "exec/pipeline/operator.h"
 #include "storage/chunk_helper.h"
 
 namespace starrocks {
@@ -45,7 +45,7 @@ public:
     Status set_finished(RuntimeState* state) override;
 
     Status reset_state(RuntimeState* state, const std::vector<ChunkPtr>& refill_chunks) override;
-    OperatorExecStatsSnapshot exec_stats_snapshot() const override { return OperatorExecStatsSnapshot::ignored(); }
+    void update_exec_stats(RuntimeState* state) override {}
 
 private:
     ChunkPipelineAccumulator _acc;

@@ -27,6 +27,7 @@ import com.starrocks.proto.PFetchArrowSchemaResult;
 import com.starrocks.proto.PFetchDataResult;
 import com.starrocks.proto.PGetFileSchemaResult;
 import com.starrocks.proto.PListFailPointResponse;
+import com.starrocks.proto.PMVMaintenanceTaskResult;
 import com.starrocks.proto.PProcessDictionaryCacheRequest;
 import com.starrocks.proto.PProcessDictionaryCacheResult;
 import com.starrocks.proto.PProxyRequest;
@@ -105,6 +106,12 @@ public class PBackendServiceWithMetrics implements PBackendService {
     public Future<PGetFileSchemaResult> getFileSchema(PGetFileSchemaRequest request) {
         increaseMetrics();
         return pBackendService.getFileSchema(request);
+    }
+
+    @Override
+    public Future<PMVMaintenanceTaskResult> submitMVMaintenanceTaskAsync(PMVMaintenanceTaskRequest request) {
+        increaseMetrics();
+        return pBackendService.submitMVMaintenanceTaskAsync(request);
     }
 
     @Override

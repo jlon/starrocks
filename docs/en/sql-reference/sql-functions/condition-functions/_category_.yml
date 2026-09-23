@@ -3,5 +3,4 @@ label: 'Condition'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: condition-functions
+  type: generated-index

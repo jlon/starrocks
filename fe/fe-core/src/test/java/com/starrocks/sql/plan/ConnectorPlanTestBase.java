@@ -300,7 +300,7 @@ public class ConnectorPlanTestBase extends PlanTestBase {
                     .add(new Column("col2", StringType.STRING))
                     .build();
 
-            new StructType(List.of(new StructField("col1",
+            StructType structType = new StructType(List.of(new StructField("col1",
                             BasePrimitiveType.createPrimitive("integer"), false),
                     new StructField("col2", BasePrimitiveType.createPrimitive("string"), false)));
 

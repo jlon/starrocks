@@ -3,5 +3,4 @@ label: 'Authentication'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: authentication
+  type: generated-index

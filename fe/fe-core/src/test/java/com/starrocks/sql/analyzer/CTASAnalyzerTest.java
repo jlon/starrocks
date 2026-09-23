@@ -338,10 +338,12 @@ public class CTASAnalyzerTest {
 
 
         String ctasSql2 = "CREATE TABLE v2 as select NULL from t2";
-        UtFrameUtils.parseStmtWithNewParser(ctasSql2, ctx);
+        CreateTableAsSelectStmt createTableStmt2 =
+                (CreateTableAsSelectStmt) UtFrameUtils.parseStmtWithNewParser(ctasSql2, ctx);
 
         String ctasSql3 = "CREATE TABLE json_kv as select * from test, lateral json_each(parse_json(c1));";
-        UtFrameUtils.parseStmtWithNewParser(ctasSql3, ctx);
+        CreateTableAsSelectStmt createTableStmt3 =
+                (CreateTableAsSelectStmt) UtFrameUtils.parseStmtWithNewParser(ctasSql3, ctx);
     }
 
     @Test
@@ -395,7 +397,8 @@ public class CTASAnalyzerTest {
         ConnectContext ctx = starRocksAssert.getCtx();
         String sql = "create table table_01 PARTITION BY date_trunc('day', k1) as " +
                 "select k1, k2, k3 from  duplicate_table_with_null;";
-        UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+        CreateTableAsSelectStmt createTableStmt =
+                (CreateTableAsSelectStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
     }
 
     @Test
@@ -514,19 +517,6 @@ public class CTASAnalyzerTest {
         }
     }
 
-    @Test
-    public void testRepeatedAnalysisReusesInferredColumns() throws Exception {
-        ConnectContext ctx = starRocksAssert.getCtx();
-        String sql = "create table test_repeated_analysis as select cast('abc' as varchar(10)) as c;";
-        CreateTableAsSelectStmt stmt =
-                (CreateTableAsSelectStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
-
-        Analyzer.analyze(stmt, ctx);
-
-        Assertions.assertEquals(1, stmt.getCreateTableStmt().getColumnDefs().size());
-        assertVarcharLength(stmt.getCreateTableStmt().getColumnDefs().get(0).getTypeDef(), 10);
-    }
-
     private static void assertVarcharLength(TypeDef typeDef, int expectedLength) {
         ScalarType scalarType = (ScalarType) typeDef.getType();
         Assertions.assertEquals(PrimitiveType.VARCHAR, scalarType.getPrimitiveType());
@@ -575,18 +565,5 @@ public class CTASAnalyzerTest {
 
         CreateTableAsSelectStmt stmt = (CreateTableAsSelectStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
         Assertions.assertEquals("olap", stmt.getCreateTableStmt().getEngineName());
-    }
-
-    @Test
-    public void testCTASOlapListPartitionColumnStaysNotNull() throws Exception {
-        ConnectContext ctx = starRocksAssert.getCtx();
-        String sql = "create table ctas_olap_list_part (a, c) partition by (c) "
-                + "distributed by hash(a) buckets 1 as select 1 as a, null as c;";
-
-        CreateTableAsSelectStmt stmt = (CreateTableAsSelectStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
-        List<ColumnDef> columnDefs = stmt.getCreateTableStmt().getColumnDefs();
-        // An OLAP list partition column is forced NOT NULL even when the query derives it as
-        // nullable. Only external engines keep the derived nullability.
-        Assertions.assertFalse(columnDefs.get(1).isAllowNull());
     }
 }

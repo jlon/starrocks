@@ -19,13 +19,11 @@
 #include <unordered_map>
 
 #include "column/chunk.h"
-#include "common/config_exec_flow_fwd.h"
-#include "common/runtime_profile.h"
-#include "connector/common/hive_partition_utils.h"
-#include "connector/iceberg/iceberg_utils.h"
+#include "connector/utils.h"
 #include "exec/pipeline/exchange/shuffler.h"
 #include "exprs/expr_context.h"
-#include "exprs/expr_executor.h"
+#include "gutil/hash/hash.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks::pipeline {
 Status Partitioner::partition_chunk(const ChunkPtr& chunk, int32_t num_partitions,
@@ -179,13 +177,13 @@ void PartitionExchanger::incr_sinker() {
 
 Status PartitionExchanger::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(LocalExchanger::prepare(state));
-    RETURN_IF_ERROR(ExprExecutor::prepare(_partition_exprs, state));
-    RETURN_IF_ERROR(ExprExecutor::open(_partition_exprs, state));
+    RETURN_IF_ERROR(Expr::prepare(_partition_exprs, state));
+    RETURN_IF_ERROR(Expr::open(_partition_exprs, state));
     return Status::OK();
 }
 
 void PartitionExchanger::close(RuntimeState* state) {
-    ExprExecutor::close(_partition_exprs, state);
+    Expr::close(_partition_exprs, state);
     LocalExchanger::close(state);
 }
 
@@ -204,7 +202,7 @@ Status PartitionExchanger::accept(const ChunkPtr& chunk, const int32_t sink_driv
     // it will be overwritten by the next time calling partitioner.partition_chunk().
     std::shared_ptr<std::vector<uint32_t>> partition_row_indexes = std::make_shared<std::vector<uint32_t>>(num_rows);
     RETURN_IF_ERROR(partitioner->partition_chunk(chunk, num_partitions, *partition_row_indexes));
-    RETURN_IF_ERROR(partitioner->send_chunk(chunk, partition_row_indexes));
+    RETURN_IF_ERROR(partitioner->send_chunk(chunk, std::move(partition_row_indexes)));
     return Status::OK();
 }
 
@@ -216,13 +214,13 @@ OrderedPartitionExchanger::OrderedPartitionExchanger(const std::shared_ptr<Chunk
 
 Status OrderedPartitionExchanger::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(LocalExchanger::prepare(state));
-    RETURN_IF_ERROR(ExprExecutor::prepare(_partition_exprs, state));
-    RETURN_IF_ERROR(ExprExecutor::open(_partition_exprs, state));
+    RETURN_IF_ERROR(Expr::prepare(_partition_exprs, state));
+    RETURN_IF_ERROR(Expr::open(_partition_exprs, state));
     return Status::OK();
 }
 
 void OrderedPartitionExchanger::close(RuntimeState* state) {
-    ExprExecutor::close(_partition_exprs, state);
+    Expr::close(_partition_exprs, state);
     LocalExchanger::close(state);
 }
 
@@ -344,8 +342,8 @@ KeyPartitionExchanger::KeyPartitionExchanger(const std::shared_ptr<ChunkBufferMe
 
 Status KeyPartitionExchanger::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(LocalExchanger::prepare(state));
-    RETURN_IF_ERROR(ExprExecutor::prepare(_partition_expr_ctxs, state));
-    RETURN_IF_ERROR(ExprExecutor::open(_partition_expr_ctxs, state));
+    RETURN_IF_ERROR(Expr::prepare(_partition_expr_ctxs, state));
+    RETURN_IF_ERROR(Expr::open(_partition_expr_ctxs, state));
     // Read exchange_hash_function_version from query options
     if (state->query_options().__isset.exchange_hash_function_version) {
         _exchange_hash_function_version = state->query_options().exchange_hash_function_version;
@@ -354,7 +352,7 @@ Status KeyPartitionExchanger::prepare(RuntimeState* state) {
 }
 
 void KeyPartitionExchanger::close(RuntimeState* state) {
-    ExprExecutor::close(_partition_expr_ctxs, state);
+    Expr::close(_partition_expr_ctxs, state);
     LocalExchanger::close(state);
 }
 
@@ -383,11 +381,10 @@ Status KeyPartitionExchanger::accept(const ChunkPtr& chunk, const int32_t sink_d
             std::string partition_value;
 
             if (_transform_exprs.size() > 0) {
-                ASSIGN_OR_RETURN(partition_value, connector::IcebergUtils::iceberg_column_value(
+                ASSIGN_OR_RETURN(partition_value, connector::HiveUtils::iceberg_column_value(
                                                           type, partition_columns[j], i, _transform_exprs[j], is_null));
             } else {
-                ASSIGN_OR_RETURN(partition_value,
-                                 connector::HivePartitionUtils::column_value(type, partition_columns[j], i));
+                ASSIGN_OR_RETURN(partition_value, connector::HiveUtils::column_value(type, partition_columns[j], i));
             }
             partition_key.emplace_back(is_null ? std::nullopt : std::make_optional(partition_value));
         }
@@ -500,7 +497,7 @@ Status RandomPassthroughExchanger::accept(const ChunkPtr& chunk, const int32_t s
     auto& partitioner = _random_partitioners[sink_driver_sequence];
     std::shared_ptr<std::vector<uint32_t>> partition_row_indexes = std::make_shared<std::vector<uint32_t>>(num_rows);
     RETURN_IF_ERROR(partitioner->partition_chunk(chunk, num_partitions, *partition_row_indexes));
-    RETURN_IF_ERROR(partitioner->send_chunk(chunk, partition_row_indexes));
+    RETURN_IF_ERROR(partitioner->send_chunk(chunk, std::move(partition_row_indexes)));
     return Status::OK();
 }
 
@@ -536,7 +533,7 @@ Status AdaptivePassthroughExchanger::accept(const ChunkPtr& chunk, const int32_t
         std::shared_ptr<std::vector<uint32_t>> partition_row_indexes =
                 std::make_shared<std::vector<uint32_t>>(num_rows);
         RETURN_IF_ERROR(partitioner->partition_chunk(chunk, num_partitions, *partition_row_indexes));
-        RETURN_IF_ERROR(partitioner->send_chunk(chunk, partition_row_indexes));
+        RETURN_IF_ERROR(partitioner->send_chunk(chunk, std::move(partition_row_indexes)));
     }
     return Status::OK();
 }

@@ -27,6 +27,7 @@ import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptimizerContext;
 import com.starrocks.sql.optimizer.Utils;
 import com.starrocks.sql.optimizer.operator.Operator;
+import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.logical.LogicalOlapScanOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalOlapScanOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
@@ -84,10 +85,8 @@ public class StatisticsCalcUtils {
             }
             builder.addColumnStatistic(requiredColumnRefs.get(i), columnStatistic);
             if (optimizerContext != null && optimizerContext.getDumpInfo() != null) {
-                // Dump the histogram-merged statistic (not the base columnStatisticList entry), so the
-                // histogram is captured in the query dump and can be replayed. See QueryDumpSerializer.
                 optimizerContext.getDumpInfo()
-                        .addTableStatistics(table, requiredColumnRefs.get(i).getName(), columnStatistic);
+                        .addTableStatistics(table, requiredColumnRefs.get(i).getName(), columnStatisticList.get(i));
             }
         }
         return builder;
@@ -319,7 +318,10 @@ public class StatisticsCalcUtils {
 
     private static @Nullable List<Partition> getSelectedPartitions(Operator node, OlapTable olapTable) {
         List<Partition> selectedPartitions;
-        if (node.isLogical()) {
+        if (node.getOpType() == OperatorType.LOGICAL_BINLOG_SCAN ||
+                node.getOpType() == OperatorType.PHYSICAL_STREAM_SCAN) {
+            return null;
+        } else if (node.isLogical()) {
             LogicalOlapScanOperator olapScanOperator = (LogicalOlapScanOperator) node;
             if (olapScanOperator.getSelectedPartitionId() == null) {
                 selectedPartitions = Lists.newArrayList(olapScanOperator.getTable().getPartitions());

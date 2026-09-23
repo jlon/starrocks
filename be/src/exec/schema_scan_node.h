@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include "common/statusor.h"
 #include "exec/scan_node.h"
 #include "exec/schema_scanner.h"
 #include "gen_cpp/Descriptors_types.h"
@@ -53,7 +52,8 @@ public:
     // this is no use in this class
     Status set_scan_ranges(const std::vector<TScanRangeParams>& scan_ranges) override;
 
-    StatusOr<pipeline::OpFactories> decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
+    std::vector<std::shared_ptr<pipeline::OperatorFactory>> decompose_to_pipeline(
+            pipeline::PipelineBuilderContext* context) override;
 
     bool accept_empty_scan_ranges() const override { return false; }
 
@@ -62,7 +62,7 @@ private:
     void debug_string(int indentation_level, std::stringstream* out) const override;
 
     const TPlanNode _tnode;
-    bool _is_init{false};
+    bool _is_init;
     bool _is_finished = false;
     const std::string _table_name;
     SchemaScannerParam _scanner_param;
@@ -70,7 +70,7 @@ private:
     TupleId _tuple_id;
 
     // Descriptor of dest tuples
-    const TupleDescriptor* _dest_tuple_desc{nullptr};
+    const TupleDescriptor* _dest_tuple_desc;
     // Jni helper for scanning an schema table.
     std::unique_ptr<SchemaScanner> _schema_scanner;
 

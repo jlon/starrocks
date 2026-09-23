@@ -34,7 +34,7 @@
 
 #pragma once
 
-#include "platform/http/http_handler.h"
+#include "http/http_handler.h"
 
 namespace starrocks {
 

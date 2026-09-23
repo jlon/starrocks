@@ -17,12 +17,13 @@
 #include <span>
 #include <utility>
 
-#include "base/container/raw_container.h"
 #include "column/column.h"
 #include "column/container_resource.h"
+#include "column/datum.h"
 #include "column/vectorized_fwd.h"
 #include "common/statusor.h"
-#include "types/datum.h"
+#include "util/raw_container.h"
+
 namespace starrocks {
 
 template <typename T>
@@ -58,7 +59,8 @@ public:
 
     FixedLengthColumnBase(const size_t n, const ValueType x) : _data(n, x) {}
 
-    DISALLOW_COPY_TEMPLATE(FixedLengthColumnBase, FixedLengthColumnBase<T>);
+    FixedLengthColumnBase(const FixedLengthColumnBase& src)
+            : _resource(src._resource), _data(src.immutable_data().begin(), src.immutable_data().end()) {}
 
     // Only used as a underlying type for other column type(i.e. DecimalV3Column), C++
     // is weak to implement delegation for composite type like golang, so we have to use
@@ -76,10 +78,9 @@ public:
 
     bool is_timestamp() const override { return IsTimestamp<ValueType>; }
 
-    const uint8_t* raw_data() const { return reinterpret_cast<const uint8_t*>(immutable_data().data()); }
-    const uint8_t* raw_bytes() const { return raw_data(); }
+    const uint8_t* raw_data() const override { return reinterpret_cast<const uint8_t*>(immutable_data().data()); }
 
-    uint8_t* mutable_raw_data() {
+    uint8_t* mutable_raw_data() override {
         get_data();
         return reinterpret_cast<uint8_t*>(_data.data());
     }
@@ -240,6 +241,7 @@ public:
 
     const ImmContainer get_data() const { return immutable_data(); }
 
+    // TODO: remove this function
     const ImmContainer immutable_data() const {
         if (!_resource.empty()) {
             return _resource.span<T>();

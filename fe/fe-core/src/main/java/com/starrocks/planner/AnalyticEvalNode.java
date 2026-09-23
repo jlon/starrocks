@@ -71,7 +71,6 @@ public class AnalyticEvalNode extends PlanNode {
 
     private final boolean useHashBasedPartition;
     private final boolean isSkewed;
-    private final boolean forceMergeSort;
 
     // Physical tuples used/produced by this analytic node.
     private final TupleDescriptor intermediateTupleDesc;
@@ -89,7 +88,6 @@ public class AnalyticEvalNode extends PlanNode {
             AnalyticWindow analyticWindow,
             boolean useHashBasedPartition,
             boolean isSkewed,
-            boolean forceMergeSort,
             TupleDescriptor intermediateTupleDesc,
             TupleDescriptor outputTupleDesc,
             Expr partitionByEq, Expr orderByEq, TupleDescriptor bufferedTupleDesc) {
@@ -103,7 +101,6 @@ public class AnalyticEvalNode extends PlanNode {
         this.analyticWindow = analyticWindow;
         this.useHashBasedPartition = useHashBasedPartition;
         this.isSkewed = isSkewed;
-        this.forceMergeSort = forceMergeSort;
         this.intermediateTupleDesc = intermediateTupleDesc;
         this.outputTupleDesc = outputTupleDesc;
         this.partitionByEq = partitionByEq;
@@ -145,7 +142,6 @@ public class AnalyticEvalNode extends PlanNode {
                 .add("window", analyticWindow)
                 .add("useHashBasedPartition", useHashBasedPartition)
                 .add("isSkewed", isSkewed)
-                .add("forceMergeSort", forceMergeSort)
                 .add("intermediateTid", intermediateTupleDesc.getId())
                 .add("intermediateTid", outputTupleDesc.getId())
                 .add("outputTid", outputTupleDesc.getId())
@@ -178,13 +174,6 @@ public class AnalyticEvalNode extends PlanNode {
         }
         msg.analytic_node.setOrder_by_exprs(
                 ExprToThrift.treesToThrift(OrderByElement.getOrderByExprs(orderByElements)));
-        if (!orderByElements.isEmpty()) {
-            List<Boolean> orderByIsAsc = Lists.newArrayListWithCapacity(orderByElements.size());
-            for (OrderByElement element : orderByElements) {
-                orderByIsAsc.add(element.getIsAsc());
-            }
-            msg.analytic_node.setOrder_by_is_asc(orderByIsAsc);
-        }
         msg.analytic_node.setAnalytic_functions(ExprToThrift.treesToThrift(analyticFnCalls));
         StringBuilder sqlAggFuncBuilder = new StringBuilder();
         // only serialize agg exprs that are being materialized
@@ -207,6 +196,7 @@ public class AnalyticEvalNode extends PlanNode {
                         ExprToThrift.analyticWindowToThrift(AnalyticWindow.DEFAULT_WINDOW));
             }
         } else {
+            // TODO: Window boundaries should have range_offset_predicate set
             msg.analytic_node.setWindow(ExprToThrift.analyticWindowToThrift(analyticWindow));
         }
 
@@ -220,7 +210,6 @@ public class AnalyticEvalNode extends PlanNode {
 
         msg.analytic_node.setUse_hash_based_partition(useHashBasedPartition);
         msg.analytic_node.setIs_skewed(isSkewed);
-        msg.analytic_node.setForce_merge_sort(forceMergeSort);
 
         if (bufferedTupleDesc != null) {
             msg.analytic_node.setBuffered_tuple_id(bufferedTupleDesc.getId().asInt());
@@ -330,16 +319,9 @@ public class AnalyticEvalNode extends PlanNode {
             return false;
         }
 
-        // Window/analytic evaluation is a deterministic pipeline breaker: a TopN runtime filter pushed
-        // through it cannot reach a scan below in time, so mark the path so the scan skips back-pressure.
-        context.enterNonAggPipelineBreaker();
-        try {
-            return pushdownRuntimeFilterForChildOrAccept(context, probeExpr,
-                    candidatesOfSlotExpr(probeExpr, couldBound(description, descTbl)),
-                    partitionByExprs, candidatesOfSlotExprs(partitionByExprs, couldBoundForPartitionExpr(descTbl)), 0, true);
-        } finally {
-            context.exitNonAggPipelineBreaker();
-        }
+        return pushdownRuntimeFilterForChildOrAccept(context, probeExpr,
+                candidatesOfSlotExpr(probeExpr, couldBound(description, descTbl)),
+                partitionByExprs, candidatesOfSlotExprs(partitionByExprs, couldBoundForPartitionExpr()), 0, true);
     }
 
     @Override
@@ -365,16 +347,9 @@ public class AnalyticEvalNode extends PlanNode {
         analyticNode.setPartition_exprs(normalizer.normalizeOrderedExprs(substitutedPartitionExprs));
         analyticNode.setOrder_by_exprs(
                 normalizer.normalizeOrderedExprs(OrderByElement.getOrderByExprs(orderByElements)));
-        if (!orderByElements.isEmpty()) {
-            List<Boolean> orderByIsAsc = Lists.newArrayListWithCapacity(orderByElements.size());
-            for (OrderByElement element : orderByElements) {
-                orderByIsAsc.add(element.getIsAsc());
-            }
-            analyticNode.setOrder_by_is_asc(orderByIsAsc);
-        }
         analyticNode.setAnalytic_functions(normalizer.normalizeExprs(analyticFnCalls));
         if (analyticWindow != null) {
-            analyticNode.setWindow(ExprToThrift.analyticWindowToNormalForm(analyticWindow, normalizer));
+            analyticNode.setWindow(ExprToThrift.analyticWindowToThrift(analyticWindow));
         }
         if (intermediateTupleDesc != null) {
             analyticNode.setIntermediate_tuple_id(normalizer.remapTupleId(intermediateTupleDesc.getId()).asInt());

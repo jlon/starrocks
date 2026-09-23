@@ -47,6 +47,7 @@ public class VariableMgrEditLogTest {
         // Get VariableMgr instance from GlobalStateMgr
         masterVariableMgr = GlobalStateMgr.getCurrentState().getVariableMgr();
     }
+
     @AfterEach
     public void tearDown() {
         UtFrameUtils.tearDownForPersisTest();
@@ -62,6 +63,7 @@ public class VariableMgrEditLogTest {
         SetStmtAnalyzer.analyze(new SetStmt(com.google.common.collect.Lists.newArrayList(setVar)), null);
 
         // 2. Verify initial state
+        long initialValue = sessionVar.getMaxExecMemByte();
 
         // 3. Execute setSystemVariable operation (master side)
         masterVariableMgr.setSystemVariable(sessionVar, setVar, false);
@@ -91,7 +93,7 @@ public class VariableMgrEditLogTest {
         // 1. Prepare test data
         String varName = "exec_mem_limit";
         long varValue = 20000000L;
-        masterVariableMgr.newSessionVariable();
+        SessionVariable sessionVar = masterVariableMgr.newSessionVariable();
         SystemVariable setVar = new SystemVariable(SetType.GLOBAL, varName, new IntLiteral(varValue));
         SetStmtAnalyzer.analyze(new SetStmt(com.google.common.collect.Lists.newArrayList(setVar)), null);
 
@@ -257,5 +259,5 @@ public class VariableMgrEditLogTest {
                     "Unexpected exception message: " + message);
         }
     }
-
 }
+

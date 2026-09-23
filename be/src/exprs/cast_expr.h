@@ -17,17 +17,17 @@
 #include <type_traits>
 #include <utility>
 
-#include "base/types/int128.h"
 #include "column/array_column.h"
 #include "column/chunk.h"
 #include "column/column_helper.h"
-#include "column/runtime_type_traits.h"
-#include "column/variant_path_parser.h"
+#include "column/type_traits.h"
 #include "column/vectorized_fwd.h"
 #include "exprs/column_ref.h"
 #include "exprs/expr.h"
 #include "jsonpath.h"
-#include "types/type_descriptor.h"
+#include "runtime/types.h"
+#include "types/large_int_value.h"
+#include "variant_path_parser.h"
 
 namespace starrocks {
 
@@ -85,7 +85,7 @@ private:
             : Expr(rhs),
               _cast_to_type_desc(rhs._cast_to_type_desc),
               _throw_exception_if_err(rhs._throw_exception_if_err),
-              _constant_res(rhs._constant_res != nullptr ? Column::mutate(ColumnPtr(rhs._constant_res)) : nullptr) {}
+              _constant_res(rhs._constant_res != nullptr ? std::move(*(rhs._constant_res)).mutate() : nullptr) {}
 
     Slice _unquote(Slice slice) const;
     Slice _trim(Slice slice) const;
@@ -163,7 +163,7 @@ private:
 class CastJsonToMap final : public Expr {
 public:
     CastJsonToMap(const TExprNode& node, Expr* key_cast_expr, Expr* value_cast_expr)
-            : Expr(node), _key_cast_expr(key_cast_expr), _value_cast_expr(value_cast_expr) {}
+            : Expr(node), _key_cast_expr(std::move(key_cast_expr)), _value_cast_expr(std::move(value_cast_expr)) {}
 
     CastJsonToMap(const CastJsonToMap& rhs) : Expr(rhs) {}
 
@@ -235,7 +235,7 @@ private:
 class CastVariantToMap final : public Expr {
 public:
     CastVariantToMap(const TExprNode& node, Expr* key_cast_expr, Expr* value_cast_expr)
-            : Expr(node), _key_cast_expr(key_cast_expr), _value_cast_expr(value_cast_expr) {}
+            : Expr(node), _key_cast_expr(std::move(key_cast_expr)), _value_cast_expr(std::move(value_cast_expr)) {}
 
     CastVariantToMap(const CastVariantToMap& rhs) : Expr(rhs) {}
 
@@ -308,7 +308,8 @@ public:
 
 private:
     // Invoked only by clone.
-    CastToVariantExpr(const CastToVariantExpr& rhs) = default;
+    CastToVariantExpr(const CastToVariantExpr& rhs)
+            : Expr(rhs), _from_type(rhs._from_type), _allow_throw_exception(rhs._allow_throw_exception) {}
 
     TypeDescriptor _from_type;
     bool _allow_throw_exception;
@@ -394,7 +395,7 @@ class MustNullExpr final : public Expr {
 public:
     MustNullExpr(const TExprNode& node) : Expr(node) {}
 
-    MustNullExpr(const MustNullExpr& rhs) = default;
+    MustNullExpr(const MustNullExpr& rhs) : Expr(rhs) {}
 
     ~MustNullExpr() override = default;
 
@@ -414,7 +415,7 @@ struct CastToString {
             return v.to_string();
         } else if constexpr (IsInt128<Type>) {
             // int128_t
-            return int128_to_string(v);
+            return LargeIntValue::to_string(v);
         } else if constexpr (IsInt256<Type>) {
             // int256_t
             return v.to_string();

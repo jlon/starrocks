@@ -18,7 +18,7 @@
 
 #include <avrocpp/LogicalType.hh>
 
-#include "base/testutil/assert.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 

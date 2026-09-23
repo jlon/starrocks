@@ -26,7 +26,6 @@ public class BackupStmt extends AbstractBackupStmt {
     }
 
     private BackupType type = BackupType.FULL;
-    private String ttl;
 
     public BackupStmt(LabelName labelName,
                       String repoName,
@@ -51,18 +50,6 @@ public class BackupStmt extends AbstractBackupStmt {
 
     public void setTimeoutMs(long timeoutMs) {
         this.timeoutMs = timeoutMs;
-    }
-
-    /**
-     * Retention for the snapshot this statement creates, as written by the user. null or empty keeps
-     * the snapshot forever.
-     */
-    public String getTtl() {
-        return ttl;
-    }
-
-    public void setTtl(String ttl) {
-        this.ttl = ttl;
     }
 
     public void setType(BackupType type) {

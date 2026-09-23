@@ -119,8 +119,7 @@ public class SkewShuffleJoinEliminationRule implements TreeRewriteRule {
             this.columnRefFactory = columnRefFactory;
         }
 
-        private record OutputExchangeTemplate(DistributionSpec distributionSpec, ColumnRefSet usedColumns,
-                                              PhysicalDistributionOperator exchangeOp) {
+        private record OutputExchangeTemplate(DistributionSpec distributionSpec, ColumnRefSet usedColumns) {
         }
 
         @Override
@@ -283,11 +282,6 @@ public class SkewShuffleJoinEliminationRule implements TreeRewriteRule {
             if (requireOutputDistribution) {
                 PhysicalDistributionOperator newExchangeForBroadcastJoin =
                         new PhysicalDistributionOperator(outputExchangeTemplate.distributionSpec());
-                // the fragment above this exchange decodes the same dict columns as above the original
-                // join's exchanges, so it needs the same global dicts and derived-dict expressions
-                newExchangeForBroadcastJoin.setGlobalDicts(outputExchangeTemplate.exchangeOp().getGlobalDicts());
-                newExchangeForBroadcastJoin.setGlobalDictsExpr(
-                        outputExchangeTemplate.exchangeOp().getGlobalDictsExpr());
                 // we need add exchange node to make broadcast join's output distribution can be same as shuffle join's
                 rightChildOfConcatenate = OptExpression.builder().setOp(newExchangeForBroadcastJoin)
                         .setInputs(Collections.singletonList(skewBranch))
@@ -365,13 +359,6 @@ public class SkewShuffleJoinEliminationRule implements TreeRewriteRule {
             PhysicalSplitConsumeOperator splitConsumerOptForBroadcastJoin =
                     new PhysicalSplitConsumeOperator(splitProduceOperator.getSplitId(), skewPredicate,
                             distributionSpecForBroadCastJoin, splitOutputColumns);
-            // Both consumers stand where the original exchange stood: the fragments built above them
-            // evaluate the same dict expressions the low-cardinality rewrite attached to that exchange.
-            for (PhysicalSplitConsumeOperator consumer : List.of(splitConsumerOptForShuffleJoin,
-                    splitConsumerOptForBroadcastJoin)) {
-                consumer.setGlobalDicts(exchangeOpOfOriginalShuffleJoin.getGlobalDicts());
-                consumer.setGlobalDictsExpr(exchangeOpOfOriginalShuffleJoin.getGlobalDictsExpr());
-            }
 
             OptExpression splitConsumerOptExpForShuffleJoin =
                     OptExpression.builder().setOp(splitConsumerOptForShuffleJoin).setInputs(Collections.emptyList())
@@ -445,7 +432,7 @@ public class SkewShuffleJoinEliminationRule implements TreeRewriteRule {
             OptExpression template = joinOpt.inputAt(1 - skewSideChildIndex);
             PhysicalDistributionOperator exchangeOp = template.getOp().cast();
             ColumnRefSet used = exchangeOp.getRowOutputInfo(template.getInputs()).getUsedColumnRefSet();
-            return new OutputExchangeTemplate(exchangeOp.getDistributionSpec(), used, exchangeOp);
+            return new OutputExchangeTemplate(exchangeOp.getDistributionSpec(), used);
         }
 
         private void addIdentityColumnsToProjectionIfMissing(Projection projection,

@@ -38,18 +38,16 @@
 
 #include <memory>
 
-#include "base/string/utf8.h"
-#include "column/chunk_factory.h"
+#include "bitmap_range_iterator.h"
 #include "column/column_helper.h"
 #include "column/column_viewer.h"
 #include "exprs/function_context.h"
 #include "exprs/like_predicate.h"
-#include "runtime/mem_tracker.h"
-#include "runtime/runtime_env.h"
+#include "runtime/exec_env.h"
 #include "storage/chunk_helper.h"
+#include "storage/range.h"
 #include "storage/types.h"
-#include "storage_primitive/bitmap_range_iterator.h"
-#include "storage_primitive/range.h"
+#include "util/utf8.h"
 
 namespace starrocks {
 
@@ -58,13 +56,13 @@ using Roaring = roaring::Roaring;
 BitmapIndexReader::BitmapIndexReader(int32_t gram_num, bool owned_mem_tracker)
         : _gram_num(gram_num), _owned_mem_tracker(owned_mem_tracker) {
     if (_owned_mem_tracker) {
-        MEM_TRACKER_SAFE_CONSUME(RuntimeEnv::GetInstance()->bitmap_index_mem_tracker(), sizeof(BitmapIndexReader));
+        MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->bitmap_index_mem_tracker(), sizeof(BitmapIndexReader));
     }
 }
 
 BitmapIndexReader::~BitmapIndexReader() {
     if (_owned_mem_tracker) {
-        MEM_TRACKER_SAFE_RELEASE(RuntimeEnv::GetInstance()->bitmap_index_mem_tracker(), mem_usage());
+        MEM_TRACKER_SAFE_RELEASE(GlobalEnv::GetInstance()->bitmap_index_mem_tracker(), mem_usage());
     }
 }
 
@@ -73,7 +71,7 @@ StatusOr<bool> BitmapIndexReader::load(const IndexReadOptions& opts, const Bitma
         Status st = _do_load(opts, meta);
         if (st.ok()) {
             if (_owned_mem_tracker) {
-                MEM_TRACKER_SAFE_CONSUME(RuntimeEnv::GetInstance()->bitmap_index_mem_tracker(),
+                MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->bitmap_index_mem_tracker(),
                                          mem_usage() - sizeof(BitmapIndexReader));
             }
         } else {
@@ -116,13 +114,6 @@ Status BitmapIndexReader::_do_load(const IndexReadOptions& opts, const BitmapInd
 }
 
 Status BitmapIndexReader::new_iterator(const IndexReadOptions& opts, BitmapIndexIterator** iterator) {
-    SegmentBitmapIndexIterator* segment_iterator = nullptr;
-    RETURN_IF_ERROR(new_iterator(opts, &segment_iterator));
-    *iterator = segment_iterator;
-    return Status::OK();
-}
-
-Status BitmapIndexReader::new_iterator(const IndexReadOptions& opts, SegmentBitmapIndexIterator** iterator) {
     std::unique_ptr<IndexedColumnIterator> dict_iter;
     std::unique_ptr<IndexedColumnIterator> bitmap_iter;
     std::unique_ptr<IndexedColumnIterator> ngram_dict_iter = nullptr;
@@ -133,20 +124,19 @@ Status BitmapIndexReader::new_iterator(const IndexReadOptions& opts, SegmentBitm
         RETURN_IF_ERROR(_ngram_dict_column_reader->new_iterator(opts, &ngram_dict_iter));
         RETURN_IF_ERROR(_ngram_bitmap_column_reader->new_iterator(opts, &ngram_bitmap_iter));
     }
-    *iterator = new SegmentBitmapIndexIterator(this, std::move(dict_iter), std::move(bitmap_iter),
-                                               std::move(ngram_dict_iter), std::move(ngram_bitmap_iter), _has_null,
-                                               bitmap_nums());
+    *iterator = new BitmapIndexIterator(this, std::move(dict_iter), std::move(bitmap_iter), std::move(ngram_dict_iter),
+                                        std::move(ngram_bitmap_iter), _has_null, bitmap_nums());
     return Status::OK();
 }
 
-rowid_t SegmentBitmapIndexIterator::num_dictionaries() const {
+rowid_t BitmapIndexIterator::num_dictionaries() const {
     if (_has_null) {
         return _num_bitmap - 1;
     }
     return _num_bitmap;
 }
 
-Status SegmentBitmapIndexIterator::seek_dict_by_ngram(const void* value, roaring::Roaring* roaring) const {
+Status BitmapIndexIterator::seek_dict_by_ngram(const void* value, roaring::Roaring* roaring) const {
     if (_reader->gram_num() <= 0) {
         // _num_bitmap means how many dicts exist. should return all dicts here.
         roaring->addRange(0, num_dictionaries());
@@ -199,7 +189,7 @@ Status SegmentBitmapIndexIterator::seek_dict_by_ngram(const void* value, roaring
         RETURN_IF_ERROR(_ngram_bitmap_column_iter->seek_to_ordinal(_ngram_dict_column_iter->get_current_ordinal()));
         size_t num_to_read = 1;
         size_t num_read = num_to_read;
-        auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+        auto column = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
         RETURN_IF_ERROR(_ngram_bitmap_column_iter->next_batch(&num_read, column.get()));
         if (num_to_read != num_read) {
             return Status::InternalError(fmt::format(
@@ -225,7 +215,7 @@ Status SegmentBitmapIndexIterator::seek_dict_by_ngram(const void* value, roaring
     return Status::OK();
 }
 
-StatusOr<Buffer<rowid_t>> SegmentBitmapIndexIterator::filter_dict_by_predicate(
+StatusOr<Buffer<rowid_t>> BitmapIndexIterator::filter_dict_by_predicate(
         const roaring::Roaring* rowids, const std::function<bool(const Slice*)>& predicate) const {
     Buffer<rowid_t> hit_rowids;
 
@@ -239,7 +229,7 @@ StatusOr<Buffer<rowid_t>> SegmentBitmapIndexIterator::filter_dict_by_predicate(
         RETURN_IF_ERROR(_dict_column_iter->seek_at_or_after(&min_value, &exact_match));
 
         const auto num_dicts = num_dictionaries();
-        auto col = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+        auto col = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
 
         // Read all dictionaries starting from current position
         rowid_t start_ordinal = _dict_column_iter->get_current_ordinal();
@@ -267,7 +257,7 @@ StatusOr<Buffer<rowid_t>> SegmentBitmapIndexIterator::filter_dict_by_predicate(
         uint32_t from, to;
         const auto max_range = rowids->cardinality();
         while (it.next_range(max_range, &from, &to)) {
-            auto col = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+            auto col = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
             RETURN_IF_ERROR(_dict_column_iter->seek_to_ordinal(from));
             size_t num_to_read = to - from;
             size_t read = num_to_read;
@@ -289,7 +279,7 @@ StatusOr<Buffer<rowid_t>> SegmentBitmapIndexIterator::filter_dict_by_predicate(
     return std::move(hit_rowids);
 }
 
-Status SegmentBitmapIndexIterator::next_batch_ngram(rowid_t ordinal, size_t* n, Column* column) const {
+Status BitmapIndexIterator::next_batch_ngram(rowid_t ordinal, size_t* n, Column* column) const {
     if (_ngram_dict_column_iter != nullptr) {
         if (!(0 <= ordinal && ordinal < _reader->ngram_bitmap_nums())) {
             return Status::InvalidArgument("ordinal is out of range while reading ngram bitmap");
@@ -301,12 +291,12 @@ Status SegmentBitmapIndexIterator::next_batch_ngram(rowid_t ordinal, size_t* n, 
     return Status::OK();
 }
 
-Status SegmentBitmapIndexIterator::read_ngram_bitmap(rowid_t ordinal, Roaring* result) const {
+Status BitmapIndexIterator::read_ngram_bitmap(rowid_t ordinal, Roaring* result) const {
     if (_ngram_bitmap_column_iter != nullptr) {
         if (!(0 <= ordinal && ordinal < _reader->ngram_bitmap_nums())) {
             return Status::InvalidArgument("ordinal is out of range while reading ngram bitmap");
         }
-        auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+        auto column = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
         RETURN_IF_ERROR(_ngram_bitmap_column_iter->seek_to_ordinal(ordinal));
         size_t num_to_read = 1;
         size_t num_read = num_to_read;
@@ -322,25 +312,25 @@ Status SegmentBitmapIndexIterator::read_ngram_bitmap(rowid_t ordinal, Roaring* r
     return Status::OK();
 }
 
-Status SegmentBitmapIndexIterator::seek_dictionary(const void* value, bool* exact_match) {
+Status BitmapIndexIterator::seek_dictionary(const void* value, bool* exact_match) {
     RETURN_IF_ERROR(_dict_column_iter->seek_at_or_after(value, exact_match));
     _current_rowid = _dict_column_iter->get_current_ordinal();
     return Status::OK();
 }
 
-Status SegmentBitmapIndexIterator::next_batch_dictionary(size_t* n, Column* column) {
+Status BitmapIndexIterator::next_batch_dictionary(size_t* n, Column* column) {
     RETURN_IF_ERROR(_dict_column_iter->next_batch(n, column));
     _current_rowid += *n;
     return Status::OK();
 }
 
-StatusOr<Buffer<rowid_t>> SegmentBitmapIndexIterator::seek_dictionary_by_predicate(const DictPredicate& predicate,
-                                                                                   const Slice& from_value,
-                                                                                   size_t search_size) {
+StatusOr<Buffer<rowid_t>> BitmapIndexIterator::seek_dictionary_by_predicate(const DictPredicate& predicate,
+                                                                            const Slice& from_value,
+                                                                            size_t search_size) {
     if (_reader->type_info()->type() != TYPE_VARCHAR && _reader->type_info()->type() != TYPE_CHAR) {
         return Status::NotSupported("predicate seek for dictionary only support string/char type bitmap index");
     }
-    auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+    auto column = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
     bool exact_match;
     RETURN_IF_ERROR(seek_dictionary(&from_value, &exact_match));
     size_t beg_rowid = _current_rowid;
@@ -357,10 +347,10 @@ StatusOr<Buffer<rowid_t>> SegmentBitmapIndexIterator::seek_dictionary_by_predica
     return hit_rowids;
 }
 
-Status SegmentBitmapIndexIterator::read_bitmap(rowid_t ordinal, Roaring* result) {
+Status BitmapIndexIterator::read_bitmap(rowid_t ordinal, Roaring* result) {
     DCHECK(0 <= ordinal && ordinal < _reader->bitmap_nums());
 
-    auto column = ChunkFactory::column_from_field_type(TYPE_VARCHAR, false);
+    auto column = ChunkHelper::column_from_field_type(TYPE_VARCHAR, false);
     RETURN_IF_ERROR(_bitmap_column_iter->seek_to_ordinal(ordinal));
     size_t num_to_read = 1;
     size_t num_read = num_to_read;
@@ -374,7 +364,7 @@ Status SegmentBitmapIndexIterator::read_bitmap(rowid_t ordinal, Roaring* result)
     return Status::OK();
 }
 
-Status SegmentBitmapIndexIterator::read_union_bitmap(rowid_t from, rowid_t to, Roaring* result) {
+Status BitmapIndexIterator::read_union_bitmap(rowid_t from, rowid_t to, Roaring* result) {
     DCHECK(0 <= from && from <= to && to <= _reader->bitmap_nums());
 
     for (rowid_t pos = from; pos < to; pos++) {
@@ -385,7 +375,7 @@ Status SegmentBitmapIndexIterator::read_union_bitmap(rowid_t from, rowid_t to, R
     return Status::OK();
 }
 
-Status SegmentBitmapIndexIterator::read_union_bitmap(const SparseRange<>& range, Roaring* result) {
+Status BitmapIndexIterator::read_union_bitmap(const SparseRange<>& range, Roaring* result) {
     for (size_t i = 0; i < range.size(); i++) { // NOLINT
         const Range<>& r = range[i];
         RETURN_IF_ERROR(read_union_bitmap(r.begin(), r.end(), result));
@@ -393,7 +383,7 @@ Status SegmentBitmapIndexIterator::read_union_bitmap(const SparseRange<>& range,
     return Status::OK();
 }
 
-Status SegmentBitmapIndexIterator::read_union_bitmap(const Buffer<rowid_t>& rowids, Roaring* result) {
+Status BitmapIndexIterator::read_union_bitmap(const Buffer<rowid_t>& rowids, Roaring* result) {
     for (const auto& rowid : rowids) {
         Roaring bitmap;
         RETURN_IF_ERROR(read_bitmap(rowid, &bitmap));

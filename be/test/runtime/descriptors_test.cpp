@@ -18,11 +18,10 @@
 
 #include <thread>
 
-#include "base/testutil/assert.h"
 #include "common/object_pool.h"
 #include "gen_cpp/Descriptors_types.h"
 #include "gen_cpp/Exprs_types.h"
-#include "runtime/descriptors_ext.h"
+#include "testutil/assert.h"
 #include "types/logical_type.h"
 
 namespace starrocks {

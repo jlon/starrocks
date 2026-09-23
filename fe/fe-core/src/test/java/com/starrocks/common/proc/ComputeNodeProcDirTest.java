@@ -190,6 +190,6 @@ public class ComputeNodeProcDirTest {
         };
 
         ComputeNodeProcDir dir = new ComputeNodeProcDir(systemInfoService);
-        Assertions.assertDoesNotThrow(dir::fetchResult);
+        ProcResult result = dir.fetchResult();
     }
 }

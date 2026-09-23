@@ -62,14 +62,13 @@ import java.util.Map;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
-import java.util.function.Predicate;
 
 /*
- * if you want to visit the attribute(such as queryID,defaultDb)
+ * if you want to visit the atrribute(such as queryID,defaultDb)
  * you can use profile.getInfoStrings("queryId")
  * All attributes can be seen from the above.
  *
- * why the element in the finished profile is not RuntimeProfile,
+ * why the element in the finished profile arary is not RuntimeProfile,
  * the purpose is let coordinator can destruct earlier(the fragment profile is in Coordinator)
  *
  */
@@ -82,35 +81,29 @@ public class ProfileManager implements MemoryTrackable {
     // Single-line JSON, matching the query profile log written by StmtExecutor.
     private static final Gson GSON = new Gson();
     private static ProfileManager INSTANCE = null;
-    public static final String QUERY_ID             = ProfileKeyDictionary.QUERY_ID;
-    public static final String CUSTOM_QUERY_ID      = ProfileKeyDictionary.CUSTOM_QUERY_ID;
-    public static final String START_TIME           = ProfileKeyDictionary.START_TIME;
-    public static final String END_TIME             = ProfileKeyDictionary.END_TIME;
-    public static final String TOTAL_TIME           = ProfileKeyDictionary.TOTAL_TIME;
-    public static final String RETRY_TIMES          = ProfileKeyDictionary.RETRY_TIMES;
-    public static final String QUERY_TYPE           = ProfileKeyDictionary.QUERY_TYPE;
-    public static final String QUERY_STATE          = ProfileKeyDictionary.QUERY_STATE;
-    public static final String SQL_STATEMENT        = ProfileKeyDictionary.SQL_STATEMENT;
-    public static final String SQL_DIALECT          = ProfileKeyDictionary.SQL_DIALECT;
-    public static final String USER                 = ProfileKeyDictionary.USER;
-    public static final String DEFAULT_DB           = ProfileKeyDictionary.DEFAULT_DB;
-    public static final String VARIABLES            = ProfileKeyDictionary.VARIABLES;
-    public static final String PROFILE_COLLECT_TIME = ProfileKeyDictionary.PROFILE_COLLECT_TIME;
-    public static final String LOAD_TYPE            = ProfileKeyDictionary.LOAD_TYPE;
-    public static final String WAREHOUSE_CNGROUP    = ProfileKeyDictionary.WAREHOUSE_CNGROUP;
+    public static final String QUERY_ID = "Query ID";
+    public static final String START_TIME = "Start Time";
+    public static final String END_TIME = "End Time";
+    public static final String TOTAL_TIME = "Total";
+    public static final String RETRY_TIMES = "Retry Times";
+    public static final String QUERY_TYPE = "Query Type";
+    public static final String QUERY_STATE = "Query State";
+    public static final String SQL_STATEMENT = "Sql Statement";
+    public static final String SQL_DIALECT = "Sql Dialect";
+    public static final String USER = "User";
+    public static final String DEFAULT_DB = "Default Db";
+    public static final String VARIABLES = "Variables";
+    public static final String PROFILE_COLLECT_TIME = "Collect Profile Time";
+    public static final String LOAD_TYPE = "Load Type";
+    public static final String WAREHOUSE_CNGROUP = "Warehouse";
 
     public static final String LOAD_TYPE_STREAM_LOAD = "STREAM_LOAD";
     public static final String LOAD_TYPE_ROUTINE_LOAD = "ROUTINE_LOAD";
 
     public static final ArrayList<String> PROFILE_HEADERS = new ArrayList<>(
-            Arrays.asList(QUERY_ID, CUSTOM_QUERY_ID, USER, DEFAULT_DB, SQL_STATEMENT, QUERY_TYPE,
+            Arrays.asList(QUERY_ID, USER, DEFAULT_DB, SQL_STATEMENT, QUERY_TYPE,
                     START_TIME, END_TIME, TOTAL_TIME, QUERY_STATE, WAREHOUSE_CNGROUP, SQL_DIALECT));
 
-    /**
-     * One cached profile. An element is built completely by {@link #createElement} and {@link #pushProfile}
-     * before it is published into the map, and is never modified afterwards. Readers rely on that: they take a
-     * snapshot of the map under the read lock and then read the elements without it.
-     */
     public static class ProfileElement {
         public Map<String, String> infoStrings = Maps.newHashMap();
         public long startTimeMs = -1;
@@ -131,7 +124,8 @@ public class ProfileManager implements MemoryTrackable {
                 return null;
             }
             try {
-                return ProfileSerializer.deserialize(profileContent);
+                return RuntimeProfileParser.parseFrom(
+                        CompressionUtils.gzipDecompressString(profileContent));
             } catch (IOException e) {
                 LOG.warn("Failed to deserialize profile: {}", e.getMessage());
                 return null;
@@ -143,8 +137,15 @@ public class ProfileManager implements MemoryTrackable {
          * {@link Config#profile_info_format}.
          */
         public String getProfileString() {
-            RuntimeProfile profile = getRuntimeProfile();
-            return profile != null ? format(profile) : null;
+            if (profileContent == null) {
+                return null;
+            }
+            try {
+                return CompressionUtils.gzipDecompressString(profileContent);
+            } catch (IOException e) {
+                LOG.warn("Failed to deserialize profile: {}", e.getMessage());
+                return null;
+            }
         }
 
         /** Formats {@code profile} per the current {@link Config#profile_info_format}. */
@@ -157,20 +158,14 @@ public class ProfileManager implements MemoryTrackable {
             }
         }
 
-        /** The user who ran the query, as recorded in the summary profile; null when the profile records none. */
-        public String getUser() {
-            return infoStrings.get(USER);
-        }
-
         public List<String> toRow(ConnectContext context) {
             ZoneId sessionZone = getSessionZoneId(context);
             List<String> res = Lists.newArrayList();
             res.add(infoStrings.get(QUERY_ID));
-            res.add(infoStrings.get(CUSTOM_QUERY_ID));
             res.add(formatTimestamp(startTimeMs, sessionZone));
             res.add(infoStrings.get(TOTAL_TIME));
             res.add(infoStrings.get(QUERY_STATE));
-            String statement = infoStrings.getOrDefault(SQL_STATEMENT, "");
+            String statement = infoStrings.get(SQL_STATEMENT);
             if (statement.length() > 128) {
                 statement = statement.substring(0, 124) + " ...";
             }
@@ -185,10 +180,6 @@ public class ProfileManager implements MemoryTrackable {
     // from QueryId to RuntimeProfile
     private final LinkedHashMap<String, ProfileElement> profileMap;
 
-    // from CustomQueryId to QueryId, only populated for profiles whose CUSTOM_QUERY_ID is non-empty.
-    // Guarded by the same lock as profileMap.
-    private final Map<String, String> customQueryIdMap;
-
     public static ProfileManager getInstance() {
         if (INSTANCE == null) {
             INSTANCE = new ProfileManager();
@@ -201,20 +192,9 @@ public class ProfileManager implements MemoryTrackable {
         readLock = lock.readLock();
         writeLock = lock.writeLock();
         profileMap = new LinkedHashMap<>();
-        customQueryIdMap = Maps.newHashMap();
     }
 
-    // -------------------------------------------------------------------------
-    // Public API
-    // -------------------------------------------------------------------------
-
-    /**
-     * Creates a {@link ProfileElement} by serialising {@code fullProfile} to the
-     * compact binary format (see {@link ProfileSerializer}).
-     * Summary metadata is extracted from {@code summaryProfile}.
-     */
-    public ProfileElement createElement(RuntimeProfile summaryProfile,
-                                        RuntimeProfile fullProfile) {
+    public ProfileElement createElement(RuntimeProfile summaryProfile, String profileString) {
         ProfileElement element = new ProfileElement();
         for (String header : PROFILE_HEADERS) {
             element.infoStrings.put(header, summaryProfile.getInfoString(header));
@@ -222,42 +202,54 @@ public class ProfileManager implements MemoryTrackable {
         element.startTimeMs = parseTimeStringToEpochMs(summaryProfile.getInfoString(START_TIME));
         element.endTimeMs = parseTimeStringToEpochMs(summaryProfile.getInfoString(END_TIME));
         try {
-            element.setProfileContent(ProfileSerializer.serialize(fullProfile));
+            element.profileContent = CompressionUtils.gzipCompressString(profileString);
         } catch (IOException e) {
-            LOG.warn("Failed to serialize profile, reason: {}", e.getMessage());
+            LOG.warn("Compress profile string failed, length: {}, reason: {}",
+                    profileString.length(), e.getMessage());
         }
         return element;
     }
 
-    /**
-     * Publishes a profile. The element is finished (info strings, serialized content, plan) before it is put
-     * into the map under the write lock, which is what lets readers use it lock-free after a snapshot.
-     */
+    private String generateProfileString(RuntimeProfile profile) {
+        if (profile == null) {
+            return "";
+        }
+
+        String profileString;
+        switch (Config.profile_info_format) {
+            case "default":
+                profileString = profile.toString();
+                break;
+            case "json":
+                RuntimeProfile.ProfileFormatter formatter = new RuntimeProfile.JsonProfileFormatter();
+                profileString = formatter.format(profile, "");
+                break;
+            default:
+                profileString = profile.toString();
+                LOG.warn("unknown profile format '{}',  use default format instead.", Config.profile_info_format);
+        }
+        return profileString;
+    }
+
     public String pushProfile(ProfilingExecPlan plan, RuntimeProfile profile) {
-        // Format eagerly: the caller (e.g. StmtExecutor) needs the string immediately.
-        // The element stores compact binary so in-memory size is proportional to data.
-        String profileString = ProfileElement.format(profile);
-        ProfileElement element = createElement(profile.getChildList().get(0).first, profile);
+        String profileString = generateProfileString(profile);
+        ProfileElement element = createElement(profile.getChildList().get(0).first, profileString);
         element.plan = plan;
         String queryId = element.infoStrings.get(ProfileManager.QUERY_ID);
+        // check when push in, which can ensure every element in the list has QUERY_ID column,
+        // so there is no need to check when remove element from list.
         if (Strings.isNullOrEmpty(queryId)) {
             LOG.warn("the key or value of Map is null, "
                     + "may be forget to insert 'QUERY_ID' column into infoStrings");
         }
 
-        String customQueryId = element.infoStrings.get(ProfileManager.CUSTOM_QUERY_ID);
-
         String removedQueryId = null;
         writeLock.lock();
         try {
             profileMap.put(queryId, element);
-            if (!Strings.isNullOrEmpty(customQueryId)) {
-                customQueryIdMap.put(customQueryId, queryId);
-            }
             if (profileMap.size() > Config.profile_info_reserved_num) {
                 removedQueryId = profileMap.keySet().iterator().next();
-                ProfileElement removedElement = profileMap.remove(removedQueryId);
-                unregisterCustomQueryId(removedElement, removedQueryId);
+                profileMap.remove(removedQueryId);
             }
         } finally {
             writeLock.unlock();
@@ -317,61 +309,36 @@ public class ProfileManager implements MemoryTrackable {
         }
     }
 
-    // Removes the customQueryId -> queryId mapping, but only if it still points at queryId, so evicting
-    // an older profile never clobbers a newer profile that reused the same custom query id.
-    private void unregisterCustomQueryId(ProfileElement element, String queryId) {
-        if (element == null) {
-            return;
-        }
-        String customQueryId = element.infoStrings.get(ProfileManager.CUSTOM_QUERY_ID);
-        if (!Strings.isNullOrEmpty(customQueryId)) {
-            customQueryIdMap.remove(customQueryId, queryId);
-        }
-    }
-
-    // Resolves a caller-supplied id that may be either the real query_id or a client-assigned
-    // custom_query_id, to the query_id key used by profileMap. Must be called while holding readLock/writeLock.
-    private String resolveQueryId(String id) {
-        return customQueryIdMap.getOrDefault(id, id);
-    }
-
     public boolean hasProfile(String queryId) {
         readLock.lock();
         try {
-            return profileMap.containsKey(resolveQueryId(queryId));
+            return profileMap.containsKey(queryId);
         } finally {
             readLock.unlock();
         }
     }
 
-    /**
-     * Rows of {@link #PROFILE_HEADERS} for the cached profiles accepted by {@code filter}, newest first.
-     *
-     * Thread safety: the set of profiles is snapshotted under the read lock by {@link #getAllProfileElements()};
-     * the filter and the row formatting then run on that snapshot without the lock. This is safe because an
-     * element is immutable once published (see {@link ProfileElement}), and it is deliberate: the filter may
-     * consult the access controller, and holding the lock across that call would block every profile push on
-     * this frontend. Callers see a consistent view of the map as of the snapshot, as before.
-     */
-    public List<List<String>> getAllQueries(Predicate<ProfileElement> filter) {
+    public List<List<String>> getAllQueries() {
         ZoneId sessionZone = TimeUtils.getTimeZone().toZoneId();
         List<List<String>> result = Lists.newLinkedList();
-        for (ProfileElement element : getAllProfileElements()) {
-            if (!filter.test(element)) {
-                continue;
-            }
-            Map<String, String> infoStrings = element.infoStrings;
-            List<String> row = Lists.newArrayList();
-            for (String str : PROFILE_HEADERS) {
-                if (START_TIME.equals(str)) {
-                    row.add(formatTimestamp(element.startTimeMs, sessionZone));
-                } else if (END_TIME.equals(str)) {
-                    row.add(formatTimestamp(element.endTimeMs, sessionZone));
-                } else {
-                    row.add(infoStrings.get(str));
+        readLock.lock();
+        try {
+            for (ProfileElement element : profileMap.values()) {
+                Map<String, String> infoStrings = element.infoStrings;
+                List<String> row = Lists.newArrayList();
+                for (String str : PROFILE_HEADERS) {
+                    if (START_TIME.equals(str)) {
+                        row.add(formatTimestamp(element.startTimeMs, sessionZone));
+                    } else if (END_TIME.equals(str)) {
+                        row.add(formatTimestamp(element.endTimeMs, sessionZone));
+                    } else {
+                        row.add(infoStrings.get(str));
+                    }
                 }
+                result.add(0, row);
             }
-            result.add(0, row);
+        } finally {
+            readLock.unlock();
         }
         return result;
     }
@@ -379,9 +346,7 @@ public class ProfileManager implements MemoryTrackable {
     public void removeProfile(String queryId) {
         writeLock.lock();
         try {
-            String resolvedQueryId = resolveQueryId(queryId);
-            ProfileElement removedElement = profileMap.remove(resolvedQueryId);
-            unregisterCustomQueryId(removedElement, resolvedQueryId);
+            profileMap.remove(queryId);
         } finally {
             writeLock.unlock();
         }
@@ -391,42 +356,39 @@ public class ProfileManager implements MemoryTrackable {
         writeLock.lock();
         try {
             profileMap.clear();
-            customQueryIdMap.clear();
         } finally {
             writeLock.unlock();
         }
     }
 
-    /**
-     * Returns the formatted profile string for {@code queryId}.
-     *
-     * <p>Deserialisation and formatting are performed outside the read lock so
-     * the lock is held only for the map lookup.</p>
-     */
     public String getProfile(String queryId) {
-        ProfileElement element;
+        ProfileElement element = new ProfileElement();
         readLock.lock();
         try {
-            element = profileMap.get(resolveQueryId(queryId));
+            element = profileMap.get(queryId);
+            if (element == null) {
+                return null;
+            }
+
+            return CompressionUtils.gzipDecompressString(element.profileContent);
+        } catch (IOException e) {
+            LOG.warn("Decompress profile content failed, length: {}, reason: {}",
+                    element.profileContent.length, e.getMessage());
+            return null;
         } finally {
             readLock.unlock();
         }
-        return element != null ? element.getProfileString() : null;
     }
 
     public ProfileElement getProfileElement(String queryId) {
         readLock.lock();
         try {
-            return profileMap.get(resolveQueryId(queryId));
+            return profileMap.get(queryId);
         } finally {
             readLock.unlock();
         }
     }
 
-    /**
-     * A snapshot of the cached profiles, taken under the read lock. The elements may be read after the lock is
-     * released because they are immutable once published (see {@link ProfileElement}).
-     */
     public List<ProfileElement> getAllProfileElements() {
         List<ProfileElement> result = Lists.newArrayList();
         readLock.lock();

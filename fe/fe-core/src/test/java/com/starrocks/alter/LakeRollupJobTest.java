@@ -26,7 +26,6 @@ import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.NoAliveBackendException;
 import com.starrocks.common.proc.RollupProcDir;
-import com.starrocks.common.util.LeaderDaemon;
 import com.starrocks.lake.Utils;
 import com.starrocks.proto.AggregatePublishVersionRequest;
 import com.starrocks.qe.ConnectContext;
@@ -34,7 +33,7 @@ import com.starrocks.rpc.RpcException;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
-import com.starrocks.sql.ast.CreateSyncMVStmt;
+import com.starrocks.sql.ast.CreateMaterializedViewStmt;
 import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.task.AgentBatchTask;
 import com.starrocks.task.AlterReplicaTask;
@@ -73,10 +72,15 @@ public class LakeRollupJobTest {
 
     @BeforeAll
     public static void setUp() throws Exception {
+        new MockUp<MaterializedViewHandler>() {
+            @Mock protected void runAfterCatalogReady() {
+                System.out.println("Mocked MaterializedViewHandler.runAfterCatalogReady() called");
+            }
+        };
+
         UtFrameUtils.createMinStarRocksCluster(RunMode.SHARED_DATA);
         connectContext = UtFrameUtils.createDefaultCtx();
         UtFrameUtils.stopBackgroundSchemaChangeHandler(60000);
-        stopBackgroundRollupHandler(60000);
 
         starRocksAssert = new StarRocksAssert(connectContext);
         starRocksAssert.withDatabase(DB).useDatabase(DB);
@@ -153,36 +157,10 @@ public class LakeRollupJobTest {
         table = db.getTable("base_table");
     }
 
-    /**
-     * The rollup handler is a leader daemon with no runningUnitTest guard: it ticks every
-     * alter_scheduler_interval_millisecond and runs every non-final job in alterJobsV2 -- the very state
-     * machine these cases drive by hand. clearJobs() does not close that race, because the daemon can
-     * already have advanced the job in the window between createMaterializedView() and clearJobs() (the
-     * same race fixed in RollupJobV2Test, #74346); the test then drives a job that is no longer PENDING and
-     * hits "index meta id ... already exists". Stopping the daemon is what makes every transition here an
-     * explicit call. A MockUp of runAfterLeaseValid() is not equivalent: it is name-coupled to whichever
-     * method the daemon ticks (it already had to be renamed once, in #73043), and it leaves the daemon
-     * thread calling into JMockit-instrumented code for the whole class while the cases install and tear
-     * down other MockUps -- JMockit's shared state is not thread-safe under that, which is the flake fixed
-     * in InfoSchemaDbTest (#74312).
-     */
-    private static void stopBackgroundRollupHandler(long timeoutMs) throws Exception {
-        MaterializedViewHandler rollupHandler = GlobalStateMgr.getCurrentState().getRollupHandler();
-        Assertions.assertTrue(rollupHandler.isRunning(),
-                "the rollup daemon must be up before it is stopped; otherwise a later start() would clear "
-                        + "the stop request and resurrect the racing tick");
-        rollupHandler.setStop();
-        LeaderDaemon.awaitQuiesced(List.<LeaderDaemon>of(rollupHandler), timeoutMs);
-        // setStop() drives the LeaderDaemon worker through onStopped(), which shuts the handler executor
-        // down as part of the demotion cleanup. Rebuild it so finished AlterReplicaTask reports can still
-        // be submitted while the cases drive jobs manually (mirrors stopBackgroundSchemaChangeHandler).
-        rollupHandler.rebuildExecutorForTest();
-    }
-
     private static LakeRollupJob createJob(String sql) throws Exception {
         StatementBase stmt = UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
-        Assertions.assertTrue(stmt instanceof CreateSyncMVStmt);
-        CreateSyncMVStmt createMaterializedViewStmt = (CreateSyncMVStmt) stmt;
+        Assertions.assertTrue(stmt instanceof CreateMaterializedViewStmt);
+        CreateMaterializedViewStmt createMaterializedViewStmt = (CreateMaterializedViewStmt) stmt;
         GlobalStateMgr.getCurrentState().getLocalMetastore().createMaterializedView(createMaterializedViewStmt);
         Map<Long, AlterJobV2> alterJobV2Map = GlobalStateMgr.getCurrentState().getRollupHandler().getAlterJobsV2();
         List<AlterJobV2> alterJobV2List = new ArrayList<>(alterJobV2Map.values());
@@ -320,8 +298,7 @@ public class LakeRollupJobTest {
             public static void sendAggregatePublishVersionRequest(AggregatePublishVersionRequest request,
                     long baseVersion, ComputeResource computeResource,
                     Map<Long, Double> compactionScores,
-                    Map<Long, com.starrocks.proto.TabletStatPB> tabletStats,
-                    java.util.List<com.starrocks.proto.VectorIndexBuildInfoPB> vectorIndexBuildInfos)
+                    Map<Long, com.starrocks.proto.TabletStatPB> tabletStats)
                     throws NoAliveBackendException, RpcException {
                 // Do nothing, just return successfully
             }
@@ -399,43 +376,5 @@ public class LakeRollupJobTest {
         Exception exception = Assertions.assertThrows(AlterCancelException.class, () -> lakeRollupJob3.runPendingJob());
         Assertions.assertTrue(exception.getMessage().contains("No alive backend"));
         Assertions.assertEquals(AlterJobV2.JobState.PENDING, lakeRollupJob3.getJobState());
-    }
-
-    @Test
-    public void testLightWeightTabletCreationSkipsSendTask() throws Exception {
-        starRocksAssert.withTable("CREATE TABLE base_table_lw\n" +
-                "(\n" +
-                "    k1 date,\n" +
-                "    k2 int,\n" +
-                "    k3 int\n" +
-                ")\n" +
-                "PARTITION BY RANGE(k1)\n" +
-                "(\n" +
-                "    PARTITION p1 values [('2022-02-01'),('2022-02-16'))\n" +
-                ")\n" +
-                "DISTRIBUTED BY HASH(k2) BUCKETS 3\n" +
-                "PROPERTIES('light_weight_tablet_creation' = 'true');");
-
-        LakeRollupJob job = createJob(
-                "create materialized view mv_lw as select k2, k1 from base_table_lw order by k2;");
-        OlapTable lwTable = (OlapTable) GlobalStateMgr.getCurrentState().getLocalMetastore()
-                .getDb(DB).getTable("base_table_lw");
-        Assertions.assertTrue(lwTable.isLightWeightTabletCreation());
-
-        java.util.concurrent.atomic.AtomicBoolean sendCalled =
-                new java.util.concurrent.atomic.AtomicBoolean(false);
-        new MockUp<LakeRollupJob>() {
-            @Mock
-            public void sendAgentTaskAndWait(AgentBatchTask batchTask,
-                                             com.starrocks.common.util.concurrent.MarkedCountDownLatch<Long, Long> latch,
-                                             long timeoutSeconds) {
-                sendCalled.set(true);
-            }
-        };
-
-        job.runPendingJob();
-        Assertions.assertEquals(AlterJobV2.JobState.WAITING_TXN, job.getJobState());
-        Assertions.assertFalse(sendCalled.get(),
-                "sendAgentTaskAndWait must not be invoked when light_weight_tablet_creation is enabled");
     }
 }

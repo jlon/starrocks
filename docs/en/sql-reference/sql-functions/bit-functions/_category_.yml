@@ -3,5 +3,4 @@ label: 'Bit'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: bit-functions
+  type: generated-index

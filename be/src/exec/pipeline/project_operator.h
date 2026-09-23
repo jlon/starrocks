@@ -14,7 +14,8 @@
 
 #pragma once
 
-#include "exec_primitive/pipeline/operator_factory.h"
+#include "exec/pipeline/operator.h"
+#include "runtime/global_dict/parser.h"
 
 namespace starrocks {
 class ExprContext;

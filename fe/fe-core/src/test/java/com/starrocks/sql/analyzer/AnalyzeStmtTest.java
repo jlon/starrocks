@@ -66,9 +66,6 @@ import com.starrocks.statistic.StatisticSQLBuilder;
 import com.starrocks.statistic.StatisticUtils;
 import com.starrocks.statistic.StatisticsMetaManager;
 import com.starrocks.statistic.StatsConstants;
-import com.starrocks.statistic.columns.ColumnUsage;
-import com.starrocks.statistic.columns.ExternalColumnUsage;
-import com.starrocks.statistic.columns.PredicateColumnsMgr;
 import com.starrocks.statistic.columns.PredicateColumnsStorage;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
@@ -114,24 +111,6 @@ public class AnalyzeStmtTest {
 
         createTblStmtStr = "create table db.tb2(kk1 int, kk2 json) "
                 + "DUPLICATE KEY(kk1) distributed by hash(kk1) buckets 3 properties('replication_num' = '1');";
-        starRocksAssert.withTable(createTblStmtStr);
-
-        createTblStmtStr = "create table db.tb_unsupported_histogram("
-                + "k1 int, "
-                + "c_array array<int>, "
-                + "c_struct struct<a int>, "
-                + "c_map map<int, int>, "
-                + "c_json json, "
-                + "c_varbinary varbinary) "
-                + "DUPLICATE KEY(k1) distributed by hash(k1) buckets 3 properties('replication_num' = '1');";
-        starRocksAssert.withTable(createTblStmtStr);
-
-        createTblStmtStr = "create table db.tb_metric_histogram("
-                + "k1 int, "
-                + "c_hll hll hll_union, "
-                + "c_bitmap bitmap bitmap_union, "
-                + "c_percentile percentile percentile_union) "
-                + "AGGREGATE KEY(k1) distributed by hash(k1) buckets 3 properties('replication_num' = '1');";
         starRocksAssert.withTable(createTblStmtStr);
 
         String createStructTableSql = "CREATE TABLE struct_a(\n" +
@@ -221,37 +200,6 @@ public class AnalyzeStmtTest {
         sql = "analyze table hive0.tpch.customer(C_NAME, C_PHONE)";
         analyzeStmt = (AnalyzeStmt) analyzeSuccess(sql);
         Assertions.assertEquals("[c_name, c_phone]", analyzeStmt.getColumnNames().toString());
-    }
-
-    @Test
-    public void testAnalyzeExternalPredicateColumns() {
-        new MockUp<PredicateColumnsMgr>() {
-            @Mock
-            public List<ExternalColumnUsage> queryExternalPredicateColumns(Table table) {
-                return List.of(new ExternalColumnUsage("table-hash", table.getCatalogName(),
-                        table.getCatalogDBName(), table.getCatalogTableName(), "c_name",
-                        ColumnUsage.UseCase.PREDICATE));
-            }
-        };
-
-        AnalyzeStmt analyzeStmt = (AnalyzeStmt) analyzeSuccess(
-                "analyze sample table hive0.tpch.customer predicate columns");
-        Assertions.assertTrue(analyzeStmt.isExternal());
-        Assertions.assertTrue(analyzeStmt.isSample());
-        Assertions.assertEquals(List.of("c_name"), analyzeStmt.getColumnNames());
-    }
-
-    @Test
-    public void testAnalyzeExternalPredicateColumnsWithoutUsage() {
-        new MockUp<PredicateColumnsMgr>() {
-            @Mock
-            public List<ExternalColumnUsage> queryExternalPredicateColumns(Table table) {
-                return List.of();
-            }
-        };
-
-        analyzeFail("analyze sample table hive0.tpch.customer predicate columns",
-                "No predicate columns found for external table 'customer'");
     }
 
     @Test
@@ -623,7 +571,7 @@ public class AnalyzeStmtTest {
                 StatisticSQLBuilder.buildQuerySampleStatisticsSQL(database.getId(),
                         table.getId(), Lists.newArrayList("v1", "v2")));
 
-        new FullStatisticsCollectJob(database, table,
+        FullStatisticsCollectJob collectJob = new FullStatisticsCollectJob(database, table,
                 Lists.newArrayList(partition.getId()),
                 Lists.newArrayList("v1", "v2"), StatsConstants.AnalyzeType.FULL,
                 StatsConstants.ScheduleType.SCHEDULE,
@@ -642,30 +590,6 @@ public class AnalyzeStmtTest {
         Assertions.assertEquals("test", dropHistogramStmt.getDbName());
         Assertions.assertEquals("t0", dropHistogramStmt.getTableName());
         Assertions.assertEquals(dropHistogramStmt.getColumnNames().toString(), "[v1]");
-    }
-
-    @Test
-    public void testHistogramUnsupportedColumnType() {
-        String msg = "Can't create histogram statistics on column type is";
-        // complex types
-        analyzeFail("analyze table db.tb_unsupported_histogram update histogram on c_array with 256 buckets", msg);
-        analyzeFail("analyze table db.tb_unsupported_histogram update histogram on c_struct with 256 buckets", msg);
-        analyzeFail("analyze table db.tb_unsupported_histogram update histogram on c_map with 256 buckets", msg);
-        // json type
-        analyzeFail("analyze table db.tb_unsupported_histogram update histogram on c_json with 256 buckets", msg);
-        // binary type
-        analyzeFail("analyze table db.tb_unsupported_histogram update histogram on c_varbinary with 256 buckets", msg);
-        // only-metric types
-        analyzeFail("analyze table db.tb_metric_histogram update histogram on c_hll with 256 buckets", msg);
-        analyzeFail("analyze table db.tb_metric_histogram update histogram on c_bitmap with 256 buckets", msg);
-        analyzeFail("analyze table db.tb_metric_histogram update histogram on c_percentile with 256 buckets", msg);
-    }
-
-    @Test
-    public void testHistogramAllColumnsSkipsUnsupportedColumnType() {
-        AnalyzeStmt analyzeStmt = (AnalyzeStmt) analyzeSuccess(
-                "analyze table db.tb_unsupported_histogram update histogram on all columns");
-        Assertions.assertEquals(List.of("k1"), analyzeStmt.getColumnNames());
     }
 
     @Test
@@ -724,7 +648,7 @@ public class AnalyzeStmtTest {
     @Test
     public void testKillAnalyze() {
         String sql = "kill analyze 1";
-        analyzeSuccess(sql);
+        KillAnalyzeStmt killAnalyzeStmt = (KillAnalyzeStmt) analyzeSuccess(sql);
 
         GlobalStateMgr.getCurrentState().getAnalyzeMgr().registerConnection(1, getConnectContext());
         Assertions.assertThrows(SemanticException.class,

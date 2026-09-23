@@ -23,6 +23,7 @@ import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.DDLStmtExecutor;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.AlterDatabaseRenameStatement;
 import com.starrocks.sql.ast.CreateCatalogStmt;
 import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.utframe.UtFrameUtils;
@@ -42,7 +43,7 @@ public class AlterDbRenameAnalyzerTest {
     @BeforeAll
     public static void beforeClass() throws Exception {
         UtFrameUtils.createMinStarRocksCluster();
-        Deencapsulation.newInstance(GlobalStateMgr.class);
+        GlobalStateMgr globalStateMgr = Deencapsulation.newInstance(GlobalStateMgr.class);
         AnalyzeTestUtil.init();
         String createCatalog = "CREATE EXTERNAL CATALOG hive_catalog_1 COMMENT \"hive_catalog\" PROPERTIES(\"type\"=\"hive\", \"hive.metastore.uris\"=\"thrift://127.0.0.1:9083\");";
         StatementBase stmt = AnalyzeTestUtil.analyzeSuccess(createCatalog);
@@ -62,7 +63,7 @@ public class AlterDbRenameAnalyzerTest {
         String sql = "alter database `db1` rename db2";
         ctx.setCurrentCatalog("hive_catalog_1");
         Throwable exception = assertThrows(AnalysisException.class, () -> {
-            UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+            AlterDatabaseRenameStatement statement = (AlterDatabaseRenameStatement) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
         });
         assertThat(exception.getMessage(), containsString("Getting analyzing error. Detail message: " +
                 "Unsupported operation rename db under external catalog."));

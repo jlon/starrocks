@@ -37,7 +37,6 @@ package com.starrocks.qe;
 import com.google.common.base.Enums;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
-import com.google.common.base.Suppliers;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
@@ -62,8 +61,6 @@ import com.starrocks.catalog.ConnectorView;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DynamicPartitionProperty;
 import com.starrocks.catalog.Function;
-import com.starrocks.catalog.FunctionSearchDesc;
-import com.starrocks.catalog.GlobalFunctionMgr;
 import com.starrocks.catalog.Index;
 import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.catalog.LocalTablet;
@@ -86,7 +83,6 @@ import com.starrocks.catalog.View;
 import com.starrocks.clone.DynamicPartitionScheduler;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.CaseSensibility;
-import com.starrocks.common.Config;
 import com.starrocks.common.ConfigBase;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ErrorCode;
@@ -118,7 +114,6 @@ import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.credential.CredentialUtil;
 import com.starrocks.datacache.DataCacheMgr;
-import com.starrocks.failpoint.FailPointExecutor;
 import com.starrocks.lake.TabletRepairHelper;
 import com.starrocks.load.DeleteMgr;
 import com.starrocks.load.ExportJob;
@@ -154,7 +149,6 @@ import com.starrocks.service.InformationSchemaDataSource;
 import com.starrocks.sql.analyzer.AnalyzerUtils;
 import com.starrocks.sql.analyzer.AstToStringBuilder;
 import com.starrocks.sql.analyzer.Authorizer;
-import com.starrocks.sql.analyzer.FunctionRefAnalyzer;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.AdminShowAutomatedSnapshotStmt;
 import com.starrocks.sql.ast.AdminShowConfigStmt;
@@ -164,8 +158,6 @@ import com.starrocks.sql.ast.AdminShowTabletStatusStmt;
 import com.starrocks.sql.ast.AstVisitorExtendInterface;
 import com.starrocks.sql.ast.DescStorageVolumeStmt;
 import com.starrocks.sql.ast.DescribeStmt;
-import com.starrocks.sql.ast.FunctionArgsDef;
-import com.starrocks.sql.ast.FunctionRef;
 import com.starrocks.sql.ast.HelpStmt;
 import com.starrocks.sql.ast.ImportColumnDesc;
 import com.starrocks.sql.ast.LakeTabletStatus;
@@ -190,7 +182,6 @@ import com.starrocks.sql.ast.ShowComputeNodeBlackListStmt;
 import com.starrocks.sql.ast.ShowComputeNodesStmt;
 import com.starrocks.sql.ast.ShowCreateDbStmt;
 import com.starrocks.sql.ast.ShowCreateExternalCatalogStmt;
-import com.starrocks.sql.ast.ShowCreateFunctionStmt;
 import com.starrocks.sql.ast.ShowCreateRoutineLoadStmt;
 import com.starrocks.sql.ast.ShowCreateTableStmt;
 import com.starrocks.sql.ast.ShowDataCacheRulesStmt;
@@ -240,7 +231,6 @@ import com.starrocks.sql.ast.ShowTransactionStmt;
 import com.starrocks.sql.ast.ShowUserPropertyStmt;
 import com.starrocks.sql.ast.ShowUserStmt;
 import com.starrocks.sql.ast.ShowVariablesStmt;
-import com.starrocks.sql.ast.ShowWarningStmt;
 import com.starrocks.sql.ast.TableRef;
 import com.starrocks.sql.ast.UserRef;
 import com.starrocks.sql.ast.expression.BinaryPredicate;
@@ -277,7 +267,7 @@ import com.starrocks.statistic.ExternalHistogramStatsMeta;
 import com.starrocks.statistic.HistogramStatsMeta;
 import com.starrocks.statistic.MultiColumnStatsMeta;
 import com.starrocks.statistic.StatisticUtils;
-import com.starrocks.system.ComputeNode;
+import com.starrocks.system.Backend;
 import com.starrocks.system.Frontend;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TAuthInfo;
@@ -306,6 +296,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -317,7 +308,6 @@ import java.util.UUID;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -426,25 +416,6 @@ public class ShowExecutor {
         @Override
         public ShowResultSet visitShowStatement(ShowStmt statement, ConnectContext context) {
             return new ShowResultSet(showResultMetaFactory.getMetadata(statement), EMPTY_SET);
-        }
-
-        @Override
-        public ShowResultSet visitShowWarningStatement(ShowWarningStmt statement, ConnectContext context) {
-            // `SHOW WARNINGS` returns all diagnostics of the previous statement; `SHOW ERRORS`
-            // returns only the Error-level ones. Both keywords parse to ShowWarningStmt. The
-            // optional WHERE / LIMIT are applied by the ShowExecutor.execute() pipeline (ORDER BY
-            // parses but takes effect only together with WHERE, a pre-existing limitation of
-            // ShowStmtAnalyzer.analyzeShowPredicateClause, which returns before building the
-            // order-by pairs when there is no predicate).
-            boolean onlyErrors = statement.isShowErrors();
-            List<List<String>> rows = Lists.newArrayList();
-            for (QueryWarning warning : context.getWarnings()) {
-                if (onlyErrors && !warning.isError()) {
-                    continue;
-                }
-                rows.add(Lists.newArrayList(warning.getLevel(), warning.getCode(), warning.getMessage()));
-            }
-            return new ShowResultSet(showResultMetaFactory.getMetadata(statement), rows);
         }
 
         @Override
@@ -1130,22 +1101,18 @@ public class ShowExecutor {
         public ShowResultSet visitShowProfilelistStatement(ShowProfilelistStmt statement, ConnectContext context) {
             List<List<String>> rowSet = Lists.newArrayList();
 
-            // A user lists the profiles of the queries they ran; listing other users' needs SYSTEM OPERATE,
-            // evaluated at most once for the whole listing (see Authorizer#canReadQueryProfile). The knob is
-            // read once up front so a flip mid-listing cannot produce a half-filtered result.
-            boolean checkAccess = Config.authorization_enable_query_profile_access_check;
-            Supplier<Boolean> hasOperate =
-                    Suppliers.memoize(() -> Authorizer.hasSystemAction(context, PrivilegeType.OPERATE));
             List<ProfileManager.ProfileElement> profileElements = ProfileManager.getInstance().getAllProfileElements();
             Collections.reverse(profileElements);
-            for (ProfileManager.ProfileElement element : profileElements) {
-                if (statement.getLimit() >= 0 && rowSet.size() >= statement.getLimit()) {
+            Iterator<ProfileManager.ProfileElement> iterator = profileElements.iterator();
+            int count = 0;
+            while (iterator.hasNext()) {
+                ProfileManager.ProfileElement element = iterator.next();
+                List<String> row = element.toRow(context);
+                rowSet.add(row);
+                count++;
+                if (statement.getLimit() >= 0 && count >= statement.getLimit()) {
                     break;
                 }
-                if (checkAccess && !Authorizer.canReadQueryProfile(context, element, hasOperate)) {
-                    continue;
-                }
-                rowSet.add(element.toRow(context));
             }
 
             return new ShowResultSet(showResultMetaFactory.getMetadata(statement), rowSet);
@@ -1301,60 +1268,6 @@ public class ShowExecutor {
             } catch (AccessDeniedException e) {
                 return false;
             }
-        }
-
-        @Override
-        public ShowResultSet visitShowCreateFunctionStatement(ShowCreateFunctionStmt statement, ConnectContext context) {
-            FunctionRef functionRef = statement.getFunctionRef();
-            FunctionArgsDef argsDef = statement.getArgsDef();
-            boolean isGlobal = statement.isGlobalFunction();
-            Database db = null;
-            String resolvedDbName = null;
-            try {
-                if (isGlobal) {
-                    Authorizer.checkSystemAction(context, PrivilegeType.CREATE_GLOBAL_FUNCTION);
-                } else {
-                    resolvedDbName = functionRef.getDbName();
-                    if (Strings.isNullOrEmpty(resolvedDbName)) {
-                        resolvedDbName = context.getDatabase();
-                        if (Strings.isNullOrEmpty(resolvedDbName)) {
-                            ErrorReport.reportSemanticException(ErrorCode.ERR_NO_DB_ERROR);
-                        }
-                    }
-                    Authorizer.checkDbAction(context, InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
-                            resolvedDbName, PrivilegeType.CREATE_FUNCTION);
-                    db = context.getGlobalStateMgr().getLocalMetastore().getDb(resolvedDbName);
-                    MetaUtils.checkDbNullAndReport(db, resolvedDbName);
-                }
-            } catch (AccessDeniedException e) {
-                AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
-                        context.getCurrentUserIdentity(),
-                        context.getCurrentRoleIds(),
-                        isGlobal ? PrivilegeType.CREATE_GLOBAL_FUNCTION.name() : PrivilegeType.CREATE_FUNCTION.name(),
-                        isGlobal ? ObjectType.SYSTEM.name() : ObjectType.DATABASE.name(),
-                        isGlobal ? null : resolvedDbName);
-            }
-
-            Function fn;
-            if (isGlobal) {
-                GlobalFunctionMgr mgr = context.getGlobalStateMgr().getGlobalFunctionMgr();
-                FunctionSearchDesc desc = FunctionRefAnalyzer.buildFunctionSearchDesc(
-                        functionRef, argsDef, FunctionRefAnalyzer.GLOBAL_UDF_DB);
-                fn = mgr.getFunction(desc);
-            } else {
-                FunctionSearchDesc desc = FunctionRefAnalyzer.buildFunctionSearchDesc(
-                        functionRef, argsDef, db.getFullName());
-                fn = db.getFunction(desc);
-            }
-
-            if (fn == null) {
-                ErrorReport.reportSemanticException(ErrorCode.ERR_COMMON_ERROR,
-                        "Function " + functionRef.getFnName().toString() + " does not exist");
-            }
-
-            List<List<String>> rows = Lists.newArrayList();
-            rows.add(Lists.newArrayList(fn.toSql(false)));
-            return new ShowResultSet(showResultMetaFactory.getMetadata(statement), rows);
         }
 
         @Override
@@ -1918,7 +1831,7 @@ public class ShowExecutor {
                         long indexReplicaCount = 0;
                         long indexRowCount = 0;
                         for (PhysicalPartition partition : olapTable.getAllPhysicalPartitions()) {
-                            MaterializedIndex mIndex = partition.getQueryableIndex(indexMetaId);
+                            MaterializedIndex mIndex = partition.getLatestIndex(indexMetaId);
                             indexSize += mIndex.getDataSize();
                             indexReplicaCount += mIndex.getReplicaCount();
                             indexRowCount += mIndex.getRowCount();
@@ -2422,9 +2335,8 @@ public class ShowExecutor {
                 throw new SemanticException("Repository " + statement.getRepoName() + " does not exist");
             }
 
-            List<List<String>> snapshotInfos = repo.getSnapshotInfos(statement.getSnapshotName(),
-                    statement.getTimestamp(), statement.getSnapshotNames(),
-                    GlobalStateMgr.getCurrentState().getBackupHandler().getRetentionCache());
+            List<List<String>> snapshotInfos = repo.getSnapshotInfos(statement.getSnapshotName(), statement.getTimestamp(),
+                    statement.getSnapshotNames());
             return new ShowResultSet(showResultMetaFactory.getMetadata(statement), snapshotInfos);
         }
 
@@ -3147,65 +3059,6 @@ public class ShowExecutor {
         }
 
         @Override
-        public ShowResultSet visitShowAIProvidersStatement(
-                com.starrocks.sql.ast.aiprovider.ShowAIProvidersStmt statement, ConnectContext context) {
-            com.starrocks.server.AIProviderMgr mgr = GlobalStateMgr.getCurrentState().getAIProviderMgr();
-            com.starrocks.context.ai.AIProviderType typeFilter = statement.getTypeFilter().isEmpty()
-                    ? null : com.starrocks.context.ai.AIProviderType.fromString(statement.getTypeFilter());
-            PatternMatcher matcher = null;
-            if (!statement.getPattern().isEmpty()) {
-                matcher = PatternMatcher.createMysqlPattern(statement.getPattern(),
-                        CaseSensibility.STORAGEVOLUME.getCaseSensibility());
-            }
-            List<com.starrocks.context.ai.AIProvider> providers =
-                    typeFilter == null ? mgr.listProviders() : mgr.listProviders(typeFilter);
-            List<List<String>> rows = Lists.newArrayList();
-            for (com.starrocks.context.ai.AIProvider provider : providers) {
-                if (matcher != null && !matcher.match(provider.getName())) {
-                    continue;
-                }
-                java.util.Map<String, String> masked = provider.getMaskedParams();
-                String defaultId = mgr.getDefaultProviderId(provider.getType());
-                rows.add(Lists.newArrayList(
-                        provider.getName(),
-                        provider.getType().lower(),
-                        provider.getProtocol().lower(),
-                        provider.getId().equals(defaultId) ? "true" : "false",
-                        masked.getOrDefault(com.starrocks.context.ai.AIProvider.PROPERTY_ENDPOINT, ""),
-                        masked.getOrDefault(com.starrocks.context.ai.AIProvider.PROPERTY_MODEL, ""),
-                        masked.getOrDefault(com.starrocks.context.ai.AIProvider.PROPERTY_DIMENSIONS, ""),
-                        masked.getOrDefault(com.starrocks.context.ai.AIProvider.PROPERTY_MAX_DOCUMENTS, ""),
-                        masked.getOrDefault(com.starrocks.context.ai.AIProvider.PROPERTY_TIMEOUT_MS, ""),
-                        masked.getOrDefault(com.starrocks.context.ai.AIProvider.PROPERTY_API_KEY, ""),
-                        provider.getComment()));
-            }
-            return new ShowResultSet(showResultMetaFactory.getMetadata(statement), rows);
-        }
-
-        @Override
-        public ShowResultSet visitDescAIProviderStatement(
-                com.starrocks.sql.ast.aiprovider.DescAIProviderStmt statement, ConnectContext context) {
-            com.starrocks.server.AIProviderMgr mgr = GlobalStateMgr.getCurrentState().getAIProviderMgr();
-            com.starrocks.context.ai.AIProvider provider = mgr.getProvider(statement.getName());
-            if (provider == null) {
-                throw new SemanticException("Unknown AI provider: " + statement.getName());
-            }
-            String defaultId = mgr.getDefaultProviderId(provider.getType());
-            List<List<String>> rows = Lists.newArrayList();
-            rows.add(Lists.newArrayList("Name", provider.getName()));
-            rows.add(Lists.newArrayList("Type", provider.getType().lower()));
-            rows.add(Lists.newArrayList("IsDefault", provider.getId().equals(defaultId) ? "true" : "false"));
-            java.util.Map<String, String> masked = provider.getMaskedParams();
-            for (java.util.Map.Entry<String, String> entry : masked.entrySet()) {
-                rows.add(Lists.newArrayList(entry.getKey(), entry.getValue()));
-            }
-            if (!provider.getComment().isEmpty()) {
-                rows.add(Lists.newArrayList("Comment", provider.getComment()));
-            }
-            return new ShowResultSet(showResultMetaFactory.getMetadata(statement), rows);
-        }
-
-        @Override
         public ShowResultSet visitShowPipeStatement(ShowPipeStmt statement, ConnectContext context) {
             List<List<Comparable>> rows = Lists.newArrayList();
             String dbName = statement.getDbName();
@@ -3302,31 +3155,51 @@ public class ShowExecutor {
                 matcher = PatternMatcher.createMysqlPattern(statement.getPattern(),
                         CaseSensibility.VARIABLES.getCaseSensibility());
             }
-            List<ComputeNode> nodes;
-            try {
-                nodes = FailPointExecutor.resolveNodes(clusterInfoService, statement.getBackends());
-            } catch (DdlException e) {
-                throw new SemanticException(e.getMessage());
+            List<Backend> backends = new LinkedList<>();
+            if (statement.getBackends() == null) {
+                List<Long> backendIds = clusterInfoService.getBackendIds(true);
+                if (backendIds == null) {
+                    throw new SemanticException("No alive backends");
+                }
+                for (long backendId : backendIds) {
+                    Backend backend = clusterInfoService.getBackend(backendId);
+                    if (backend == null) {
+                        continue;
+                    }
+                    backends.add(backend);
+                }
+            } else {
+                for (String backendAddr : statement.getBackends()) {
+                    String[] tmp = backendAddr.split(":");
+                    if (tmp.length != 2) {
+                        throw new SemanticException("invalid backend addr");
+                    }
+                    Backend backend = clusterInfoService.getBackendWithBePort(tmp[0], Integer.parseInt(tmp[1]));
+                    if (backend == null) {
+                        throw new SemanticException("cannot find backend with addr " + backendAddr);
+                    }
+                    backends.add(backend);
+                }
             }
             // send request
-            List<Pair<ComputeNode, Future<PListFailPointResponse>>> futures = Lists.newArrayList();
-            for (ComputeNode node : nodes) {
+            List<Pair<Backend, Future<PListFailPointResponse>>> futures = Lists.newArrayList();
+            for (Backend backend : backends) {
                 try {
-                    futures.add(Pair.create(node,
-                            BackendServiceClient.getInstance().listFailPointAsync(node.getBrpcAddress(), request)));
+                    futures.add(Pair.create(backend,
+                            BackendServiceClient.getInstance().listFailPointAsync(backend.getBrpcAddress(), request)));
                 } catch (RpcException e) {
                     throw new SemanticException("sending list failpoint request fails");
                 }
             }
             // handle response
             List<List<String>> rows = Lists.newArrayList();
-            for (Pair<ComputeNode, Future<PListFailPointResponse>> future : futures) {
+            for (Pair<Backend, Future<PListFailPointResponse>> future : futures) {
                 try {
-                    final ComputeNode node = future.first;
+                    final Backend backend = future.first;
                     final PListFailPointResponse result = future.second.get(10, TimeUnit.SECONDS);
                     if (result != null && result.status.statusCode != TStatusCode.OK.getValue()) {
-                        String errMsg = String.format("list failpoint status failed, node: %s:%d, error: %s",
-                                node.getHost(), node.getBePort(), result.status.errorMsgs.get(0));
+                        String errMsg = String.format("list failpoint status failed, backend: %s:%d, error: %s",
+                                backend.getHost(), backend.getBePort(), result.status.errorMsgs.get(0));
                         LOG.warn(errMsg);
                         throw new SemanticException(errMsg);
                     }
@@ -3337,28 +3210,17 @@ public class ShowExecutor {
                         if (matcher != null && !matcher.match(name)) {
                             continue;
                         }
-                        // pause and both counters are optional on the wire: a BE built before them
-                        // sends null, so never dereference a boxed value here.
-                        boolean paused = Boolean.TRUE.equals(triggerMode.pause);
                         List<String> row = Lists.newArrayList();
                         row.add(failPointInfo.name);
-                        // A pause is sent as DISABLE + pause=true so old backends degrade safely;
-                        // report what it actually means.
-                        row.add(paused ? "PAUSE" : triggerMode.mode.toString());
-                        if (paused) {
-                            row.add("");
-                        } else if (triggerMode.mode == FailPointTriggerModeType.ENABLE_N_TIMES) {
+                        row.add(triggerMode.mode.toString());
+                        if (triggerMode.mode == FailPointTriggerModeType.ENABLE_N_TIMES) {
                             row.add(Integer.toString(triggerMode.nTimes));
                         } else if (triggerMode.mode == FailPointTriggerModeType.PROBABILITY_ENABLE) {
                             row.add(Double.toString(triggerMode.probability));
                         } else {
                             row.add("");
                         }
-                        row.add(String.format("%s:%d", node.getHost(), node.getBePort()));
-                        row.add(Long.toString(failPointInfo.triggerCount == null
-                                ? 0L : failPointInfo.triggerCount));
-                        row.add(Long.toString(failPointInfo.pausedThreadCount == null
-                                ? 0L : failPointInfo.pausedThreadCount));
+                        row.add(String.format("%s:%d", backend.getHost(), backend.getBePort()));
                         rows.add(row);
                     }
                 } catch (InterruptedException e) {

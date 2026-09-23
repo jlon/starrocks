@@ -3,5 +3,4 @@ label: 'Hash'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: hash-functions
+  type: generated-index

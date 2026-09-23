@@ -18,12 +18,12 @@
 
 #include <cstdint>
 
-#include "base/testutil/parallel_test.h"
 #include "column/column_helper.h"
 #include "column/const_column.h"
 #include "column/fixed_length_column.h"
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
+#include "testutil/parallel_test.h"
 
 namespace starrocks {
 
@@ -719,12 +719,12 @@ PARALLEL_TEST(ArrayColumnTest, test_copy_constructor) {
     c0->elements_column_raw_ptr()->append_datum(6);
     c0->offsets_column_raw_ptr()->append(6);
 
-    auto c1 = ArrayColumn::static_pointer_cast(c0->clone());
+    ArrayColumn c1(*c0);
     c0->reset_column();
-    ASSERT_EQ("[1,2,3]", c1->debug_item(0));
-    ASSERT_EQ("[4,5,6]", c1->debug_item(1));
-    ASSERT_TRUE(c1->elements_column()->use_count() == 1);
-    ASSERT_TRUE(c1->offsets_column()->use_count() == 1);
+    ASSERT_EQ("[1,2,3]", c1.debug_item(0));
+    ASSERT_EQ("[4,5,6]", c1.debug_item(1));
+    ASSERT_TRUE(c1.elements_column()->use_count() == 1);
+    ASSERT_TRUE(c1.offsets_column()->use_count() == 1);
 }
 
 // NOLINTNEXTLINE
@@ -766,12 +766,13 @@ PARALLEL_TEST(ArrayColumnTest, test_copy_assignment) {
     c0->elements_column_raw_ptr()->append_datum(6);
     c0->offsets_column_raw_ptr()->append(6);
 
-    auto c1 = ArrayColumn::static_pointer_cast(c0->clone());
+    ArrayColumn c1(NullableColumn::create(Int32Column::create(), NullColumn::create()), UInt32Column::create());
+    c1 = *c0;
     c0->reset_column();
-    ASSERT_EQ("[1,2,3]", c1->debug_item(0));
-    ASSERT_EQ("[4,5,6]", c1->debug_item(1));
-    ASSERT_TRUE(c1->elements_column()->use_count() == 1);
-    ASSERT_TRUE(c1->offsets_column()->use_count() == 1);
+    ASSERT_EQ("[1,2,3]", c1.debug_item(0));
+    ASSERT_EQ("[4,5,6]", c1.debug_item(1));
+    ASSERT_TRUE(c1.elements_column()->use_count() == 1);
+    ASSERT_TRUE(c1.offsets_column()->use_count() == 1);
 }
 
 // NOLINTNEXTLINE
@@ -1148,7 +1149,7 @@ PARALLEL_TEST(ArrayColumnTest, test_replicate) {
     column->offsets_column_raw_ptr()->append(6);
     column->offsets_column_raw_ptr()->append(6);
 
-    Buffer<uint32_t> off;
+    Offsets off;
     off.emplace_back(0);
     off.emplace_back(3);
     off.emplace_back(5);
@@ -1233,91 +1234,6 @@ PARALLEL_TEST(ArrayColumnTest, test_reference_memory_usage) {
         ASSERT_EQ(10, column->reference_memory_usage(2, 2));
         ASSERT_EQ(6, column->reference_memory_usage(3, 1));
     }
-}
-
-// Builds an ArrayColumn from row-major data. The nulls of the wrapping NullableColumn are supplied
-// separately, which is exactly the shape null_rows_are_empty() takes.
-static ArrayColumn::MutablePtr make_array_column(const std::vector<std::vector<int32_t>>& rows) {
-    auto column = ArrayColumn::create(NullableColumn::create(Int32Column::create(), NullColumn::create()),
-                                      UInt32Column::create());
-    uint32_t offset = 0;
-    for (const auto& row : rows) {
-        for (int32_t v : row) {
-            column->elements_column_raw_ptr()->append_datum(Datum(v));
-        }
-        offset += static_cast<uint32_t>(row.size());
-        column->offsets_column_raw_ptr()->append(offset);
-    }
-    return column;
-}
-
-// NOLINTNEXTLINE
-PARALLEL_TEST(ArrayColumnTest, test_null_rows_are_empty) {
-    // No NULL row at all: there is nothing that could disagree with the offsets.
-    {
-        auto column = make_array_column({{10, 20}, {30}, {40, 50}});
-        Filter nulls{0, 0, 0};
-        ASSERT_TRUE(column->null_rows_are_empty(nulls.data(), nulls.size()));
-    }
-    // A NULL row whose payload was cleared - what append_nulls() produces, and what the zero-copy
-    // UNNEST path relies on: the offsets already say the row expands to nothing.
-    {
-        auto column = make_array_column({{10, 20}, {}, {40, 50}});
-        Filter nulls{0, 1, 0};
-        ASSERT_TRUE(column->null_rows_are_empty(nulls.data(), nulls.size()));
-    }
-    // A NULL row that still carries elements: the offsets would claim rows that do not logically
-    // exist, so the caller has to rebuild instead of forwarding them.
-    {
-        auto column = make_array_column({{10, 20}, {30}, {40, 50}});
-        Filter nulls{0, 1, 0};
-        ASSERT_FALSE(column->null_rows_are_empty(nulls.data(), nulls.size()));
-    }
-    // Same, in the last position - the loop must not stop one row early.
-    {
-        auto column = make_array_column({{10}, {20}});
-        Filter nulls{0, 1};
-        ASSERT_FALSE(column->null_rows_are_empty(nulls.data(), nulls.size()));
-    }
-    // Same, in the first position.
-    {
-        auto column = make_array_column({{10}, {20}});
-        Filter nulls{1, 0};
-        ASSERT_FALSE(column->null_rows_are_empty(nulls.data(), nulls.size()));
-    }
-    // A row count that does not match the column is rejected rather than read out of bounds.
-    {
-        auto column = make_array_column({{10, 20}, {30}});
-        Filter nulls{1};
-        ASSERT_FALSE(column->null_rows_are_empty(nulls.data(), nulls.size()));
-    }
-    // Empty column: vacuously true, and the null buffer is never dereferenced.
-    {
-        auto column = make_array_column({});
-        ASSERT_TRUE(column->null_rows_are_empty(nullptr, 0));
-    }
-}
-
-// null_rows_are_empty() is the check for the invariant that fill_default() establishes, so one is the
-// inverse of the other over the same filter.
-// NOLINTNEXTLINE
-PARALLEL_TEST(ArrayColumnTest, test_fill_default_establishes_null_rows_are_empty) {
-    auto column = make_array_column({{10, 20}, {30}, {40, 50}});
-    Filter nulls{0, 1, 0};
-    ASSERT_FALSE(column->null_rows_are_empty(nulls.data(), nulls.size()));
-
-    column->fill_default(nulls);
-
-    ASSERT_TRUE(column->null_rows_are_empty(nulls.data(), nulls.size()));
-    ASSERT_EQ(3, column->size());
-    ASSERT_EQ(2, column->get_element_size(0));
-    ASSERT_EQ(0, column->get_element_size(1));
-    ASSERT_EQ(2, column->get_element_size(2));
-
-    // fill_default() on an already-clean column is a no-op.
-    column->fill_default(nulls);
-    ASSERT_TRUE(column->null_rows_are_empty(nulls.data(), nulls.size()));
-    ASSERT_EQ(0, column->get_element_size(1));
 }
 
 } // namespace starrocks

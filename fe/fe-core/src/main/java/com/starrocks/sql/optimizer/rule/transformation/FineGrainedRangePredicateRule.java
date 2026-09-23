@@ -41,7 +41,6 @@ import com.starrocks.sql.optimizer.operator.scalar.CallOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
-import com.starrocks.sql.optimizer.rule.NonDeterministicVisitor;
 import com.starrocks.sql.optimizer.rule.RuleType;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.MvUtils;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.OptExpressionDuplicator;
@@ -119,10 +118,6 @@ public class FineGrainedRangePredicateRule extends TransformationRule {
     @Override
     public boolean check(final OptExpression input, OptimizerContext context) {
         if (!MvUtils.isLogicalSPJG(input)) {
-            return false;
-        }
-
-        if (input.getOp().accept(new NonDeterministicVisitor(), input, null)) {
             return false;
         }
 

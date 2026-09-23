@@ -14,6 +14,7 @@
 
 package com.starrocks.sql.analyzer;
 
+import com.starrocks.common.Config;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.QueryState;
 import com.starrocks.qe.StmtExecutor;
@@ -39,6 +40,8 @@ public class AnalyzeVectorIndexDMLTest {
         UtFrameUtils.addMockBackend(10002);
         UtFrameUtils.addMockBackend(10003);
         connectContext = AnalyzeTestUtil.getConnectContext();
+
+        Config.enable_experimental_vector = true;
     }
 
     @Test
@@ -139,7 +142,7 @@ public class AnalyzeVectorIndexDMLTest {
                 ") ENGINE=OLAP\n" +
                 "DUPLICATE KEY(id)\n" +
                 "DISTRIBUTED BY HASH(id) BUCKETS 1";
-        analyzeFail(sql, "inner_product");
+        analyzeFail(sql, "Value of `METRIC_TYPE` must be in [l2_distance, cosine_similarity]");
 
         sql = "CREATE TABLE vector_t1 (\n" +
                 "    id bigint(20) NOT NULL,\n" +

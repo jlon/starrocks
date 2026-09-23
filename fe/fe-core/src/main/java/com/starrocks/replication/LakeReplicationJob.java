@@ -106,42 +106,30 @@ public class LakeReplicationJob extends ReplicationJob implements GsonPreProcess
         }
     }
 
-    protected LakeReplicationJob(LakeReplicationJob job) {
-        super(job);
-        this.virtualTabletId = job.virtualTabletId;
-        this.srcDatabaseId = job.srcDatabaseId;
-        this.srcTableId = job.srcTableId;
-        // Copy srcTableFilePathInfo and its serialized bytes for persistence
-        // Without this, gsonPreProcess() on the copy won't serialize the FilePathInfo,
-        // and after restart srcTableFilePathInfo will be null, breaking S3 partitioned-prefix replication
-        this.srcTableFilePathInfo = job.srcTableFilePathInfo;
-        this.srcTableFilePathInfoBytes = job.srcTableFilePathInfoBytes;
-    }
-
     @Override
     public void run() {
         try {
             if (super.getState().equals(ReplicationJobState.INITIALIZING)) {
                 beginTransaction();
                 sendReplicateLakeRemoteStorageTasks();
-                persistStateChange(ReplicationJobState.REPLICATING);
+                setState(ReplicationJobState.REPLICATING);
             } else if (super.getState().equals(ReplicationJobState.REPLICATING)) {
                 if (isTransactionAborted()) {
-                    persistStateChange(ReplicationJobState.ABORTED);
+                    setState(ReplicationJobState.ABORTED);
                 } else if (isCrashRecovery()) {
                     sendReplicateLakeRemoteStorageTasks();
                     LOG.info("Lake replication job recovered, state: {}, database id: {}, table id: {}, transaction id: {}",
                             super.getState(), super.getDatabaseId(), super.getTableId(), super.getTransactionId());
                 } else if (isAllTaskFinished()) {
                     commitTransaction();
-                    persistStateChange(ReplicationJobState.COMMITTED);
+                    setState(ReplicationJobState.COMMITTED);
                 }
             }
         } catch (Exception e) {
             LOG.warn("Lake replication job exception, state: {}, database id: {}, table id: {}, transaction id: {}",
                     super.getState(), super.getDatabaseId(), super.getTableId(), super.getTransactionId(), e);
             abortTransaction(e.getMessage());
-            persistStateChange(ReplicationJobState.ABORTED);
+            setState(ReplicationJobState.ABORTED);
         }
     }
 
@@ -228,11 +216,6 @@ public class LakeReplicationJob extends ReplicationJob implements GsonPreProcess
         LOG.debug("S3 without partitioned prefix, partition full path: {} for partition: {}",
                 fullPath, physicalPartitionId);
         return fullPath;
-    }
-
-    @Override
-    public LakeReplicationJob copyForPersist() {
-        return new LakeReplicationJob(this);
     }
 
     @Override

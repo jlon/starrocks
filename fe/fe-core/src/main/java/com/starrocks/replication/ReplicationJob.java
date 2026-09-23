@@ -461,15 +461,12 @@ public class ReplicationJob implements GsonPostProcessable {
         return state;
     }
 
-    protected void persistStateChange(ReplicationJobState state) {
+    protected void setState(ReplicationJobState state) {
+        this.state = state;
         if (state.equals(ReplicationJobState.COMMITTED) || state.equals(ReplicationJobState.ABORTED)) {
             finishedTimeMs = System.currentTimeMillis();
         }
-        ReplicationJob persistJob = copyForPersist();
-        persistJob.state = state;
-        GlobalStateMgr.getServingState().getEditLog().logReplicationJob(persistJob, (wal) -> {
-            this.state = state;
-        });
+        GlobalStateMgr.getServingState().getEditLog().logReplicationJob(this);
         LOG.info("Replication job state: {}, database id: {}, table id: {}, transaction id: {}",
                 state, databaseId, tableId, transactionId);
     }
@@ -553,22 +550,6 @@ public class ReplicationJob implements GsonPostProcessable {
         }
     }
 
-    protected ReplicationJob(ReplicationJob job) {
-        this.jobId = job.jobId;
-        this.createdTimeMs = job.createdTimeMs;
-        this.finishedTimeMs = job.finishedTimeMs;
-        this.srcToken = job.srcToken;
-        this.databaseId = job.databaseId;
-        this.tableId = job.tableId;
-        this.tableType = job.tableType;
-        this.srcTableType = job.srcTableType;
-        this.replicationDataSize = job.replicationDataSize;
-        this.replicationReplicaCount = job.replicationReplicaCount;
-        this.partitionInfos = job.partitionInfos;
-        this.transactionId = job.transactionId;
-        this.state = job.state;
-    }
-
     public void cancel() {
         if (state.equals(ReplicationJobState.COMMITTED) || state.equals(ReplicationJobState.ABORTED)) {
             return;
@@ -578,7 +559,7 @@ public class ReplicationJob implements GsonPostProcessable {
             abortTransaction("Replication job cancelled");
         }
 
-        persistStateChange(ReplicationJobState.ABORTED);
+        setState(ReplicationJobState.ABORTED);
     }
 
     public void run() {
@@ -586,35 +567,35 @@ public class ReplicationJob implements GsonPostProcessable {
             if (state.equals(ReplicationJobState.INITIALIZING)) {
                 beginTransaction();
                 sendRemoteSnapshotTasks();
-                persistStateChange(ReplicationJobState.SNAPSHOTING);
+                setState(ReplicationJobState.SNAPSHOTING);
             } else if (state.equals(ReplicationJobState.SNAPSHOTING)) {
                 if (isTransactionAborted()) {
-                    persistStateChange(ReplicationJobState.ABORTED);
+                    setState(ReplicationJobState.ABORTED);
                 } else if (isCrashRecovery()) {
                     sendRemoteSnapshotTasks();
                     LOG.info("Replication job recovered, state: {}, database id: {}, table id: {}, transaction id: {}",
                             state, databaseId, tableId, transactionId);
                 } else if (isAllTaskFinished()) {
                     sendReplicateSnapshotTasks();
-                    persistStateChange(ReplicationJobState.REPLICATING);
+                    setState(ReplicationJobState.REPLICATING);
                 }
             } else if (state.equals(ReplicationJobState.REPLICATING)) {
                 if (isTransactionAborted()) {
-                    persistStateChange(ReplicationJobState.ABORTED);
+                    setState(ReplicationJobState.ABORTED);
                 } else if (isCrashRecovery()) {
                     sendReplicateSnapshotTasks();
                     LOG.info("Replication job recovered, state: {}, database id: {}, table id: {}, transaction id: {}",
                             state, databaseId, tableId, transactionId);
                 } else if (isAllTaskFinished()) {
                     commitTransaction();
-                    persistStateChange(ReplicationJobState.COMMITTED);
+                    setState(ReplicationJobState.COMMITTED);
                 }
             }
         } catch (Exception e) {
             LOG.warn("Replication job exception, state: {}, database id: {}, table id: {}, transaction id: {}, ",
                     state, databaseId, tableId, transactionId, e);
             abortTransaction(e.getMessage());
-            persistStateChange(ReplicationJobState.ABORTED);
+            setState(ReplicationJobState.ABORTED);
         }
     }
 
@@ -791,13 +772,6 @@ public class ReplicationJob implements GsonPostProcessable {
         List<Replica> replicas = tablet.getAllReplicas();
         List<TReplicaReplicationInfo> tReplicaInfos = tTabletInfo.replica_replication_infos;
 
-        // A tablet can report no replica at all: for a lake tablet a failed StarOS lookup makes
-        // WarehouseManager.getAllComputeNodeIdsAssignToTablet return null, and getAllReplicas() then
-        // yields an empty list. Report that instead of dividing by it.
-        if (replicas.isEmpty()) {
-            throw new MetaNotFoundException("Tablet " + tTabletInfo.tablet_id + " has no replica");
-        }
-
         final int splitSize = tReplicaInfos.size() / replicas.size();
         final int remainSize = tReplicaInfos.size() % replicas.size();
         int offset = 0;
@@ -909,8 +883,6 @@ public class ReplicationJob implements GsonPostProcessable {
         List<Replica> replicas = tablet.getAllReplicas();
         List<Replica> srcReplicas = srcTablet.getAllReplicas();
 
-        Preconditions.checkState(!replicas.isEmpty(), "Tablet %s has no replica", tablet.getId());
-
         final int splitSize = srcReplicas.size() / replicas.size();
         final int remainSize = srcReplicas.size() % replicas.size();
         int offset = 0;
@@ -944,7 +916,7 @@ public class ReplicationJob implements GsonPostProcessable {
                 Lists.newArrayList(tableId), label, coordinator, loadJobSourceType,
                 Config.replication_transaction_timeout_sec);
 
-        // Register loaded indexes so prePrepared() validates the same indexes that were collected,
+        // Register loaded indexes so preCommit() validates the same indexes that were collected,
         // not the latest (which may change due to tablet split).
         TransactionState txnState = GlobalStateMgr.getServingState().getGlobalTransactionMgr()
                 .getTransactionState(databaseId, transactionId);
@@ -1159,24 +1131,6 @@ public class ReplicationJob implements GsonPostProcessable {
 
     protected boolean isCrashRecovery() {
         return runningTasks.isEmpty() && finishedTasks.isEmpty() && (taskNum == 0);
-    }
-
-    /**
-     * Drop the leader-session-only task bookkeeping so a re-elected leader in this same process
-     * re-drives the current state exactly like a freshly deserialized job ({@link #isCrashRecovery()}
-     * needs all three empty - leaving any one populated pins the job until the replication
-     * transaction times out, because demotion abandoned the queued agent tasks and their BE finish
-     * reports are dropped at the task-queue lookup). Journal-visible fields (state, transactionId,
-     * ...) are untouched. Called from ReplicationMgr.onStopped() on leader demotion.
-     */
-    protected void resetLeaderSessionTaskState() {
-        runningTasks.clear();
-        finishedTasks.clear();
-        taskNum = 0;
-    }
-
-    public ReplicationJob copyForPersist() {
-        return new ReplicationJob(this);
     }
 
     @Override

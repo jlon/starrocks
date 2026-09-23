@@ -26,7 +26,7 @@ import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Tablet;
 import com.starrocks.common.proc.BaseProcResult;
-import com.starrocks.common.util.LeaderDaemon;
+import com.starrocks.common.util.FrontendDaemon;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.persist.PartitionVersionRecoveryInfo;
@@ -45,7 +45,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-public class MetaRecoveryDaemon extends LeaderDaemon {
+public class MetaRecoveryDaemon extends FrontendDaemon {
     private static final Logger LOG = LogManager.getLogger(MetaRecoveryDaemon.class);
 
     private final Set<UnRecoveredPartition> unRecoveredPartitions = new HashSet<>();
@@ -56,20 +56,8 @@ public class MetaRecoveryDaemon extends LeaderDaemon {
     }
 
     @Override
-    protected void runAfterLeaseValid() {
+    protected void runAfterCatalogReady() {
         recover();
-    }
-
-    @Override
-    protected void onStopped() {
-        // unRecoveredPartitions is leader-session diagnostic state surfaced via the proc node;
-        // it should not survive demotion since the next leader rebuilds it from scratch.
-        lock.writeLock().lock();
-        try {
-            unRecoveredPartitions.clear();
-        } finally {
-            lock.writeLock().unlock();
-        }
     }
 
     public void recover() {

@@ -23,9 +23,7 @@ import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableProperty;
 import com.starrocks.scheduler.MvTaskRunContext;
 import com.starrocks.scheduler.mv.pct.MVPCTRefreshRangePartitioner;
-import com.starrocks.scheduler.mv.pct.PCTPartitionTopology;
 import com.starrocks.sql.common.PCellNone;
-import com.starrocks.sql.common.PCellSetMapping;
 import com.starrocks.sql.common.PCellSortedSet;
 import com.starrocks.sql.common.PCellWithName;
 import org.junit.jupiter.api.Assertions;
@@ -68,11 +66,8 @@ public class MVPCTRefreshRangePartitionerTest {
         mvToBaseNameRefs.put("mv_p1", ref1);
         mvToBaseNameRefs.put("mv_p2", ref2);
 
-        Mockito.when(mvContext.getPartitionTopology()).thenReturn(new PCTPartitionTopology(
-                PCellSortedSet.of(),
-                Maps.newHashMap(),
-                Maps.<Table, PCellSetMapping>newHashMap(),
-                mvToBaseNameRefs));
+        Mockito.when(mvContext.getMvRefBaseTableIntersectedPartitions()).thenReturn(mvToBaseNameRefs);
+        Mockito.when(mvContext.getExternalRefBaseTableMVPartitionMap()).thenReturn(new HashMap<>());
         // TODO: make range cells
         List<PCellWithName> partitions = Arrays.asList(PCellWithName.of("mv_p1", new PCellNone()),
                 PCellWithName.of("mv_p2", new PCellNone()));

@@ -34,6 +34,3 @@ admin enable failpoint 'operator_return_large_column';
 admin disable failpoint 'operator_return_large_column';
 -- result:
 -- !result
-CLEANUP {
-  admin disable failpoint 'operator_return_large_column';
-} END CLEANUP

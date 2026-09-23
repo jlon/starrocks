@@ -17,6 +17,8 @@ package com.starrocks.proc;
 import com.starrocks.common.proc.FrontendsProcNode;
 import com.starrocks.ha.FrontendNodeType;
 import com.starrocks.system.Frontend;
+import mockit.Expectations;
+import mockit.Injectable;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -24,21 +26,41 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
 
 public class FrontendsProcNodeTest {
 
-    private InetSocketAddress socketAddr1;
+    @Injectable
+    InetSocketAddress socketAddr1;
+    @Injectable
+    InetAddress addr1;
 
-    // Build a real address instead of mocking InetAddress: JDK 19+ makes InetAddress a sealed
-    // class, which JMockit 1.x cannot redefine. An address created with an explicit host name
-    // returns that name from getHostName() without a reverse lookup, and getHostAddress()
-    // returns the literal IP, which is all isJoin() needs.
-    private void mockAddress() throws UnknownHostException {
-        InetAddress addr1 = InetAddress.getByAddress("sandbox", new byte[] {127, 0, 0, 1});
-        socketAddr1 = new InetSocketAddress(addr1, 1000);
+    private void mockAddress() {
+        new Expectations() {
+            {
+                socketAddr1.getAddress();
+                result = addr1;
+            }
+        };
+        new Expectations() {
+            {
+                socketAddr1.getPort();
+                result = 1000;
+            }
+        };
+        new Expectations() {
+            {
+                addr1.getHostAddress();
+                result = "127.0.0.1";
+            }
+        };
+        new Expectations() {
+            {
+                addr1.getHostName();
+                result = "sandbox";
+            }
+        };
     }
 
     @Test
@@ -47,8 +69,7 @@ public class FrontendsProcNodeTest {
             SecurityException,
             IllegalAccessException,
             IllegalArgumentException,
-            InvocationTargetException,
-            UnknownHostException {
+            InvocationTargetException {
         mockAddress();
         List<InetSocketAddress> list = new ArrayList<InetSocketAddress>();
         list.add(socketAddr1);

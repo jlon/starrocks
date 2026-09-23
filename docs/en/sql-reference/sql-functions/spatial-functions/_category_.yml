@@ -3,5 +3,4 @@ label: 'Spatial'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: spatial-functions
+  type: generated-index

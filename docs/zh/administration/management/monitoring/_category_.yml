@@ -1,7 +1,0 @@
-position: 70
-label: 'Monitor and Alert'
-collapsible: true
-collapsed: true
-link:
-  id: monitoring
-  type: doc

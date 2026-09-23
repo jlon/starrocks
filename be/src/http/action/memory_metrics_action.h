@@ -38,17 +38,16 @@
 
 #include <string>
 
-#include "platform/http/http_handler.h"
+#include "http/http_handler.h"
 
 namespace starrocks {
 
 class ExecEnv;
-class RuntimeEnv;
 class HttpRequest;
 
 class MemoryMetricsAction : public HttpHandler {
 public:
-    explicit MemoryMetricsAction(const RuntimeEnv& runtime_env) : _runtime_env(runtime_env) {}
+    explicit MemoryMetricsAction() = default;
 
     ~MemoryMetricsAction() override = default;
 
@@ -62,8 +61,6 @@ public:
     bool need_auth() const override;
 
 private:
-    const RuntimeEnv& _runtime_env;
-
     void getMemoryMetricTree(MemTracker* memTracker, std::stringstream& result, int64_t total_size);
 };
 

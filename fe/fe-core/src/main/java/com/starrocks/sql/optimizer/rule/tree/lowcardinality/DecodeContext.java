@@ -15,47 +15,36 @@
 package com.starrocks.sql.optimizer.rule.tree.lowcardinality;
 
 import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.starrocks.catalog.AggregateFunction;
 import com.starrocks.catalog.Function;
-import com.starrocks.catalog.FunctionName;
 import com.starrocks.catalog.FunctionSet;
 import com.starrocks.sql.ast.expression.ExprUtils;
 import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.Operator;
-import com.starrocks.sql.optimizer.operator.scalar.ArrayOperator;
 import com.starrocks.sql.optimizer.operator.scalar.CallOperator;
 import com.starrocks.sql.optimizer.operator.scalar.CollectionElementOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
-import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.DictMappingOperator;
+import com.starrocks.sql.optimizer.operator.scalar.IsNullPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
-import com.starrocks.sql.optimizer.operator.scalar.SubfieldOperator;
 import com.starrocks.sql.optimizer.rewrite.BaseScalarOperatorShuttle;
 import com.starrocks.sql.optimizer.statistics.ColumnDict;
-import com.starrocks.thrift.TFunctionBinaryType;
 import com.starrocks.type.ArrayType;
 import com.starrocks.type.IntegerType;
-import com.starrocks.type.StructField;
-import com.starrocks.type.StructType;
 import com.starrocks.type.Type;
-import com.starrocks.type.VarcharType;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import static com.starrocks.sql.optimizer.rule.tree.lowcardinality.DecodeCollector.LOW_CARD_ARRAY_FUNCTIONS;
-import static com.starrocks.sql.optimizer.rule.tree.lowcardinality.DecodeCollector.LOW_CARD_STRUCT_FUNCTIONS;
-import static com.starrocks.sql.optimizer.rule.tree.lowcardinality.DecodeCollector.supportLowCardinality;
-import static com.starrocks.sql.optimizer.rule.tree.lowcardinality.DecodeUtil.getDictifiedType;
+import static com.starrocks.sql.optimizer.rule.tree.lowcardinality.DecodeCollector.LOW_CARD_WINDOW_FUNCTIONS;
 
 /*
  * DecodeContext is used to store the information needed for decoding
@@ -112,10 +101,6 @@ class DecodeContext {
 
     Map<ScalarOperator, ScalarOperator> stringExprToDictExprMap = Maps.newHashMap();
 
-    StructManager structManager;
-
-    UnionDictionaryManager unionDictionaryManager;
-
     DecodeContext(ColumnRefFactory factory) {
         this.factory = factory;
     }
@@ -127,34 +112,16 @@ class DecodeContext {
         rewriteStringAggregations();
     }
 
-    ColumnRefOperator getUseStringRef(ScalarOperator operator) {
+    private ColumnRefOperator getUseStringRef(ScalarOperator operator) {
         if (operator.isColumnRef()) {
             return (ColumnRefOperator) operator;
         }
-        if (operator instanceof SubfieldOperator) {
-            SubfieldOperator subfieldOperator = operator.cast();
-            Map<String, ColumnRefOperator> fieldsUseRefMap = structManager.getFieldStringRefMap(
-                    subfieldOperator.getChild(0));
-            Preconditions.checkNotNull(fieldsUseRefMap);
-            Preconditions.checkState(subfieldOperator.getFieldNames().size() == 1
-                    && fieldsUseRefMap.containsKey(subfieldOperator.getFieldNames().get(0)));
-            return getUseStringRef(fieldsUseRefMap.get(subfieldOperator.getFieldNames().get(0)));
-        }
-        if (operator instanceof CallOperator && FunctionSet.ARRAY_AGG.equals(((CallOperator) operator).getFnName())) {
-            return getUseStringRef(operator.getChild(0));
-        }
-        List<ColumnRefOperator> columnRefs = Lists.newArrayList();
-        for (ScalarOperator child : operator.getChildren()) {
-            ColumnRefOperator ref = getUseStringRef(child);
-            if (ref != null) {
-                columnRefs.add(ref);
-            }
-        }
-        if (columnRefs.isEmpty()) {
+        List<ColumnRefOperator> useStringRefs = operator.getColumnRefs();
+        if (useStringRefs.isEmpty()) {
             return null;
         }
-        Preconditions.checkState(columnRefs.stream().distinct().count() == 1);
-        return columnRefs.get(0);
+        Preconditions.checkState(useStringRefs.stream().distinct().count() == 1);
+        return useStringRefs.get(0);
     }
 
     private void rewriteStringRefToDictRef() {
@@ -167,23 +134,54 @@ class DecodeContext {
             ColumnRefOperator stringRef = factory.getColumnRef(stringId);
             ColumnRefOperator dictRef = createNewDictColumn(stringRef);
             stringRefToDictRefMap.put(stringRef, dictRef);
+            stringExprToDictExprMap.put(stringRef, exprRewriter.decode(dictRef, stringRef, stringRef));
         }
 
-        // rewrite dict column define and decode expressions
+        // rewrite string column define expression
         for (Integer stringId : stringRefToDefineExprMap.keySet()) {
             ScalarOperator stringDefineExpr = stringRefToDefineExprMap.get(stringId);
             ColumnRefOperator stringRef = factory.getColumnRef(stringId);
             ColumnRefOperator dictRef = stringRefToDictRefMap.get(stringRef);
-            ColumnRefOperator useStringRef = stringRef.getType().isStructType() ? stringRef
-                    : getUseStringRef(stringDefineExpr);
-            stringExprToDictExprMap.put(stringRef, exprRewriter.decode(dictRef, stringRef, stringRef));
+
+            // may be a: b (just rename in projection)
+            ColumnRefOperator useStringRef;
+            if (stringDefineExpr.isColumnRef()) {
+                useStringRef = (ColumnRefOperator) stringDefineExpr;
+            } else {
+                List<ColumnRefOperator> useStringRefs = stringDefineExpr.getColumnRefs();
+                Preconditions.checkState(useStringRefs.stream().distinct().count() == 1);
+                useStringRef = useStringRefs.get(0);
+            }
             // return type is dict
             ScalarOperator dictExpr = exprRewriter.define(dictRef.getType(), useStringRef, stringDefineExpr);
             dictRefToDefineExprMap.put(dictRef, dictExpr);
         }
     }
 
+    private boolean isNullSensitiveToRef(ScalarOperator op, int refId) {
+        if (!op.getUsedColumns().contains(refId)) {
+            return false;
+        }
+        if (op instanceof IsNullPredicateOperator) {
+            return true;
+        }
+        if (op instanceof CallOperator) {
+            String fn = ((CallOperator) op).getFnName();
+            if (FunctionSet.IFNULL.equalsIgnoreCase(fn) || FunctionSet.COALESCE.equalsIgnoreCase(fn)
+                    || FunctionSet.NULLIF.equalsIgnoreCase(fn) || FunctionSet.CONCAT_WS.equalsIgnoreCase(fn)) {
+                return true;
+            }
+        }
+        for (ScalarOperator child : op.getChildren()) {
+            if (isNullSensitiveToRef(child, refId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void rewriteGlobalDict() {
+        GlobalDictRewriter dictRewriter = new GlobalDictRewriter();
         for (Integer stringId : stringRefToDefineExprMap.keySet()) {
             if (stringRefToDicts.containsKey(stringId)) {
                 continue;
@@ -195,25 +193,24 @@ class DecodeContext {
             //      B : lower(C)
             // decode A: dictMapping(B, upper(B)) -> dictMapping(C, upper(lower(C)))
             ColumnRefOperator dictRef = stringRefToDictRefMap.get(factory.getColumnRef(stringId));
-            if (dictRef.getType().isStructType()) {
-                continue;
-            }
             ScalarOperator stringDefineExpr = stringRefToDefineExprMap.get(stringId);
 
-            // Folding through a column is only valid when that column's codes are the codes of the
-            // column we fold onto. BE derives a dictionary by evaluating the define expression over
-            // the input dictionary, then de-duplicating and sorting the results (codes 1..n). So a
-            // column defined by a real expression (B : lower(C)) has its own code space that is not
-            // C's, and folding A through it (dictMapping(C, upper(lower(C)))) makes the fragment that
-            // receives B's codes (e.g. across an exchange, after a distinct aggregation) look them up
-            // in a mapping built for C's codes: the values no longer line up ("Dict Decode failed").
-            // Stop the fold at such a column and define A over B's dictionary instead. Only columns
-            // whose define reduces to a plain column reference (aliases, min/max, array element, ...)
-            // share the code space of their source and stay foldable.
-            ColumnRefOperator useStringRef = getUseStringRef(stringDefineExpr);
-            int stopStringId = useStringRef != null && hasOwnDictCodes(useStringRef.getId())
-                    ? useStringRef.getId() : -1;
-            ScalarOperator defineExpr = stringDefineExpr.accept(new GlobalDictRewriter(stopStringId), null);
+            // Check before flattening: if a NULL-sensitive expression is built on a DERIVED dict
+            // (one defined by another expression, not a base column), do NOT flatten it through the
+            // child define. Keep it referencing the intermediate dict directly, so producer and
+            // consumer build the dictionary the same way (a derived dict carries a synthetic NULL
+            // code that flattening would drop).
+            ColumnRefOperator keepUseRef = getUseStringRef(stringDefineExpr);
+            if (keepUseRef != null && !stringRefToDicts.containsKey(keepUseRef.getId())
+                    && stringRefToDefineExprMap.containsKey(keepUseRef.getId())
+                    && isNullSensitiveToRef(stringDefineExpr, keepUseRef.getId())) {
+                ColumnRefOperator keepDictRef = stringRefToDictRefMap.get(keepUseRef);
+                globalDictsExpr.put(dictRef.getId(),
+                        new DictMappingOperator(keepDictRef, stringDefineExpr.clone(), dictRef.getType()));
+                continue;
+            }
+
+            ScalarOperator defineExpr = stringDefineExpr.accept(dictRewriter, null);
             List<ColumnRefOperator> defineUsedStringRef = defineExpr.getColumnRefs();
             Preconditions.checkState(!defineUsedStringRef.isEmpty());
 
@@ -221,16 +218,6 @@ class DecodeContext {
             ScalarOperator globalDictExpr = new DictMappingOperator(defineUsedDictRef, defineExpr, dictRef.getType());
             globalDictsExpr.put(dictRef.getId(), globalDictExpr);
         }
-    }
-
-    // Whether the string column's dictionary codes are its own (built by BE from a define
-    // expression) rather than the codes of the base column it is ultimately derived from.
-    private boolean hasOwnDictCodes(int stringId) {
-        if (stringRefToDicts.containsKey(stringId) || !stringRefToDefineExprMap.containsKey(stringId)) {
-            return false;
-        }
-        ScalarOperator folded = stringRefToDefineExprMap.get(stringId).accept(new GlobalDictRewriter(-1), null);
-        return !folded.isColumnRef();
     }
 
     private void rewriteStringExpressions() {
@@ -252,10 +239,11 @@ class DecodeContext {
 
     private void rewriteStringAggregations() {
         // rewrite string aggregate expression
+        AggregateRewriter rewriter = new AggregateRewriter();
         stringAggregateExprs.forEach((aggId, aggFns) -> {
             ColumnRefSet supportColumns = aggIdToSupportColumns.get(aggId);
             Preconditions.checkNotNull(supportColumns);
-            AggregateRewriter rewriter = new AggregateRewriter(aggId, supportColumns);
+            rewriter.setSupportColumns(supportColumns);
             for (CallOperator aggFn : aggFns) {
                 CallOperator new1stAggFn = (CallOperator) (aggFn.accept(rewriter, null));
                 stringExprToDictExprMap.put(aggFn, new1stAggFn);
@@ -266,77 +254,11 @@ class DecodeContext {
     // create a new dictionary column and assign the same property except for the type and column id
     // the input column maybe a dictionary column or a string column
     private ColumnRefOperator createNewDictColumn(ColumnRefOperator column) {
-        if (column.getType().isStringArrayType()) {
+        if (column.getType().isArrayType()) {
             return factory.create(column.getName(), ArrayType.ARRAY_INT, column.isNullable());
-        } else if (column.getType().isStringType()) {
-            return factory.create(column.getName(), IntegerType.INT, column.isNullable());
-        } else if (column.getType().isStructType()) {
-            Map<String, ColumnRefOperator> fieldsData = structManager.getFieldStringRefMap(column);
-            Preconditions.checkNotNull(fieldsData);
-            List<StructField> structFields = Lists.newArrayList();
-            StructType type = (StructType) column.getType();
-            for (int i = 0; i < type.getFields().size(); ++i) {
-                if (fieldsData.containsKey(type.getField(i).getName())) {
-                    // DecodeCollector ensures all ColumnRefOperators in this map have STRING or ARRAY<STRING> type.
-                    Preconditions.checkState(type.getField(i).getType().isStringArrayType()
-                            || type.getField(i).getType().isStringType());
-                    structFields.add(new StructField(type.getField(i).getName(),
-                            type.getField(i).getType().isArrayType() ? ArrayType.ARRAY_INT : IntegerType.INT));
-                } else {
-                    structFields.add(type.getField(i));
-                }
-            }
-            StructType dictType = new StructType(structFields, type.isNamed());
-            return factory.create(column.getName(), dictType, column.isNullable());
         } else {
-            throw new IllegalArgumentException("Unsupported dictified type: " +  column.getType());
+            return factory.create(column.getName(), IntegerType.INT, column.isNullable());
         }
-    }
-
-    private static final String DICT_ENCODE = "dict_encode";
-    private static final Function DICT_ENCODE_FN = new Function(
-            30700, new FunctionName(DICT_ENCODE), List.of(VarcharType.VARCHAR, IntegerType.INT), IntegerType.INT, false);
-    static {
-        DICT_ENCODE_FN.setBinaryType(TFunctionBinaryType.BUILTIN);
-    }
-
-    private static ScalarOperator dictEncodeConstant(ScalarOperator constant, int dictId) {
-        if (!constant.getType().isStringType() && !constant.getType().isStringArrayType()) {
-            return constant;
-        }
-        ConstantOperator dictSlotConstant = ConstantOperator.createInt(dictId);
-        if (constant instanceof ConstantOperator constantOp) {
-            if (constantOp.getType().isStringType()) {
-                return new CallOperator(
-                        DICT_ENCODE, IntegerType.INT, List.of(constant, dictSlotConstant), DICT_ENCODE_FN);
-            }
-            Preconditions.checkState(constantOp.isNull());
-            return ConstantOperator.createNull(ArrayType.ARRAY_INT);
-        }
-        if (constant instanceof ArrayOperator arrayOp) {
-            Preconditions.checkState(arrayOp.getChildren().stream().allMatch(ScalarOperator::isConstantRef));
-            return new ArrayOperator(ArrayType.ARRAY_INT, arrayOp.isNullable(),
-                    arrayOp.getChildren().stream().map(k -> (ScalarOperator) new CallOperator(
-                                    DICT_ENCODE, IntegerType.INT, List.of(k, dictSlotConstant), DICT_ENCODE_FN))
-                            .collect(Collectors.toCollection(ArrayList::new)));
-        }
-        throw new IllegalArgumentException("Invalid constant argument for array function: " + constant);
-
-    }
-
-    private static Function buildFunction(String fnName, List<ScalarOperator> args) {
-        if (fnName.equals(FunctionSet.NAMED_STRUCT)) {
-            Type[] argTypes = args.stream().map(ScalarOperator::getType).toArray(Type[]::new);
-            Function fn = ExprUtils.getBuiltinFunction(fnName, argTypes, Function.CompareMode.IS_SUPERTYPE_OF).copy();
-            List<StructField> fields = Lists.newArrayList();
-            for (int i = 0; i < args.size(); i += 2) {
-                fields.add(new StructField(((ConstantOperator) args.get(i)).getVarchar(), argTypes[i + 1]));
-            }
-            fn.setRetType(new StructType(fields, true));
-            return fn;
-        }
-        Type[] argTypes = args.stream().map(ScalarOperator::getType).toArray(Type[]::new);
-        return ExprUtils.getBuiltinFunction(fnName, argTypes, Function.CompareMode.IS_SUPERTYPE_OF);
     }
 
     // define mode: means the result column is dict, DictExpr should return int/array<int> type
@@ -344,100 +266,46 @@ class DecodeContext {
     private class DictExprRewrite extends BaseScalarOperatorShuttle {
         // to mark special array expression: array_min/array_max/array[x]
         // their return type is string, but use low cardinality optimization, we need execute them first
-        private ScalarOperator anchorOp;
-        private ColumnRefOperator anchorUseDictRef;
-
-        public ScalarOperator decodeStruct(ScalarOperator dictExpression,
-                                           ScalarOperator expression,
-                                           ColumnRefOperator useStringRef) {
-            Preconditions.checkState(dictExpression.getType().isStructType());
-            Preconditions.checkState(useStringRef.getType().isStructType());
-            StructType exprType =  (StructType) expression.getType();
-            StructType dictType = (StructType) dictExpression.getType();
-            List<ScalarOperator> newFields = Lists.newArrayList();
-            Map<String, ColumnRefOperator> fieldsStringRefMap = structManager.getFieldStringRefMap(useStringRef);
-            Preconditions.checkNotNull(fieldsStringRefMap);
-            for (int i = 0; i < exprType.getFields().size(); ++i) {
-                String fieldName = exprType.getField(i).getName();
-                newFields.add(ConstantOperator.createVarchar(fieldName));
-                Type fieldOriginalType =  exprType.getField(i).getType();
-                Type fieldDictType = dictType.getField(i).getType();
-                ScalarOperator fieldExpr =  new SubfieldOperator(dictExpression, fieldDictType, List.of(fieldName));
-                if (fieldOriginalType.matchesType(fieldDictType)) {
-                    newFields.add(fieldExpr);
-                } else {
-                    ColumnRefOperator fieldStringRef = fieldsStringRefMap.get(fieldName);
-                    Preconditions.checkNotNull(fieldStringRef);
-                    ColumnRefOperator fieldDictRef = stringRefToDictRefMap.get(fieldStringRef);
-                    Preconditions.checkNotNull(fieldDictRef);
-                    newFields.add(new DictMappingOperator(
-                            fieldOriginalType,
-                            fieldDictRef,
-                            new ColumnRefOperator(
-                                    fieldDictRef.getId(),
-                                    fieldExpr.getType(),
-                                    fieldDictRef.getName(),
-                                    fieldExpr.isNullable()),
-                            fieldExpr));
-                }
-            }
-            Type[] argTypes = newFields.stream().map(ScalarOperator::getType).toArray(Type[]::new);
-            Function fn = ExprUtils.getBuiltinFunction(
-                    FunctionSet.NAMED_STRUCT, argTypes, Function.CompareMode.IS_SUPERTYPE_OF).copy();
-            fn.setRetType(exprType);
-            return new CallOperator(FunctionSet.NAMED_STRUCT, fn.getReturnType(), newFields, fn);
-        }
+        private Optional<ScalarOperator> array2StringAnchor;
 
         public ScalarOperator decode(ColumnRefOperator useDictRef, ColumnRefOperator useStringRef,
                                      ScalarOperator expression) {
-            anchorOp = null;
-            anchorUseDictRef = null;
-            ScalarOperator result = expression.accept(this, null);
-            if (useStringRef.getType().isVarchar() && anchorUseDictRef == null) {
+            if (useStringRef.getType().isVarchar()) {
                 return new DictMappingOperator(useDictRef, expression.clone(), expression.getType());
             }
-            if (result.getType().isStructType()) {
-                Preconditions.checkState(anchorOp == null);
-                return decodeStruct(result, expression, useStringRef);
-            }
-            if (result.isColumnRef() && anchorOp == null) {
+
+            Preconditions.checkState(ArrayType.ARRAY_VARCHAR.matchesType(useStringRef.getType()));
+            array2StringAnchor = Optional.empty();
+            ScalarOperator result = expression.accept(this, null);
+            if (result.isColumnRef() && array2StringAnchor.isEmpty()) {
                 // decode array-column-ref
                 return new DictMappingOperator(useDictRef, result, expression.getType());
-            } else if (result instanceof CallOperator
-                    && LOW_CARD_ARRAY_FUNCTIONS.contains(((CallOperator) result).getFnName())
-                    && !supportLowCardinality(expression.getType())) {
-                Preconditions.checkState(anchorOp == null);
+            } else if (result instanceof CallOperator &&
+                    (FunctionSet.ARRAY_LENGTH.equalsIgnoreCase(((CallOperator) result).getFnName()) ||
+                            FunctionSet.CARDINALITY.equalsIgnoreCase(((CallOperator) result).getFnName()))) {
+                Preconditions.checkState(array2StringAnchor.isEmpty());
                 return result;
-            } else if (result instanceof SubfieldOperator) {
-                Preconditions.checkState(expression instanceof SubfieldOperator);
-                SubfieldOperator subfieldOperator = expression.cast();
-                if (subfieldOperator.getFieldNames().size() != 1 ||
-                        !structManager.getFieldStringRefMap(expression.getChild(0))
-                                .containsKey(subfieldOperator.getFieldNames().get(0))) {
-                    // Getting non dictified field from a struct
-                    return result;
-                }
             }
-            result = processAnchor(result);
-            return new DictMappingOperator(expression.getType(), anchorUseDictRef, result, anchorOp);
+            result = processArrayAnchor(result);
+            return new DictMappingOperator(expression.getType(), useDictRef, result, array2StringAnchor.get());
         }
 
         public ScalarOperator define(Type type, ColumnRefOperator useStringRef, ScalarOperator expression) {
             ColumnRefOperator useDictRef = stringRefToDictRefMap.get(useStringRef);
-            anchorOp = null;
-            anchorUseDictRef = null;
-            ScalarOperator result = expression.accept(this, null);
-            if (useStringRef.getType().isVarchar() && anchorUseDictRef == null) {
+            if (useStringRef.getType().isVarchar()) {
                 return new DictMappingOperator(useDictRef, expression.clone(), useDictRef.getType());
-
             }
-            if (anchorOp != null) {
+            Preconditions.checkState(ArrayType.ARRAY_VARCHAR.matchesType(useStringRef.getType()));
+            array2StringAnchor = Optional.empty();
+            ScalarOperator result = expression.accept(this, null);
+
+            if (array2StringAnchor.isPresent()) {
                 if (!result.isColumnRef()) {
                     // e.g. upper(array_column[0])), need define string-expr by dict-expr
-                    return new DictMappingOperator(type, anchorUseDictRef, result, anchorOp);
+                    return new DictMappingOperator(type, useDictRef, result, array2StringAnchor.get());
                 } else {
                     // e.g. array_column[0], need define to string
-                    return anchorOp;
+                    return array2StringAnchor.get();
                 }
             }
 
@@ -452,7 +320,7 @@ class DecodeContext {
 
         @Override
         public ScalarOperator visitCall(CallOperator call, Void context) {
-            if (!isSupportedArrayFunction(call) && !LOW_CARD_STRUCT_FUNCTIONS.contains(call.getFnName())) {
+            if (!isSupportedArrayFunction(call)) {
                 return super.visitCall(call, context);
             }
             boolean[] hasChange = new boolean[1];
@@ -461,18 +329,14 @@ class DecodeContext {
                 return call;
             }
 
-            if (isSupportedArrayFunction(call)) {
-                ColumnRefOperator stringRef = getUseStringRef(call);
-                ColumnRefOperator dictRef = stringRefToDictRefMap.get(stringRef);
-                Preconditions.checkNotNull(dictRef);
-                newChildren = newChildren.stream().map(op -> op.isConstant() ?
-                        dictEncodeConstant(op, dictRef.getId()) : op).collect(Collectors.toCollection(ArrayList::new));
-            }
-            Function fn = buildFunction(call.getFnName(), newChildren);
-            ScalarOperator result = new CallOperator(call.getFnName(), fn.getReturnType(), newChildren, fn);
+            Type[] argTypes = newChildren.stream().map(ScalarOperator::getType).toArray(Type[]::new);
+            Function arrayFn = ExprUtils.getBuiltinFunction(call.getFnName(), argTypes,
+                    Function.CompareMode.IS_SUPERTYPE_OF);
+            ScalarOperator result = new CallOperator(call.getFnName(), arrayFn.getReturnType(), newChildren, arrayFn);
 
-            if (call.getType().isStringType()) {
-                return processAnchor(result);
+            if (FunctionSet.ARRAY_MAX.equalsIgnoreCase(call.getFnName()) ||
+                    FunctionSet.ARRAY_MIN.equalsIgnoreCase(call.getFnName())) {
+                return processArrayAnchor(result);
             }
             return result;
         }
@@ -488,114 +352,33 @@ class DecodeContext {
             ScalarOperator result = new CollectionElementOperator(((ArrayType) newChildren.get(0)
                     .getType()).getItemType(), newChildren.get(0), newChildren.get(1), collectionElementOp.isCheckOutOfBounds());
 
-            return processAnchor(result);
+            return processArrayAnchor(result);
         }
 
-        @Override
-        public ScalarOperator visitSubfield(SubfieldOperator operator, Void context) {
-            ScalarOperator newChild = operator.getChild(0).accept(this, context);
-            if (newChild == operator.getChild(0)) {
-                return operator;
-            }
-            StructType originalType = (StructType) operator.getChild(0).getType();
-            StructType newType = (StructType) newChild.getType();
-            ScalarOperator result = new SubfieldOperator(
-                    newChild,
-                    newType.getField(operator.getFieldNames().get(0)).getType(),
-                    operator.getFieldNames(),
-                    operator.getCopyFlag());
-            if (!originalType.getField(operator.getFieldNames().get(0)).getType().matchesType(
-                    newType.getField(operator.getFieldNames().get(0)).getType())) {
-                Map<String, ColumnRefOperator> useFieldRefMap = structManager.getFieldStringRefMap(
-                        operator.getChild(0));
-                Preconditions.checkNotNull(useFieldRefMap);
-                ColumnRefOperator fieldUseStringRef = useFieldRefMap.get(operator.getFieldNames().get(0));
-                Preconditions.checkNotNull(fieldUseStringRef);
-                ColumnRefOperator childDictRef = stringRefToDictRefMap.get(fieldUseStringRef);
-                Preconditions.checkNotNull(childDictRef);
-                anchorUseDictRef = childDictRef;
-                if (operator.getType().isStringType()) {
-                    return processAnchor(result);
-                } else {
-                    return result;
-                }
-            }
-            return result;
-        }
-
-        private ScalarOperator processAnchor(ScalarOperator expr) {
-            if (anchorOp != null && !anchorOp.equals(expr)) {
+        private ScalarOperator processArrayAnchor(ScalarOperator expr) {
+            if (array2StringAnchor.isPresent() && !array2StringAnchor.get().equals(expr)) {
                 return expr;
             }
 
             // e.g. DictExpr(useDictColumn, array_distinct(array_column)[0])
             // we need compute array_distinct(x)[0] first, then decode to string on the result
-            anchorOp = expr;
+            array2StringAnchor = Optional.of(expr);
             // mock use column ref, only type is used, ScalarOperatorToExpr will rewrite it
             // @todo: rewrite ScalarOperatorToExpr process when v1 is deprecated
-            if (anchorUseDictRef == null) {
-                List<ColumnRefOperator> usedColumns = expr.getColumnRefs();
-                Preconditions.checkState(!usedColumns.isEmpty());
-                anchorUseDictRef = usedColumns.get(0);
-            }
-
-            return new ColumnRefOperator(anchorUseDictRef.getId(), expr.getType(),
-                    anchorUseDictRef.getName(), anchorUseDictRef.isNullable());
+            List<ColumnRefOperator> usedColumns = expr.getColumnRefs();
+            Preconditions.checkState(!usedColumns.isEmpty());
+            ColumnRefOperator usedRef = usedColumns.get(0);
+            return new ColumnRefOperator(usedRef.getId(), expr.getType(), usedRef.getName(), usedRef.isNullable());
         }
     }
 
     private class AggregateRewriter extends BaseScalarOperatorShuttle {
-        private final int aggId;
-        private final ColumnRefSet supportColumns;
-        private AggregateFunction newFn;
-        private AggregateFunction originalFn;
-
-        public AggregateRewriter(int aggId, ColumnRefSet supportColumns) {
-            this.aggId = aggId;
-            this.supportColumns = supportColumns;
-        }
+        private ColumnRefSet supportColumns;
 
         @Override
         public ScalarOperator visitVariableReference(ColumnRefOperator variable, Void ignore) {
-            if (variable.getId() == aggId) {
-                Preconditions.checkNotNull(newFn);
-                ColumnRefOperator dictRef = stringRefToDictRefMap.get(variable);
-                if (dictRef == null) {
-                    return variable;
-                }
-                final Type returnType;
-                if (variable.getType().matchesType(originalFn.getReturnType())) {
-                    returnType = newFn.getReturnType();
-                } else if (originalFn.getIntermediateType() != null &&
-                        variable.getType().matchesType(originalFn.getIntermediateType())) {
-                    returnType = newFn.getIntermediateType();
-                } else {
-                    returnType = getDictifiedType(variable.getType());
-                }
-                return new ColumnRefOperator(dictRef.getId(), returnType, dictRef.getName(), dictRef.isNullable());
-            }
             return supportColumns.contains(variable) ?
                     stringRefToDictRefMap.getOrDefault(variable, variable) : variable;
-        }
-
-        AggregateFunction buildAggregateFunction(AggregateFunction fn, List<ScalarOperator> newChildren) {
-            Preconditions.checkState(fn.getNumArgs() <= newChildren.size());
-            final List<Type> argTypes =
-                    newChildren.subList(0, fn.getNumArgs()).stream().map(ScalarOperator::getType).toList();
-            record TypeInfo(Type intermediateType, Type returnType) {}
-            TypeInfo typeInfo = switch (fn.functionName()) {
-                case FunctionSet.ARRAY_AGG -> new TypeInfo(
-                            new StructType(argTypes.stream().map(t -> (Type) new ArrayType(t)).toList()),
-                            new ArrayType(argTypes.get(0)));
-                case FunctionSet.ANY_VALUE -> new TypeInfo(argTypes.get(0), argTypes.get(0));
-                default -> new TypeInfo(
-                        getDictifiedType(fn.getIntermediateType()), getDictifiedType(fn.getReturnType()));
-            };
-            AggregateFunction newFn = (AggregateFunction) fn.copy();
-            newFn.setArgsType(argTypes.toArray(Type[]::new));
-            newFn.setIntermediateType(typeInfo.intermediateType);
-            newFn.setRetType(typeInfo.returnType);
-            return newFn;
         }
 
         @Override
@@ -603,44 +386,54 @@ class DecodeContext {
             boolean[] hasChange = new boolean[1];
             List<ScalarOperator> newChildren = visitList(call.getChildren(), hasChange);
 
-            if (call.getFunction() instanceof AggregateFunction origFn) {
-                if (this.newFn == null) {
-                    originalFn = origFn;
-                    newFn = buildAggregateFunction(origFn, newChildren);
+            if (call.getFunction() instanceof AggregateFunction) {
+                Type argType = newChildren.get(0).getType().isArrayType() ? new ArrayType(IntegerType.INT) : IntegerType.INT;
+                Type[] argTypes = new Type[] {argType};
+                Function fn = ExprUtils.getBuiltinFunction(call.getFnName(), argTypes, Function.CompareMode.IS_SUPERTYPE_OF);
+                // min/max function: will rewrite all stage, return type is dict type
+                if (FunctionSet.MAX.equals(call.getFnName()) || FunctionSet.MIN.equals(call.getFnName())) {
+                    return new CallOperator(call.getFnName(), fn.getReturnType(), newChildren, fn,
+                            call.isDistinct(), call.isRemovedDistinct());
+                } else if (FunctionSet.COUNT.equals(call.getFnName()) ||
+                        FunctionSet.MULTI_DISTINCT_COUNT.equals(call.getFnName()) ||
+                        FunctionSet.APPROX_COUNT_DISTINCT.equals(call.getFnName())) {
+                    // count, count_distinct, approx_count_distinct:
+                    // return type don't update
+                    return new CallOperator(call.getFnName(), call.getType(), newChildren, fn,
+                            call.isDistinct(), call.isRemovedDistinct());
+                } else if (LOW_CARD_WINDOW_FUNCTIONS.contains(call.getFnName())) {
+                    CallOperator newCall = new CallOperator(call.getFnName(), fn.getReturnType(), newChildren, fn,
+                            call.isDistinct(), call.isRemovedDistinct());
+                    //encoded window functions should set ignore null flag
+                    newCall.setIgnoreNulls(call.getIgnoreNulls());
+                    return newCall;
                 }
-                Type returnType = call.getType().matchesType(origFn.getReturnType())
-                        ? newFn.getReturnType() : newFn.getIntermediateType();
-                CallOperator newCall = new CallOperator(call.getFnName(), returnType, newChildren, newFn,
-                        call.isDistinct(), call.isRemovedDistinct());
-                newCall.setIgnoreNulls(call.getIgnoreNulls());
-                return newCall;
             }
 
             if (!hasChange[0]) {
                 return call;
             }
 
-            Function fn = buildFunction(call.getFnName(), newChildren);
+            Type[] argTypes = new Type[newChildren.size()];
+            for (int i = 0; i < newChildren.size(); i++) {
+                argTypes[i] = newChildren.get(i).getType();
+            }
+            Function fn = ExprUtils.getBuiltinFunction(call.getFnName(), argTypes, Function.CompareMode.IS_SUPERTYPE_OF);
             return new CallOperator(call.getFnName(), fn.getReturnType(), newChildren, fn,
                     call.isDistinct(), call.isRemovedDistinct());
+        }
+
+        void setSupportColumns(ColumnRefSet supportColumns) {
+            this.supportColumns = supportColumns;
         }
     }
 
     private class GlobalDictRewriter extends BaseScalarOperatorShuttle {
-        // string column at which folding stops: it is kept as the dict mapping's input column
-        // instead of being replaced by its own define expression (-1: fold down to the base column)
-        private final int stopStringId;
-
-        GlobalDictRewriter(int stopStringId) {
-            this.stopStringId = stopStringId;
-        }
-
         @Override
         public ScalarOperator visitVariableReference(ColumnRefOperator variable, Void ignore) {
             // string dict expression use origin string column
             ScalarOperator define = stringRefToDefineExprMap.get(variable.getId());
-            if (variable.getId() == stopStringId
-                    || (define.isColumnRef() && variable.getId() == ((ColumnRefOperator) define).getId())) {
+            if (define.isColumnRef() && variable.getId() == ((ColumnRefOperator) define).getId()) {
                 // mock to string column
                 return new ColumnRefOperator(variable.getId(), variable.getType(), variable.getName(),
                         variable.isNullable());
@@ -669,16 +462,6 @@ class DecodeContext {
                 return call.getChild(0).accept(this, context);
             }
             return super.visitCall(call, context);
-        }
-
-        @Override
-        public ScalarOperator visitSubfield(SubfieldOperator operator, Void context) {
-            Preconditions.checkState(operator.getFieldNames().size() == 1);
-            Map<String, ColumnRefOperator> fieldData = structManager.getFieldStringRefMap(operator.getChild(0));
-            Preconditions.checkNotNull(fieldData);
-            ColumnRefOperator useStringRef = fieldData.get(operator.getFieldNames().get(0));
-            Preconditions.checkNotNull(useStringRef);
-            return useStringRef.accept(this, context);
         }
     }
 

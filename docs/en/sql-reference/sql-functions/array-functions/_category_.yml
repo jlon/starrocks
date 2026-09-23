@@ -3,5 +3,4 @@ label: 'Array'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: array-functions
+  type: generated-index

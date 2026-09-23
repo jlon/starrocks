@@ -43,8 +43,6 @@ import com.starrocks.scheduler.persist.MVTaskRunExtraMessage;
 import com.starrocks.scheduler.persist.TaskRunStatus;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
-import com.starrocks.sql.common.ErrorType;
-import com.starrocks.sql.common.StarRocksPlannerException;
 import com.starrocks.thrift.TMaterializedViewStatus;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -81,8 +79,8 @@ public class ShowMaterializedViewStatus {
     private long taskId;
     private String taskName;
     private long lastRefreshTime;
-    private long lastFreshnessConfirmedAt;
     private String baseTableRefreshVersionTimes = "{}";
+    private long lastFreshnessConfirmedAt;
     private String warehouse;
     private String refreshMode;
     private String refreshTrigger;
@@ -398,8 +396,7 @@ public class ShowMaterializedViewStatus {
         // rows
         if (olapTable.getPartitionInfo().getType() == PartitionType.UNPARTITIONED) {
             final Partition partition = olapTable.getPartitions().iterator().next();
-            final MaterializedIndex index =
-                    partition.getDefaultPhysicalPartition().getQueryableIndex(indexMeta.getIndexMetaId());
+            final MaterializedIndex index = partition.getDefaultPhysicalPartition().getLatestIndex(indexMeta.getIndexMetaId());
             status.setRows(index.getRowCount());
         } else {
             status.setRows(0L);
@@ -516,20 +513,20 @@ public class ShowMaterializedViewStatus {
         this.lastRefreshTime = lastRefreshTime;
     }
 
-    public long getLastFreshnessConfirmedAt() {
-        return lastFreshnessConfirmedAt;
-    }
-
-    public void setLastFreshnessConfirmedAt(long lastFreshnessConfirmedAt) {
-        this.lastFreshnessConfirmedAt = lastFreshnessConfirmedAt;
-    }
-
     public String getBaseTableRefreshVersionTimes() {
         return baseTableRefreshVersionTimes;
     }
 
     public void setBaseTableRefreshVersionTimes(String baseTableRefreshVersionTimes) {
         this.baseTableRefreshVersionTimes = baseTableRefreshVersionTimes;
+    }
+
+    public long getLastFreshnessConfirmedAt() {
+        return lastFreshnessConfirmedAt;
+    }
+
+    public void setLastFreshnessConfirmedAt(long lastFreshnessConfirmedAt) {
+        this.lastFreshnessConfirmedAt = lastFreshnessConfirmedAt;
     }
 
     public String getWarehouse() {
@@ -801,10 +798,10 @@ public class ShowMaterializedViewStatus {
         status.setRefresh_policy(Strings.nullToEmpty(this.refreshPolicy));
         status.setResource_group(Strings.nullToEmpty(this.resourceGroup));
         status.setQuery_rewrite_status_reason(Strings.nullToEmpty(this.queryRewriteStatusReason));
+        status.setBase_table_refresh_version_times(Strings.nullToEmpty(baseTableRefreshVersionTimes));
         if (lastFreshnessConfirmedAt > 0) {
             status.setLast_freshness_confirmed_at(TimeUtils.longToTimeString(lastFreshnessConfirmedAt));
         }
-        status.setBase_table_refresh_version_times(Strings.nullToEmpty(baseTableRefreshVersionTimes));
 
         return status;
     }
@@ -886,8 +883,8 @@ public class ShowMaterializedViewStatus {
         addField(resultRow, Strings.nullToEmpty(refreshPolicy));
         addField(resultRow, Strings.nullToEmpty(resourceGroup));
         addField(resultRow, Strings.nullToEmpty(queryRewriteStatusReason));
-        addField(resultRow, lastFreshnessConfirmedAt > 0 ? TimeUtils.longToTimeString(lastFreshnessConfirmedAt) : "");
         addField(resultRow, Strings.nullToEmpty(baseTableRefreshVersionTimes));
+        addField(resultRow, lastFreshnessConfirmedAt > 0 ? TimeUtils.longToTimeString(lastFreshnessConfirmedAt) : "");
 
         return resultRow;
     }
@@ -999,14 +996,6 @@ public class ShowMaterializedViewStatus {
                                         .collect(Collectors.toSet())
                         ));
             } catch (Exception e) {
-                // If the outer user query has already exhausted its query_timeout budget, the internal
-                // task_run_history read hit that timeout: surface it as a timeout so the outer query exits,
-                // instead of silently falling back to unknown refresh status.
-                if (SimpleExecutor.outerRemainingQueryTimeoutS() <= 0) {
-                    throw new StarRocksPlannerException(
-                            "querying information_schema.materialized_views exceeded query_timeout while "
-                                    + "reading task run history", ErrorType.INTERNAL_ERROR);
-                }
                 LOG.warn("Failed to list MV refreshed task run status, fallback to unknown status. db: {}",
                         dbName, e);
             }

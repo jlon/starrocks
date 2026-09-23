@@ -51,22 +51,18 @@ import com.starrocks.sql.analyzer.DDLTestBase;
 import com.starrocks.sql.ast.PrepareStmt;
 import com.starrocks.thrift.TUniqueId;
 import com.starrocks.utframe.UtFrameUtils;
+import mockit.Expectations;
+import mockit.Mock;
+import mockit.MockUp;
+import mockit.Mocked;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.MockedConstruction;
-import org.mockito.Mockito;
 import org.xnio.StreamConnection;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
-
-import static org.mockito.Mockito.anyLong;
-import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.when;
 
 public class ConnectProcessorExecuteTest extends DDLTestBase {
     private static ByteBuffer initDbPacket;
@@ -80,13 +76,8 @@ public class ConnectProcessorExecuteTest extends DDLTestBase {
     private static AuditEventBuilder auditBuilder = new AuditEventBuilder();
     private static ConnectContext myContext;
 
+    @Mocked
     private static StreamConnection connection;
-
-    static {
-        connection = mock(StreamConnection.class);
-        java.net.InetSocketAddress mockAddr = new java.net.InetSocketAddress("127.0.0.1", 12345);
-        when(connection.getPeerAddress()).thenReturn(mockAddr);
-    }
 
     private static PQueryStatistics statistics = new PQueryStatistics();
 
@@ -186,8 +177,14 @@ public class ConnectProcessorExecuteTest extends DDLTestBase {
         changeUserPacket.clear();
         resetConnectionPacket.clear();
         // Mock
-        MysqlChannel channel = mock(MysqlChannel.class);
-        when(channel.getRemoteHostPortString()).thenReturn("127.0.0.1:12345");
+        MysqlChannel channel = new MysqlChannel(connection);
+        new Expectations(channel) {
+            {
+                channel.getRemoteHostPortString();
+                minTimes = 0;
+                result = "127.0.0.1:12345";
+            }
+        };
         myContext = new ConnectContext(connection);
         Deencapsulation.setField(myContext, "mysqlChannel", channel);
         super.setUp();
@@ -195,17 +192,35 @@ public class ConnectProcessorExecuteTest extends DDLTestBase {
 
     private static MysqlChannel mockChannel(ByteBuffer packet) {
         try {
-            MysqlChannel channel = mock(MysqlChannel.class);
-            when(channel.fetchOnePacket()).thenReturn(packet);
-            when(channel.getRemoteHostPortString()).thenReturn("127.0.0.1:12345");
+            MysqlChannel channel = new MysqlChannel(connection);
+            new Expectations(channel) {
+                {
+                    // Mock receive
+                    channel.fetchOnePacket();
+                    minTimes = 0;
+                    result = packet;
+
+                    // Mock reset
+                    channel.setSequenceId(0);
+                    times = 1;
+
+                    // Mock send
+                    channel.sendAndFlush((ByteBuffer) any);
+                    minTimes = 0;
+
+                    channel.getRemoteHostPortString();
+                    minTimes = 0;
+                    result = "127.0.0.1:12345";
+                }
+            };
             return channel;
-        } catch (Exception e) {
+        } catch (IOException e) {
             return null;
         }
     }
 
     private static ConnectContext initMockContext(MysqlChannel channel, GlobalStateMgr globalStateMgr) {
-        ConnectContext context = spy(new ConnectContext(connection) {
+        ConnectContext context = new ConnectContext(connection) {
             private boolean firstTimeToSetCommand = true;
 
             @Override
@@ -242,23 +257,67 @@ public class ConnectProcessorExecuteTest extends DDLTestBase {
                     super.setCommand(command);
                 }
             }
-        });
+        };
 
-        doReturn(channel).when(context).getMysqlChannel();
-        doReturn(false).doReturn(true).doReturn(false).when(context).isKilled();
-        doReturn(globalStateMgr).when(context).getGlobalStateMgr();
-        doReturn(auditBuilder).when(context).getAuditEventBuilder();
-        doReturn("testCluster:user").when(context).getQualifiedUser();
-        doReturn(UserIdentity.ROOT).when(context).getCurrentUserIdentity();
-        doReturn(0L).when(context).getStartTime();
-        doReturn(1L).when(context).getReturnRows();
-        doNothing().when(context).setStmtId(anyLong());
-        doReturn(1L).when(context).getStmtId();
-        doReturn(new TUniqueId()).when(context).getExecutionId();
-        doReturn(MysqlCapability.DEFAULT_CAPABILITY).when(context).getCapability();
-        doReturn(new AccessControlContext()).when(context).getAccessControlContext();
-        doReturn(new PlainPasswordAuthenticationProvider(MysqlPassword.EMPTY_PASSWORD))
-                .when(context).getAuthenticationProvider();
+        new Expectations(context) {
+            {
+                context.getMysqlChannel();
+                minTimes = 0;
+                result = channel;
+
+                context.isKilled();
+                minTimes = 0;
+                maxTimes = 3;
+                returns(false, true, false);
+
+                context.getGlobalStateMgr();
+                minTimes = 0;
+                result = globalStateMgr;
+
+                context.getAuditEventBuilder();
+                minTimes = 0;
+                result = auditBuilder;
+
+                context.getQualifiedUser();
+                minTimes = 0;
+                result = "testCluster:user";
+
+                context.getCurrentUserIdentity();
+                minTimes = 0;
+                result = UserIdentity.ROOT;
+
+                context.getStartTime();
+                minTimes = 0;
+                result = 0L;
+
+                context.getReturnRows();
+                minTimes = 0;
+                result = 1L;
+
+                context.setStmtId(anyLong);
+                minTimes = 0;
+
+                context.getStmtId();
+                minTimes = 0;
+                result = 1L;
+
+                context.getExecutionId();
+                minTimes = 0;
+                result = new TUniqueId();
+
+                context.getCapability();
+                minTimes = 0;
+                result = MysqlCapability.DEFAULT_CAPABILITY;
+
+                context.getAccessControlContext();
+                minTimes = 0;
+                result = new AccessControlContext();
+
+                context.getAuthenticationProvider();
+                minTimes = 0;
+                result = new PlainPasswordAuthenticationProvider(MysqlPassword.EMPTY_PASSWORD);
+            }
+        };
 
         return context;
     }
@@ -281,15 +340,17 @@ public class ConnectProcessorExecuteTest extends DDLTestBase {
 
         ConnectProcessor processor = new ConnectProcessor(ctx);
         // Mock statement executor
-        try (MockedConstruction<StmtExecutor> mocked = Mockito.mockConstruction(StmtExecutor.class,
-                (mock, context) -> {
-                    when(mock.getQueryStatisticsForAuditLog()).thenReturn(statistics);
-                })) {
+        // Create mock for StmtExecutor using MockUp instead of @Mocked parameter
+        new MockUp<StmtExecutor>() {
+            @Mock
+            public PQueryStatistics getQueryStatisticsForAuditLog() {
+                return statistics;
+            }
+        };
 
-            processor.processOnce();
+        processor.processOnce();
 
-            Assertions.assertEquals(MysqlCommand.COM_STMT_EXECUTE, myContext.getCommand());
-            Assertions.assertTrue(ctx.getState().isQuery());
-        }
+        Assertions.assertEquals(MysqlCommand.COM_STMT_EXECUTE, myContext.getCommand());
+        Assertions.assertTrue(ctx.getState().isQuery());
     }
 }

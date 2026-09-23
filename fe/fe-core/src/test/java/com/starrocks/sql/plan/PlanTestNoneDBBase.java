@@ -81,9 +81,6 @@ public class PlanTestNoneDBBase extends StarRocksTestBase {
     @BeforeAll
     public static void beforeClass() throws Exception {
         Config.show_execution_groups = false;
-        Config.enable_virtual_columns = false;
-        Config.proc_profile_cpu_enable = false;
-        Config.proc_profile_mem_enable = false;
         // disable checking tablets
         Config.tablet_sched_max_scheduling_tablets = -1;
         Config.alter_scheduler_interval_millisecond = 1;
@@ -95,7 +92,6 @@ public class PlanTestNoneDBBase extends StarRocksTestBase {
         connectContext.getSessionVariable().setUseLowCardinalityOptimizeV2(false);
         connectContext.getSessionVariable().setCboEqBaseType(SessionVariableConstants.VARCHAR);
         connectContext.getSessionVariable().setUseCorrelatedPredicateEstimate(false);
-        connectContext.getSessionVariable().setEnableGlobalLateMaterialization(false);
         FeConstants.enablePruneEmptyOutputScan = false;
         FeConstants.showJoinLocalShuffleInExplain = false;
         FeConstants.showFragmentCost = false;

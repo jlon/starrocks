@@ -56,7 +56,7 @@ public class HivePartitionTraits extends DefaultTraits {
                 getPartitionNameWithPartitionInfo();
         return
                 partitionNameWithPartition.values().stream()
-                        .map(info -> info.getModifiedTimeUnit().toMillis(info.getModifiedTime()))
+                        .map(com.starrocks.connector.PartitionInfo::getModifiedTime)
                         .max(Long::compareTo);
     }
 

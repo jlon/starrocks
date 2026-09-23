@@ -18,14 +18,14 @@
 #include <memory>
 #include <vector>
 
-#include "column/global_dict/types_fwd_decl.h"
-#include "common/runtime_profile.h"
 #include "common/statusor.h"
 #include "gen_cpp/olap_file.pb.h"
 #include "gutil/macros.h"
+#include "runtime/global_dict/types_fwd_decl.h"
 #include "storage/lake/delta_writer_finish_mode.h"
 #include "storage/memtable_flush_executor.h"
 #include "storage/rowset/segment_file_info.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks {
 class MemTracker;
@@ -125,14 +125,20 @@ public:
     // NOTE: Do NOT invoke this method in a bthread unless you are sure that `write()` has never been called.
     void close();
 
+    // Wait for all pending flush tasks to complete and close the tablet writer.
+    // Performs blocking I/O but does NOT reset/destroy internal state (_mem_table_sink, _flush_token, etc.).
+    // Safe to call from a bthread (e.g., execution queue stop handler).
+    void flush_and_wait();
+
+    // Release internal resources (reset unique_ptrs). Non-blocking.
+    // Must be called after flush_and_wait() and after all concurrent accessors (e.g., MergeBlockTask,
+    // profile readers) have completed.
+    void release_resources();
+
     // Cancel the delta writer with the given status.
     // This method can be called concurrently and it is thread-safe.
     // After cancellation, subsequent write/flush operations will fail quickly.
     void cancel(const Status& st);
-
-    // The status passed to the first `cancel()` call, or OK if never cancelled.
-    // Callers use it to report why the writer stopped working instead of a generic error.
-    [[nodiscard]] Status cancel_status() const;
 
     [[nodiscard]] int64_t partition_id() const;
 
@@ -308,21 +314,6 @@ public:
         return *this;
     }
 
-    // See TOlapTableSink.enable_multi_node_write. Marks this writer as holding only part of the tablet's
-    // rows for the transaction, which keeps its (partial) txn log out of the metacache.
-    DeltaWriterBuilder& set_multi_node_write(bool multi_node_write) {
-        _multi_node_write = multi_node_write;
-        return *this;
-    }
-
-    // Force the internal TabletWriter to build the vector index inline, overriding async
-    // index_build_mode. Used by lake schema-change conversions (SortedSchemaChange) so the
-    // shadow tablet's existing data is fully indexed within the ALTER, matching DirectSchemaChange.
-    DeltaWriterBuilder& set_force_build_vector_index_inline(bool force_build_vector_index_inline) {
-        _force_build_vector_index_inline = force_build_vector_index_inline;
-        return *this;
-    }
-
     StatusOr<DeltaWriterPtr> build();
 
 private:
@@ -346,9 +337,7 @@ private:
     BundleWritableFileContext* _bundle_writable_file_context{nullptr};
     GlobalDictByNameMaps* _global_dicts = nullptr;
     bool _is_multi_statements_txn = false;
-    bool _multi_node_write = false;
     std::shared_ptr<const TabletSchema> _tablet_schema;
-    bool _force_build_vector_index_inline = false;
 };
 
 } // namespace starrocks::lake

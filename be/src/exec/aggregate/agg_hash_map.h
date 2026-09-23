@@ -19,14 +19,10 @@
 #include <limits>
 #include <utility>
 
-#include "base/container/fixed_hash_map.h"
-#include "base/failpoint/fail_point.h"
-#include "base/phmap/phmap.h"
-#include "base/utility/defer_op.h"
 #include "column/column.h"
 #include "column/column_hash.h"
 #include "column/hash_set.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "column/vectorized_fwd.h"
 #include "common/compiler_util.h"
 #include "exec/aggregate/agg_hash_set.h"
@@ -35,6 +31,10 @@
 #include "gutil/casts.h"
 #include "gutil/strings/fastmem.h"
 #include "runtime/mem_pool.h"
+#include "util/defer_op.h"
+#include "util/failpoint/fail_point.h"
+#include "util/fixed_hash_map.h"
+#include "util/phmap/phmap.h"
 
 namespace starrocks {
 
@@ -60,7 +60,7 @@ concept AllocFunc = HasKeyType<HashMapWithKey>&& requires(T t, const typename Ha
 template <PhmapSeed seed>
 using Int8AggHashMap = SmallFixedSizeHashMap<int8_t, AggDataPtr, seed>;
 template <PhmapSeed seed>
-using Int16AggHashMap = SmallFixedSizeHashMap<int16_t, AggDataPtr, seed>;
+using Int16AggHashMap = phmap::flat_hash_map<int16_t, AggDataPtr, StdHashWithSeed<int16_t, seed>>;
 template <PhmapSeed seed>
 using Int32AggHashMap = phmap::flat_hash_map<int32_t, AggDataPtr, StdHashWithSeed<int32_t, seed>>;
 template <PhmapSeed seed>
@@ -100,8 +100,17 @@ using SliceAggTwoLevelHashMap =
                                       phmap::priv::Allocator<phmap::priv::Pair<const Slice, AggDataPtr>>, PHMAPN>;
 
 template <typename T>
+concept HasImmutableData = requires(T t) {
+    {t.immutable_data()};
+};
+
+template <typename T>
 auto get_immutable_data(T* obj) {
-    return obj->immutable_data();
+    if constexpr (HasImmutableData<T>) {
+        return obj->immutable_data();
+    } else {
+        return obj->get_proxy_data();
+    }
 }
 
 static_assert(sizeof(AggDataPtr) == sizeof(size_t));

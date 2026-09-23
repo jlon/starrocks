@@ -36,7 +36,7 @@
 
 #include <memory>
 
-#include "common/storage_define.h"
+#include "storage/olap_define.h"
 #include "storage/rowset/base_rowset.h"
 #include "storage/tablet_meta.h"
 #include "storage/utils.h"

@@ -15,7 +15,7 @@
 #pragma once
 
 #include "column/vectorized_fwd.h"
-#include "exec_primitive/pipeline/operator_factory.h"
+#include "exec/pipeline/operator.h"
 #include "runtime/descriptors.h"
 
 namespace starrocks {

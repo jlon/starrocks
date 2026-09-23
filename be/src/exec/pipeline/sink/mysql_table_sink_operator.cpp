@@ -15,19 +15,17 @@
 #include "exec/pipeline/sink/mysql_table_sink_operator.h"
 
 #include "column/chunk.h"
-#include "compute_env/workgroup/scan_executor.h"
-#include "exec/pipeline/fragment_context.h"
-#include "exec/pipeline/fragment_context_cancel.h"
 #include "exec/pipeline/sink/sink_io_buffer.h"
+#include "exec/workgroup/scan_executor.h"
+#include "exec/workgroup/scan_task_queue.h"
 #include "exprs/expr.h"
-#include "exprs/expr_executor.h"
-#include "exprs/expr_factory.h"
 #ifndef __APPLE__
-#include "data_sink/external/mysql_table_writer.h"
+#include "runtime/mysql_table_writer.h"
 #endif
-#include "base/concurrency/spinlock.h"
-#include "base/utility/defer_op.h"
 #include "runtime/runtime_state.h"
+#include "udf/java/utils.h"
+#include "util/defer_op.h"
+#include "util/spinlock.h"
 
 namespace starrocks::pipeline {
 
@@ -65,14 +63,14 @@ void MysqlTableSinkIOBuffer::_add_chunk(const ChunkPtr& chunk) {
     if (_writer == nullptr) {
         if (Status status = _open_mysql_table_writer(); !status.ok()) {
             LOG(WARNING) << "open mysql table writer failed, error: " << status.to_string();
-            cancel_fragment_context(_fragment_ctx, status);
+            _fragment_ctx->cancel(status);
             return;
         }
     }
 
     if (Status status = _writer->append(chunk.get()); !status.ok()) {
         LOG(WARNING) << "add chunk to mysql table writer failed, error: " << status.to_string();
-        cancel_fragment_context(_fragment_ctx, status);
+        _fragment_ctx->cancel(status);
         return;
     }
 }
@@ -175,9 +173,9 @@ MysqlTableSinkOperatorFactory::MysqlTableSinkOperatorFactory(int32_t id, const T
 
 Status MysqlTableSinkOperatorFactory::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(OperatorFactory::prepare(state));
-    RETURN_IF_ERROR(ExprFactory::create_expr_trees(state->obj_pool(), _t_output_expr, &_output_expr_ctxs, state));
-    RETURN_IF_ERROR(ExprExecutor::prepare(_output_expr_ctxs, state));
-    RETURN_IF_ERROR(ExprExecutor::open(_output_expr_ctxs, state));
+    RETURN_IF_ERROR(Expr::create_expr_trees(state->obj_pool(), _t_output_expr, &_output_expr_ctxs, state));
+    RETURN_IF_ERROR(Expr::prepare(_output_expr_ctxs, state));
+    RETURN_IF_ERROR(Expr::open(_output_expr_ctxs, state));
 
 #ifndef __APPLE__
     _mysql_table_sink_buffer = std::make_shared<MysqlTableSinkIOBuffer>(_t_mysql_table_sink, _output_expr_ctxs,
@@ -188,7 +186,7 @@ Status MysqlTableSinkOperatorFactory::prepare(RuntimeState* state) {
 }
 
 void MysqlTableSinkOperatorFactory::close(RuntimeState* state) {
-    ExprExecutor::close(_output_expr_ctxs, state);
+    Expr::close(_output_expr_ctxs, state);
     OperatorFactory::close(state);
 }
 

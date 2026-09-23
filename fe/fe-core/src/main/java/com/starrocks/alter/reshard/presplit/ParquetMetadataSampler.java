@@ -74,29 +74,22 @@ public final class ParquetMetadataSampler {
         Preconditions.checkArgument(requestedTabletCount >= 2,
                 "requestedTabletCount must be >= 2, was %s", requestedTabletCount);
 
-        List<RowGroupStatistics> fetched;
-        try (PreSplitProfile.Scope ignored = PreSplitProfile.startPhase(
-                PreSplitProfile.Phase.SOURCE_SAMPLING)) {
-            fetched = statisticsProvider.fetch(request);
-        }
+        List<RowGroupStatistics> fetched = statisticsProvider.fetch(request);
         if (fetched == null) {
             throw new StarRocksException("RowGroupStatisticsProvider returned null");
         }
-        try (PreSplitProfile.Scope ignored = PreSplitProfile.startPhase(
-                PreSplitProfile.Phase.PARTITION_AND_BOUNDARY_PLANNING)) {
-            List<RowGroupStatistics> usable = filterUsableRowGroups(fetched, request.getSortKey());
-            if (usable.isEmpty()) {
-                return BoundaryPlannerResult.NO_SPLIT;
-            }
-            usable.sort(Comparator.comparing(RowGroupStatistics::getMinTuple));
-
-            long totalRowCount = checkOverlapAndSumRowCount(usable);
-            if (totalRowCount == 0L) {
-                return BoundaryPlannerResult.NO_SPLIT;
-            }
-
-            return classifyResult(placeQuantileBoundaries(usable, totalRowCount, requestedTabletCount), usable);
+        List<RowGroupStatistics> usable = filterUsableRowGroups(fetched, request.getSortKey());
+        if (usable.isEmpty()) {
+            return BoundaryPlannerResult.NO_SPLIT;
         }
+        usable.sort(Comparator.comparing(RowGroupStatistics::getMinTuple));
+
+        long totalRowCount = checkOverlapAndSumRowCount(usable);
+        if (totalRowCount == 0L) {
+            return BoundaryPlannerResult.NO_SPLIT;
+        }
+
+        return classifyResult(placeQuantileBoundaries(usable, totalRowCount, requestedTabletCount), usable);
     }
 
     /**

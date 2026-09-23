@@ -26,9 +26,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
-import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider;
 import software.amazon.awssdk.core.exception.SdkClientException;
 
 import java.net.URI;
@@ -118,26 +116,13 @@ public class AwsCloudConfigurationTest {
     }
 
     @Test
-    public void testWebIdentityGenerateCredentialsProvider() {
-        Map<String, String> properties = new HashMap<>();
-        properties.put("aws.s3.use_web_identity_token_file", "true");
-        CloudConfiguration cloudConfiguration = CloudConfigurationFactory.buildCloudConfigurationForStorage(properties);
-        Assertions.assertNotNull(cloudConfiguration);
-        AwsCredentialsProvider provider =
-                ((AwsCloudConfiguration) cloudConfiguration).getAwsCloudCredential().generateAWSCredentialsProvider();
-        Assertions.assertInstanceOf(WebIdentityTokenFileCredentialsProvider.class, provider);
-    }
-
-    @Test
     public void testWebIdentityToFileStoreInfo() {
         Map<String, String> properties = new HashMap<>();
         properties.put("aws.s3.use_web_identity_token_file", "true");
         CloudConfiguration cloudConfiguration = CloudConfigurationFactory.buildCloudConfigurationForStorage(properties);
         Assertions.assertNotNull(cloudConfiguration);
         FileStoreInfo fileStoreInfo = cloudConfiguration.toFileStoreInfo();
-        Assertions.assertTrue(fileStoreInfo.getS3FsInfo().getCredential().hasWebIdentityCredential());
-        Assertions.assertTrue(fileStoreInfo.getS3FsInfo().getCredential()
-                .getWebIdentityCredential().getIamRoleArn().isEmpty());
+        Assertions.assertTrue(fileStoreInfo.getS3FsInfo().getCredential().hasDefaultCredential());
     }
 
     @Test
@@ -148,9 +133,9 @@ public class AwsCloudConfigurationTest {
         CloudConfiguration cloudConfiguration = CloudConfigurationFactory.buildCloudConfigurationForStorage(properties);
         Assertions.assertNotNull(cloudConfiguration);
         FileStoreInfo fileStoreInfo = cloudConfiguration.toFileStoreInfo();
-        Assertions.assertTrue(fileStoreInfo.getS3FsInfo().getCredential().hasWebIdentityCredential());
+        Assertions.assertTrue(fileStoreInfo.getS3FsInfo().getCredential().hasAssumeRoleCredential());
         Assertions.assertEquals("arn:aws:iam::123456789:role/MyRole",
-                fileStoreInfo.getS3FsInfo().getCredential().getWebIdentityCredential().getIamRoleArn());
+                fileStoreInfo.getS3FsInfo().getCredential().getAssumeRoleCredential().getIamRoleArn());
     }
 
     @Test

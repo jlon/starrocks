@@ -3,5 +3,5 @@ label: '指标详情'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: metric_details
+  type: generated-index
+  title: '指标详情'

@@ -16,12 +16,12 @@
 
 #include <algorithm>
 
-#include "base/string/utf8.h"
 #include "column/array_column.h"
 #include "column/binary_column.h"
 #include "column/column_helper.h"
 #include "column/column_viewer.h"
 #include "exprs/string_functions.h"
+#include "util/utf8.h"
 
 namespace starrocks {
 
@@ -129,7 +129,7 @@ StatusOr<ColumnPtr> StringFunctions::split(FunctionContext* context, const starr
         array_offsets->append(offset);
 
         return ArrayColumn::create(
-                NullableColumn::create(std::move(array_binary_column), NullColumn::create(offset, 0)),
+                NullableColumn::create(std::move(array_binary_column), NullColumn::create(std::move(offset), 0)),
                 std::move(array_offsets));
     } else if (columns[1]->is_constant()) {
         Slice delimiter = state->delimiter;
@@ -188,15 +188,14 @@ StatusOr<ColumnPtr> StringFunctions::split(FunctionContext* context, const starr
         }
         if (!columns[0]->has_null()) {
             return ArrayColumn::create(
-                    NullableColumn::create(std::move(array_binary_column), NullColumn::create(offset, 0)),
+                    NullableColumn::create(std::move(array_binary_column), NullColumn::create(std::move(offset), 0)),
                     std::move(array_offsets));
         } else {
             return NullableColumn::create(
-                    ArrayColumn::create(
-                            NullableColumn::create(std::move(array_binary_column), NullColumn::create(offset, 0)),
-                            std::move(array_offsets)),
-                    NullColumn::static_pointer_cast(
-                            ColumnHelper::as_raw_column<NullableColumn>(columns[0])->null_column()->clone()));
+                    ArrayColumn::create(NullableColumn::create(std::move(array_binary_column),
+                                                               NullColumn::create(std::move(offset), 0)),
+                                        std::move(array_offsets)),
+                    NullColumn::create(*ColumnHelper::as_raw_column<NullableColumn>(columns[0])->null_column()));
         }
     } else {
         array_binary_column->reserve(row_nums * 5, haystack_columns->get_immutable_bytes().size() * sizeof(uint8_t));
@@ -236,7 +235,7 @@ StatusOr<ColumnPtr> StringFunctions::split(FunctionContext* context, const starr
         }
         array_offsets->append(offset);
         result_array = ArrayColumn::create(
-                NullableColumn::create(std::move(array_binary_column), NullColumn::create(offset, 0)),
+                NullableColumn::create(std::move(array_binary_column), NullColumn::create(std::move(offset), 0)),
                 std::move(array_offsets));
         return NullableColumn::create(std::move(result_array), std::move(null_array));
     }

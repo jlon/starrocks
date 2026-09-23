@@ -16,7 +16,6 @@
 
 #include <filesystem>
 
-#include "base/path/filesystem_util.h"
 #include "cache/cache_metrics.h"
 #include "cache/disk_space_monitor.h"
 #include "cache/status.h"
@@ -24,6 +23,7 @@
 #include "common/statusor.h"
 #include "gutil/strings/fastmem.h"
 #include "runtime/current_thread.h"
+#include "util/filesystem_util.h"
 
 namespace starrocks {
 
@@ -144,8 +144,7 @@ const DataCacheDiskMetrics StarCacheEngine::cache_metrics() const {
     auto starcache_metrics = _cache->metrics(0);
     DataCacheDiskMetrics metrics = {.status = static_cast<DataCacheStatus>(starcache_metrics.status),
                                     .disk_quota_bytes = starcache_metrics.disk_quota_bytes,
-                                    .disk_used_bytes = starcache_metrics.disk_used_bytes,
-                                    .meta_used_bytes = starcache_metrics.meta_used_bytes};
+                                    .disk_used_bytes = starcache_metrics.disk_used_bytes};
     return metrics;
 }
 

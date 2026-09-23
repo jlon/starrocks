@@ -17,6 +17,7 @@
 
 #include <arrow/buffer.h>
 #include <arrow/io/type_fwd.h>
+#include <arrow/util/string_builder.h>
 #include <fmt/core.h>
 #include <glog/logging.h>
 #include <parquet/exception.h>
@@ -26,19 +27,18 @@
 
 #include <ostream>
 
-#include "base/concurrency/stopwatch.hpp"
-#include "base/string/slice.h"
-#include "base/utility/defer_op.h"
 #include "column/chunk.h"
 #include "column/vectorized_fwd.h"
-#include "common/runtime_profile.h"
-#include "common/thread/priority_thread_pool.hpp"
 #include "exprs/expr.h"
 #include "exprs/expr_context.h"
 #include "formats/parquet/utils.h"
-#include "fs/fs.h"
 #include "runtime/runtime_state.h"
 #include "types/logical_type.h"
+#include "util/defer_op.h"
+#include "util/priority_thread_pool.hpp"
+#include "util/runtime_profile.h"
+#include "util/slice.h"
+#include "util/stopwatch.hpp"
 
 namespace starrocks::parquet {
 
@@ -108,7 +108,7 @@ arrow::Status ParquetOutputStream::Close() {
     return arrow::Status::OK();
 }
 
-AsyncParquetOutputStream::AsyncParquetOutputStream(formats::AsyncFlushOutputStream* stream) : _stream(stream) {
+AsyncParquetOutputStream::AsyncParquetOutputStream(io::AsyncFlushOutputStream* stream) : _stream(stream) {
     set_mode(arrow::io::FileMode::WRITE);
 }
 
@@ -214,7 +214,7 @@ arrow::Result<std::shared_ptr<::parquet::schema::GroupNode>> ParquetBuildHelper:
     }
 
     return std::static_pointer_cast<::parquet::schema::GroupNode>(
-            ::parquet::schema::GroupNode::Make("table", ::parquet::Repetition::REQUIRED, fields));
+            ::parquet::schema::GroupNode::Make("table", ::parquet::Repetition::REQUIRED, std::move(fields)));
 }
 
 // for UT only
@@ -231,7 +231,7 @@ arrow::Result<std::shared_ptr<::parquet::schema::GroupNode>> ParquetBuildHelper:
     }
 
     return std::static_pointer_cast<::parquet::schema::GroupNode>(
-            ::parquet::schema::GroupNode::Make("table", ::parquet::Repetition::REQUIRED, fields));
+            ::parquet::schema::GroupNode::Make("table", ::parquet::Repetition::REQUIRED, std::move(fields)));
 }
 
 StatusOr<std::shared_ptr<::parquet::WriterProperties>> ParquetBuildHelper::make_properties(

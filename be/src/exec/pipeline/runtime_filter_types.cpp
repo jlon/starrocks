@@ -14,11 +14,7 @@
 
 #include "exec/pipeline/runtime_filter_types.h"
 
-#include "common/config_scan_io_fwd.h"
-#include "exprs/predicate.h"
 #include "hashjoin/hash_joiner_fwd.h"
-#include "runtime/runtime_filter_builder.h"
-#include "runtime/runtime_filter_factory.h"
 
 namespace starrocks::pipeline {
 
@@ -152,10 +148,10 @@ Status PartialRuntimeFilterMerger::merge_singleton_local_bloom_filters() {
         RuntimeFilter* rf = nullptr;
         if (maybe_use_bitset_filter && _partial_bloom_filter_build_params[0][i].has_value()) {
             const auto& param = _partial_bloom_filter_build_params[0][i].value();
-            rf = RuntimeFilterFactory::create_join_filter(_pool, build_type, desc->join_mode(), param.columns,
-                                                          kHashJoinKeyColumnOffset, row_count);
+            rf = RuntimeFilterHelper::create_join_runtime_filter(_pool, build_type, desc->join_mode(), param,
+                                                                 kHashJoinKeyColumnOffset, row_count);
         } else {
-            rf = RuntimeFilterFactory::create_bloom_filter(_pool, build_type, desc->join_mode());
+            rf = RuntimeFilterHelper::create_runtime_bloom_filter(_pool, build_type, desc->join_mode());
         }
         if (rf == nullptr) continue;
 
@@ -164,7 +160,7 @@ Status PartialRuntimeFilterMerger::merge_singleton_local_bloom_filters() {
             if (!is_version_v3) {
                 rf->get_membership_filter()->clear_bf();
             } else {
-                rf = RuntimeFilterFactory::to_empty_filter(_pool, rf);
+                rf = RuntimeFilterHelper::transmit_to_runtime_empty_filter(_pool, rf);
                 rf->get_membership_filter()->init(row_count);
             }
         } else {
@@ -191,8 +187,8 @@ Status PartialRuntimeFilterMerger::merge_singleton_local_bloom_filters() {
             auto& opt_param = opt_params[i];
             DCHECK(opt_param.has_value());
             auto& param = opt_param.value();
-            auto status = RuntimeFilterBuilder::fill(desc->runtime_filter(), desc->build_expr_type(), param.columns,
-                                                     kHashJoinKeyColumnOffset, param.eq_null);
+            auto status = RuntimeFilterHelper::fill_runtime_filter(param, desc->build_expr_type(),
+                                                                   desc->runtime_filter(), kHashJoinKeyColumnOffset);
             if (!status.ok()) {
                 desc->set_runtime_filter(nullptr);
                 break;
@@ -221,14 +217,14 @@ Status PartialRuntimeFilterMerger::merge_multi_partitioned_local_bloom_filters()
         // skip if ht.size() > limit, and it's only for local.
         if (!desc->has_remote_targets() && row_count > _local_rf_limit) continue;
         LogicalType build_type = desc->build_expr_type();
-        auto rf = RuntimeFilterFactory::create_bloom_filter(_pool, build_type, desc->join_mode());
+        auto rf = RuntimeFilterHelper::create_runtime_bloom_filter(_pool, build_type, desc->join_mode());
         if (rf == nullptr) continue;
         // set BF paramaters
         if (desc->has_remote_targets() && row_count > _global_rf_limit) {
             if (!is_version_v3) {
                 rf->get_membership_filter()->clear_bf();
             } else {
-                rf = RuntimeFilterFactory::to_empty_filter(_pool, rf);
+                rf = RuntimeFilterHelper::transmit_to_runtime_empty_filter(_pool, rf);
                 rf->get_membership_filter()->init(row_count);
             }
         } else {

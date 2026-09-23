@@ -14,26 +14,25 @@
 
 #pragma once
 
-#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <type_traits>
 
-#include "base/hash/unaligned_access.h"
-#include "base/orlp/pdqsort.h"
-#include "base/phmap/phmap.h"
-#include "base/phmap/phmap_fwd_decl.h"
-#include "base/string/slice.h"
 #include "column/column_hash.h"
 #include "column/column_helper.h"
 #include "column/object_column.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "column/vectorized_fwd.h"
 #include "exprs/agg/aggregate.h"
 #include "exprs/agg/aggregate_state_allocator.h"
 #include "exprs/function_context.h"
 #include "gutil/casts.h"
 #include "runtime/mem_pool.h"
+#include "util/orlp/pdqsort.h"
+#include "util/phmap/phmap.h"
+#include "util/phmap/phmap_fwd_decl.h"
+#include "util/slice.h"
+#include "util/unaligned_access.h"
 
 namespace starrocks {
 
@@ -68,22 +67,6 @@ struct PercentileState {
     double rate = 0.0;
 };
 
-// Merges the k already-sorted rows of `grid` with a loser tree and picks out the two elements
-// surrounding `goal`. Every row is laid out by merge() as
-//     [min_sentinel, payload (ascending) ..., max_sentinel]
-// so the payload occupies exactly the slots [1, size - 2].
-//
-// Neither the end of a row nor the tree's virtual leaf may be recognised by VALUE:
-//   * real data can be equal to RunTimeTypeLimits<LT>::min_value()/max_value() - for DATE those are
-//     the perfectly ordinary values '0000-01-01' and '9999-12-31' - so a payload element would be
-//     mistaken for the row's terminator, and
-//   * the virtual leaf k, which seeds the tree during the build, would then no longer be strictly
-//     better than every real leaf. It could stay behind in ls[] and later become ls[0], and the loop
-//     would index grid[k]/mp[k], i.e. one past the end of both vectors.
-// A row whose payload is empty (size == 2) has the same effect, because its only readable slot in
-// forward order is the max sentinel.
-// Both are therefore tracked by POSITION, not by value: `done[i]` records whether row i still has
-// payload left, and the virtual leaf is recognised by its index.
 template <LogicalType LT, typename CppType, bool reverse>
 void kWayMergeSort(const typename PercentileStateTypes<LT>::GridType& grid, std::vector<CppType>& b,
                    std::vector<int>& ls, std::vector<int>& mp, size_t goal, int k, CppType& junior_elm,
@@ -93,36 +76,22 @@ void kWayMergeSort(const typename PercentileStateTypes<LT>::GridType& grid, std:
     b.resize(k + 1);
     ls.resize(k);
     mp.resize(k);
-    // done[i]: row i has no payload element left. done[k] belongs to the virtual leaf.
-    std::vector<uint8_t> done(k + 1, 0);
-
     for (int i = 0; i < k; ++i) {
-        DCHECK_GE(grid[i].size(), 2U);
-        const int last = static_cast<int>(grid[i].size()) - 1;
-        const int pos = reverse ? last - 1 : 1;
-        b[i] = grid[i][pos];
-        // pos lands on a sentinel exactly when the row carries no payload at all.
-        done[i] = reverse ? (pos <= 0) : (pos >= last);
-        mp[i] = reverse ? pos - 1 : pos + 1;
+        if constexpr (reverse) {
+            mp[i] = grid[i].size() - 2;
+        } else {
+            mp[i] = 1;
+        }
+    }
+    for (int i = 0; i < k; ++i) {
+        b[i] = grid[i][mp[i]];
+        if constexpr (reverse) {
+            mp[i]--;
+        } else {
+            mp[i]++;
+        }
     }
     b[k] = reverse ? maxV : minV;
-    done[k] = 1;
-
-    // Whether leaf x must be stored as the loser of a node whose current loser is y.
-    // The virtual leaf k always wins and is never stored, so that after the build no node refers to
-    // it any more; exhausted rows always lose; only then are values compared.
-    auto loses = [&](int x, int y) {
-        if (y == k) return true;
-        if (x == k) return false;
-        if (done[x]) return true;
-        if (done[y]) return false;
-        if constexpr (reverse) {
-            return b[x] < b[y];
-        } else {
-            return b[x] > b[y];
-        }
-    };
-
     for (int i = 0; i < k; ++i) {
         ls[i] = k;
     }
@@ -131,7 +100,11 @@ void kWayMergeSort(const typename PercentileStateTypes<LT>::GridType& grid, std:
         int q = i;
         int t = (q + k) / 2;
         while (t > 0) {
-            if (loses(q, ls[t])) {
+            if constexpr (reverse) {
+                if (b[q] < b[ls[t]]) {
+                    std::swap(q, ls[t]);
+                }
+            } else if (b[q] > b[ls[t]]) {
                 std::swap(q, ls[t]);
             }
             t = t / 2;
@@ -139,12 +112,11 @@ void kWayMergeSort(const typename PercentileStateTypes<LT>::GridType& grid, std:
         ls[0] = q;
     }
 
+    CppType tp = reverse ? minV : maxV;
     size_t cnt = 0;
 
-    // done[k] == 1, so even a degenerate tree can only stop the merge, never read out of range.
-    while (!done[ls[0]]) {
+    while (b[ls[0]] != tp) {
         int q = ls[0];
-        DCHECK_LT(q, k);
         if (UNLIKELY(cnt >= goal)) {
             if (cnt == goal) {
                 if constexpr (reverse)
@@ -161,17 +133,20 @@ void kWayMergeSort(const typename PercentileStateTypes<LT>::GridType& grid, std:
             }
         }
         cnt++;
-        // !done[q] guarantees mp[q] is still a valid index into the row.
-        const int pos = mp[q];
-        const int last = static_cast<int>(grid[q].size()) - 1;
-        DCHECK(pos >= 0 && pos <= last);
-        b[q] = grid[q][pos];
-        done[q] = reverse ? (pos <= 0) : (pos >= last);
-        mp[q] = reverse ? pos - 1 : pos + 1;
+        b[q] = grid[q][mp[q]];
 
+        if constexpr (reverse) {
+            mp[q]--;
+        } else {
+            mp[q]++;
+        }
         int t = (q + k) / 2;
         while (t > 0) {
-            if (loses(q, ls[t])) {
+            if constexpr (reverse) {
+                if (b[q] < b[ls[t]]) {
+                    std::swap(q, ls[t]);
+                }
+            } else if (b[q] > b[ls[t]]) {
                 std::swap(q, ls[t]);
             }
             t = t / 2;
@@ -240,23 +215,9 @@ public:
         DCHECK(column->is_binary());
 
         const Slice slice = column->get(row_num).get_slice();
-        constexpr size_t kHeaderSize = sizeof(double) + sizeof(size_t);
-        if (UNLIKELY(slice.size < kHeaderSize)) {
-            ctx->set_error("Invalid percentile_cont merge data: insufficient header");
-            return;
-        }
-        double rate = *reinterpret_cast<const double*>(slice.data);
-        size_t items_size = *reinterpret_cast<const size_t*>(slice.data + sizeof(double));
-        if (UNLIKELY(items_size > (std::numeric_limits<size_t>::max() - kHeaderSize) / sizeof(InputCppType))) {
-            ctx->set_error("Invalid percentile_cont merge data: items size overflow");
-            return;
-        }
-        size_t payload_size = items_size * sizeof(InputCppType);
-        if (UNLIKELY(slice.size < kHeaderSize + payload_size)) {
-            ctx->set_error("Invalid percentile_cont merge data: payload size mismatch");
-            return;
-        }
-        auto data_ptr = slice.data + kHeaderSize;
+        double rate = *reinterpret_cast<double*>(slice.data);
+        size_t items_size = *reinterpret_cast<size_t*>(slice.data + sizeof(double));
+        auto data_ptr = slice.data + sizeof(double) + sizeof(size_t);
         auto& grid = this->data(state).grid;
 
         typename PercentileStateTypes<LT>::ItemType vec;
@@ -298,12 +259,7 @@ public:
                 reinterpret_cast<InputCppType*>(bytes.data() + old_size + sizeof(double) + sizeof(size_t) +
                                                 total_items_size * sizeof(InputCppType)));
 
-        auto& offsets = column->get_offset();
-        if (LIKELY(!offsets.is_large() && new_size <= std::numeric_limits<uint32_t>::max())) {
-            offsets.small_storage().emplace_back(static_cast<uint32_t>(new_size));
-        } else {
-            offsets.emplace_back(new_size);
-        }
+        column->get_offset().emplace_back(new_size);
     }
 
     void convert_to_serialize_format(FunctionContext* ctx, const Columns& src, size_t chunk_size,
@@ -314,7 +270,7 @@ public:
         auto* dst_column = down_cast<BinaryColumn*>(dst.get());
         Bytes& bytes = dst_column->get_bytes();
         double rate = ColumnHelper::get_const_value<TYPE_DOUBLE>(src[1]);
-        const auto& src_column = *down_cast<const InputColumnType*>(src[0].get());
+        auto src_column = *down_cast<const InputColumnType*>(src[0].get());
         const InputCppType* src_data = src_column.immutable_data().data();
         for (auto i = 0; i < chunk_size; ++i) {
             size_t old_size = bytes.size();
@@ -350,7 +306,7 @@ public:
         this->init_state_if_needed(ctx, columns, state);
 
         const auto& column = down_cast<const BinaryColumn&>(*columns[0]);
-        const auto column_data = column.immutable_data();
+        const auto& column_data = column.get_proxy_data();
         // use mem_pool to hold the slice's data, otherwise after chunk is processed, the memory of slice used is gone
         size_t element_size = column_data[row_num].get_size();
         uint8_t* pos = ctx->mem_pool()->allocate(element_size);
@@ -437,8 +393,8 @@ public:
         Bytes& bytes = dst_column->get_bytes();
         double rate = ColumnHelper::get_const_value<TYPE_DOUBLE>(src[1]);
 
-        const auto& src_column = *down_cast<const BinaryColumn*>(src[0].get());
-        const auto src_data = src_column.immutable_data();
+        auto src_column = *down_cast<const BinaryColumn*>(src[0].get());
+        const auto& src_data = src_column.get_proxy_data();
         for (auto i = 0; i < chunk_size; ++i) {
             size_t old_size = bytes.size();
             // [rate, 1, element ith size, element ith data]
@@ -715,7 +671,7 @@ public:
         bytes.resize(new_size);
         unsigned char* cur = bytes.data() + old_size;
 
-        const auto& src_column = *down_cast<const InputColumnType*>(src[0].get());
+        auto src_column = *down_cast<const InputColumnType*>(src[0].get());
         const InputCppType* src_data = src_column.immutable_data().data();
 
         size_t cur_size = old_size;

@@ -21,15 +21,14 @@
 #include <type_traits>
 #include <vector>
 
-#include "base/phmap/phmap_dump.h"
-#include "base/string/slice.h"
 #include "column/array_column.h"
 #include "column/binary_column.h"
 #include "column/column_helper.h"
 #include "column/const_column.h"
+#include "column/datum.h"
 #include "column/fixed_length_column.h"
 #include "column/nullable_column.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "column/vectorized_fwd.h"
 #include "common/logging.h"
 #include "exprs/agg/aggregate.h"
@@ -38,7 +37,8 @@
 #include "runtime/mem_pool.h"
 #include "runtime/memory/memory_resource.h"
 #include "thrift/protocol/TJSONProtocol.h"
-#include "types/datum.h"
+#include "util/phmap/phmap_dump.h"
+#include "util/slice.h"
 
 namespace starrocks {
 

@@ -14,17 +14,18 @@
 
 #pragma once
 
-#include <string_view>
+#include <limits>
+#include <string>
 
 #include "column/column.h"
 #include "common/status.h"
+#include "runtime/types.h"
 #include "simdjson.h"
-#include "types/type_descriptor.h"
 
 namespace starrocks {
 
 template <typename T>
-Status add_numeric_column(Column* column, const TypeDescriptor& type_desc, std::string_view name,
+Status add_numeric_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
                           simdjson::ondemand::value* value);
 
 } // namespace starrocks

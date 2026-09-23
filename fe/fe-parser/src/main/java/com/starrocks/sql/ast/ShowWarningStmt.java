@@ -17,33 +17,22 @@ package com.starrocks.sql.ast;
 import com.starrocks.sql.ast.expression.LimitElement;
 import com.starrocks.sql.parser.NodePosition;
 
-// Backs both `SHOW WARNINGS` and `SHOW ERRORS` (grammar rule `SHOW (WARNINGS | ERRORS) ...`).
+// Show Warning stmt
 public class ShowWarningStmt extends ShowStmt {
-    private final boolean showErrors;
+    private LimitElement limitElement;
 
     public ShowWarningStmt(LimitElement limitElement, NodePosition pos) {
-        this(limitElement, false, pos);
-    }
-
-    public ShowWarningStmt(LimitElement limitElement, boolean showErrors, NodePosition pos) {
         super(pos);
-        setLimitElement(limitElement);
-        this.showErrors = showErrors;
-    }
-
-    // True for `SHOW ERRORS` (returns only Error-level diagnostics), false for `SHOW WARNINGS`
-    // (returns all diagnostics). Both keywords share this node, so the executor filters by level.
-    public boolean isShowErrors() {
-        return showErrors;
+        this.limitElement = limitElement;
     }
 
     public long getLimitNum() {
-        LimitElement limitElement = getLimitElement();
         if (limitElement != null && limitElement.hasLimit()) {
             return limitElement.getLimit();
         }
         return -1L;
     }
+
 
     @Override
     public <R, C> R accept(AstVisitor<R, C> visitor, C context) {

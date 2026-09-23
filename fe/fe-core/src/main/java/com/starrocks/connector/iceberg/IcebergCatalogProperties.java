@@ -33,7 +33,6 @@ public class IcebergCatalogProperties {
     public static final String HIVE_METASTORE_TIMEOUT = "hive.metastore.timeout";
     public static final String ICEBERG_CUSTOM_PROPERTIES_PREFIX = "iceberg.catalog.";
     public static final String ICEBERG_JDBC_PASSWORD = "jdbc.password";
-    public static final String ICEBERG_JDBC_CATALOG_NAME = "jdbc.catalog-name";
     public static final String ENABLE_ICEBERG_METADATA_CACHE = "enable_iceberg_metadata_cache";
     public static final String ENABLE_ICEBERG_TABLE_CACHE = "enable_iceberg_table_cache";
     public static final String ICEBERG_META_CACHE_TTL = "iceberg_meta_cache_ttl_sec"; // implicit for user
@@ -58,6 +57,7 @@ public class IcebergCatalogProperties {
     private final Map<String, String> properties;
     private IcebergCatalogType catalogType;
     private boolean enableIcebergMetadataCache;
+    private boolean enableIcebergTableCache;
     private long icebergMetaCacheTtlSec;
     private int icebergJobPlanningThreadNum;
     private int backgroundIcebergJobPlanningThreadNum;
@@ -98,6 +98,7 @@ public class IcebergCatalogProperties {
 
     private void initIcebergMetadataCache() {
         this.enableIcebergMetadataCache = PropertyUtil.propertyAsBoolean(properties, ENABLE_ICEBERG_METADATA_CACHE, true);
+        this.enableIcebergTableCache = PropertyUtil.propertyAsBoolean(properties, ENABLE_ICEBERG_TABLE_CACHE, true);
 
         // one day default, for all meta including tables.
         this.icebergMetaCacheTtlSec = PropertyUtil.propertyAsLong(properties, ICEBERG_META_CACHE_TTL, 24L * 60 * 60); 
@@ -144,7 +145,7 @@ public class IcebergCatalogProperties {
     }
 
     public boolean enableIcebergTableCache() {
-        return icebergTableCacheMemoryUsageRatio > 0;
+        return enableIcebergTableCache;
     }
 
     public long getIcebergMetaCacheTtlSec() {
@@ -172,7 +173,7 @@ public class IcebergCatalogProperties {
     }
 
     public boolean isEnableIcebergTableCache() {
-        return icebergTableCacheMemoryUsageRatio > 0;
+        return enableIcebergTableCache;
     }
 
     public double getIcebergDataFileCacheMemoryUsageRatio() {

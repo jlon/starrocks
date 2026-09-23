@@ -16,7 +16,6 @@
 
 #include <gtest/gtest.h>
 
-#include "base/testutil/parallel_test.h"
 #include "column/binary_column.h"
 #include "column/chunk_extra_data.h"
 #include "column/column_helper.h"
@@ -26,6 +25,7 @@
 #include "column/fixed_length_column.h"
 #include "column/vectorized_fwd.h"
 #include "testutil/column_test_helper.h"
+#include "testutil/parallel_test.h"
 
 namespace starrocks {
 

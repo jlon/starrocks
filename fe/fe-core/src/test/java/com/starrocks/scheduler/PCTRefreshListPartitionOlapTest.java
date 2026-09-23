@@ -23,7 +23,6 @@ import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.scheduler.mv.pct.MVPCTRefreshProcessor;
-import com.starrocks.scheduler.mv.pct.PCTRefreshScope;
 import com.starrocks.scheduler.persist.MVTaskRunExtraMessage;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.RefreshMaterializedViewStatement;
@@ -206,19 +205,6 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
         ExecPlan execPlan = getExecPlan(taskRun);
         Assertions.assertTrue(execPlan != null);
         return execPlan;
-    }
-
-    private void assertRefreshScopeMatchesExtraMessage(MvTaskRunContext mvTaskRunContext, MVTaskRunExtraMessage message) {
-        PCTRefreshScope refreshScope = mvTaskRunContext.getRefreshScope();
-        Assertions.assertNotNull(refreshScope);
-        Assertions.assertEquals(message.getMvPartitionsToRefresh(),
-                refreshScope.getMvPartitionsToRefresh().getPartitionNames());
-        Assertions.assertEquals(message.getRefBasePartitionsToRefreshMap(),
-                refreshScope.getRefTablePartitionNames().getRefTablePartitionNames());
-
-        Map<String, Set<String>> refreshScopeRefPartitions = refreshScope.getRefTableRefreshPartitions().entrySet().stream()
-                .collect(Collectors.toMap(entry -> entry.getKey().getName(), entry -> entry.getValue().getPartitionNames()));
-        Assertions.assertEquals(message.getRefBasePartitionsToRefreshMap(), refreshScopeRefPartitions);
     }
 
     @Test
@@ -1098,8 +1084,6 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
                         Assertions.assertNull(mvTaskRunContext.getNextPartitionValues());
                         MVTaskRunExtraMessage message = mvTaskRunContext.status.getMvTaskRunExtraMessage();
                         Assertions.assertEquals("p2", message.getMvPartitionsToRefreshString());
-                        Assertions.assertEquals(Map.of("test.s2", "p2"), message.getPlanBuilderMessage());
-                        assertRefreshScopeMatchesExtraMessage(mvTaskRunContext, message);
                         ExecPlan execPlan = mvTaskRunContext.getExecPlan();
                         Assertions.assertNotEquals(null, execPlan);
                         String plan = execPlan.getExplainString(TExplainLevel.NORMAL);
@@ -1338,30 +1322,6 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
             addListPartition(tableName, "p4", "guangdong", "2024-01-02");
         }
     }
-    /**
-     * Add the two partitions the retention tests expect to stay inside a one-month window: one for
-     * today, one for the oldest retained day.
-     *
-     * <p>The window boundary is {@code current_date() - interval 1 month}, which the planner
-     * re-evaluates on every statement, while these partitions keep whatever date they were created
-     * with. Anchoring the older partition exactly on today's boundary therefore breaks whenever the
-     * calendar day rolls over between creating it and planning the final query: it drops out of the
-     * window, the MV no longer covers the query, and the plan grows a UNION against the base table.
-     *
-     * <p>So anchor it on <em>tomorrow's</em> boundary instead, which is still inside today's. Add
-     * the day <em>before</em> subtracting the month, not after: month arithmetic clamps to the end
-     * of the shorter month, so the two orders disagree on every month end that is followed by a
-     * longer month. On 2026-09-30, {@code minusMonths(1).plusDays(1)} gives 2026-08-31 while the
-     * post-rollover boundary is 2026-09-01 -- still outside, and still flaky.
-     */
-    private void addRetainedPartitions(String tableName) {
-        LocalDateTime now = LocalDateTime.now();
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-        addListPartition(tableName, "p5", "guangdong", now.format(formatter), true);
-        addListPartition(tableName, "p6", "guangdong",
-                now.plusDays(1).minusMonths(1).format(formatter), true);
-    }
-
     private void testMVRefreshWithTTLCondition(String tableName) {
         withTablePartitions(tableName);
         String mvCreateDdl = String.format("create materialized view test_mv1\n" +
@@ -1390,7 +1350,11 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
 
                     {
                         // add new partitions
-                        addRetainedPartitions(tableName);
+                        LocalDateTime now = LocalDateTime.now();
+                        addListPartition(tableName, "p5", "guangdong",
+                                now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")), true);
+                        addListPartition(tableName, "p6", "guangdong",
+                                now.minusMonths(1).format(DateTimeFormatter.ofPattern("yyyy-MM-dd")), true);
                         String plan = getFragmentPlan(query);
                         PlanTestBase.assertContains(plan, String.format("TABLE: %s\n" +
                                 "     PREAGGREGATION: ON\n" +
@@ -1492,7 +1456,11 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
 
                     {
                         // add new partitions
-                        addRetainedPartitions(tableName);
+                        LocalDateTime now = LocalDateTime.now();
+                        addListPartition(tableName, "p5", "guangdong",
+                                now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")), true);
+                        addListPartition(tableName, "p6", "guangdong",
+                                now.minusMonths(1).format(DateTimeFormatter.ofPattern("yyyy-MM-dd")), true);
                         String plan = getFragmentPlan(query);
                         PlanTestBase.assertContains(plan, ":UNION");
                         PlanTestBase.assertContains(plan, String.format("TABLE: %s\n" +
@@ -1721,6 +1689,7 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
         // refresh with force
         Map<String, String> props = taskRun.getProperties();
         props.put(TaskRun.FORCE, "true");
+        String result = "";
         // explain with refresh
         {
             ExecuteOption executeOption = new ExecuteOption(taskRun.getTask());
@@ -1738,7 +1707,7 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
 
             // after refresh, still can refresh with force
             execPlan = getMVRefreshExecPlan(taskRun, true);
-            execPlan.getExplainString(TExplainLevel.NORMAL);
+            result = execPlan.getExplainString(TExplainLevel.NORMAL);
             PlanTestBase.assertContains(plan, "     TABLE: list_t1\n" +
                     "     PREAGGREGATION: ON\n" +
                     "     partitions=2/2");
@@ -1748,7 +1717,7 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
 
             // after refresh, still can refresh with force
             execPlan = getMVRefreshExecPlan(taskRun, true);
-            execPlan.getExplainString(TExplainLevel.NORMAL);
+            result = execPlan.getExplainString(TExplainLevel.NORMAL);
             PlanTestBase.assertContains(plan, "     TABLE: list_t1\n" +
                     "     PREAGGREGATION: ON\n" +
                     "     partitions=2/2");
@@ -1800,6 +1769,7 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
             Assertions.assertTrue(plan.contains("PLAN NOT AVAILABLE"));
         }
 
+        String result = "";
         // explain with partial refresh
         {
             ExecuteOption executeOption = new ExecuteOption(taskRun.getTask());
@@ -1819,7 +1789,7 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
 
             // after refresh, still can refresh with force
             execPlan = getMVRefreshExecPlan(taskRun, true);
-            execPlan.getExplainString(TExplainLevel.NORMAL);
+            result = execPlan.getExplainString(TExplainLevel.NORMAL);
             PlanTestBase.assertContains(plan, "     TABLE: list_t1\n" +
                     "     PREAGGREGATION: ON\n" +
                     "     partitions=1/2");
@@ -1829,7 +1799,7 @@ public class PCTRefreshListPartitionOlapTest extends MVTestBase {
 
             // after refresh, still can refresh with force
             execPlan = getMVRefreshExecPlan(taskRun, true);
-            execPlan.getExplainString(TExplainLevel.NORMAL);
+            result = execPlan.getExplainString(TExplainLevel.NORMAL);
             PlanTestBase.assertContains(plan, "     TABLE: list_t1\n" +
                     "     PREAGGREGATION: ON\n" +
                     "     partitions=1/2");

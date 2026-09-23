@@ -32,6 +32,7 @@ import com.starrocks.warehouse.cngroup.ComputeResource;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -44,9 +45,7 @@ import java.util.stream.Collectors;
  *
  * <p>Subclasses implement {@link #resolveSampleSpec} to supply the FROM clause
  * SQL, an optional WHERE predicate, the total input byte count, the compute
- * resource, and the base sort-key / partition projection identifier lists; a
- * subclass may also override {@link #secondaryProjectionIdents} to control how
- * the secondary indexes' sort keys are projected. Everything else —
+ * resource, and the projected column identifier lists. Everything else —
  * sampling-rate math, SQL synthesis, BE invocation, JSON row decode — is shared
  * here.
  */
@@ -114,19 +113,7 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
             List<String> sortKeyProjectionIdents,
             List<String> partitionProjectionIdents,
             List<Column> sortKeyColumns,
-            List<Column> partitionSourceColumns,
-            long totalInputRows,
-            boolean estimateFilteredInput) {
-        public SampleSpec(
-                String fromClauseSql, String whereClauseSqlOrNull, long totalInputBytes,
-                ComputeResource computeResource, List<String> sortKeyProjectionIdents,
-                List<String> partitionProjectionIdents, List<Column> sortKeyColumns,
-                List<Column> partitionSourceColumns) {
-            this(fromClauseSql, whereClauseSqlOrNull, totalInputBytes, computeResource,
-                    sortKeyProjectionIdents, partitionProjectionIdents, sortKeyColumns,
-                    partitionSourceColumns, 0L, false);
-        }
-
+            List<Column> partitionSourceColumns) {
         public SampleSpec {
             Objects.requireNonNull(fromClauseSql, "fromClauseSql");
             Objects.requireNonNull(computeResource, "computeResource");
@@ -136,9 +123,6 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
             Objects.requireNonNull(partitionSourceColumns, "partitionSourceColumns");
             if (totalInputBytes < 0) {
                 throw new IllegalArgumentException("totalInputBytes must be non-negative, was " + totalInputBytes);
-            }
-            if (totalInputRows < 0) {
-                throw new IllegalArgumentException("totalInputRows must be non-negative, was " + totalInputRows);
             }
         }
     }
@@ -181,52 +165,15 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
         SampleSpec spec = resolveSampleSpec(request);
         double samplingRate = pickSamplingRate(spec.totalInputBytes());
         int rowLimit = pickRowLimit(request.getSampleByteLimit());
-        List<SecondaryIndexSpec> secondaryIndexSortKeys = request.getSecondaryIndexSortKeys();
         String sampleSql = buildSampleSql(
                 spec.fromClauseSql(), spec.whereClauseSqlOrNull(),
-                spec.sortKeyProjectionIdents(), secondaryProjectionIdents(request),
-                spec.partitionProjectionIdents(),
+                spec.sortKeyProjectionIdents(), spec.partitionProjectionIdents(),
                 samplingRate, rowLimit, request.getSeed());
         List<TResultBatch> resultBatches = runSampleQuery(
                 sampleSql, spec.computeResource(), request.getQueryTimeoutSeconds());
-        List<SampleRow> rows = decodeRows(
-                resultBatches, spec.sortKeyColumns(), secondaryIndexSortKeys, spec.partitionSourceColumns());
-        Estimates estimates = estimateInput(spec, samplingRate, rowLimit, rows.size());
-        return new SampleExecution(rows.iterator(), estimates);
-    }
-
-    /**
-     * Estimates the predicate-filtered input from the Bernoulli sample. External sources expose
-     * snapshot-wide bytes/rows, while the INSERT may select only one tenant or date range. Using
-     * the observed hit ratio avoids sizing every target partition from the whole Iceberg snapshot.
-     * A sample that hits the SQL LIMIT is deliberately treated as snapshot-wide because its true
-     * selectivity is censored and under-sizing is worse than a conservative over-estimate.
-     */
-    private static Estimates estimateInput(SampleSpec spec, double samplingRate, int rowLimit, int sampledRows) {
-        if (!spec.estimateFilteredInput() || spec.totalInputRows() <= 0L || sampledRows >= rowLimit
-                || samplingRate <= 0.0) {
-            return new Estimates(spec.totalInputBytes(), spec.totalInputRows());
-        }
-        long estimatedRows = Math.min(spec.totalInputRows(), Math.max(0L, Math.round(sampledRows / samplingRate)));
-        long estimatedBytes = spec.totalInputBytes() == 0L ? 0L : Math.min(spec.totalInputBytes(),
-                Math.max(0L, Math.round((double) spec.totalInputBytes() * estimatedRows / spec.totalInputRows())));
-        return new Estimates(estimatedBytes, estimatedRows);
-    }
-
-    /**
-     * Projection idents to SELECT for the request's secondary indexes (rollups), flattened in
-     * spec order then per-spec column order. Empty when the request carries no secondary indexes,
-     * so the projection is byte-identical to the pre-multi-index SQL. The default projects each
-     * column by its own name -- correct when the source is name-aligned to the target. A subclass
-     * that remaps source columns back to target columns overrides this to project by the
-     * source-table column name instead.
-     */
-    protected List<String> secondaryProjectionIdents(SampleRequest request) throws StarRocksException {
-        List<String> idents = new ArrayList<>();
-        for (SecondaryIndexSpec spec : request.getSecondaryIndexSortKeys()) {
-            idents.addAll(columnIdentsOf(spec.sortKey()));
-        }
-        return idents;
+        Iterator<SampleRow> rowIterator =
+                decodeRows(resultBatches, spec.sortKeyColumns(), spec.partitionSourceColumns()).iterator();
+        return new SampleExecution(rowIterator, new Estimates(spec.totalInputBytes(), 0L));
     }
 
     static double pickSamplingRate(long totalFileBytes) {
@@ -264,26 +211,9 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
             String fromClauseSql, String whereClauseSqlOrNull,
             List<String> sortKeyProjectionIdents, List<String> partitionProjectionIdents,
             double samplingRate, int rowLimit, long seed) {
-        return buildSampleSql(fromClauseSql, whereClauseSqlOrNull, sortKeyProjectionIdents, List.of(),
-                partitionProjectionIdents, samplingRate, rowLimit, seed);
-    }
-
-    /**
-     * Extended overload additionally projecting {@code secondaryProjectionIdents}
-     * between the sort-key and partition-source slices, for the multi-index
-     * data-tier sampler. An empty {@code secondaryProjectionIdents} produces SQL
-     * byte-identical to the base overload above.
-     */
-    @VisibleForTesting
-    static String buildSampleSql(
-            String fromClauseSql, String whereClauseSqlOrNull,
-            List<String> sortKeyProjectionIdents, List<String> secondaryProjectionIdents,
-            List<String> partitionProjectionIdents,
-            double samplingRate, int rowLimit, long seed) {
         List<String> projected = new ArrayList<>(
-                sortKeyProjectionIdents.size() + secondaryProjectionIdents.size() + partitionProjectionIdents.size());
+                sortKeyProjectionIdents.size() + partitionProjectionIdents.size());
         projected.addAll(sortKeyProjectionIdents);
-        projected.addAll(secondaryProjectionIdents);
         projected.addAll(partitionProjectionIdents);
         String projection = String.join(", ", projected);
         long orderShuffleSeed = seed ^ 0x5A5A5A5A5A5A5A5AL;
@@ -324,7 +254,6 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
         try {
             return simpleExecutor.executeDQL(sampleSql, sampleContext);
         } finally {
-            PreSplitProfile.recordSampleQueryId(priorContext, sampleContext.getQueryId());
             ConnectContext.remove();
             if (priorContext != null) {
                 priorContext.setThreadLocalInfo();
@@ -359,14 +288,6 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
         // pre-submit budget instead of failing fast and falling back.
         context.setCurrentWarehouseId(computeResource.getWarehouseId());
         context.setCurrentComputeResource(computeResource);
-        // Pin the sample scan to the BASE index. setCurrentWarehouseId above re-clones the session
-        // variable, so (like the query_timeout below) disable BOTH async and sync MV/rollup rewrite
-        // AFTER the switch or the disable is dropped. Without this, once the table carries sibling
-        // rollups the sync-MV/rollup rewrite (on by default) could sample a coarser sibling and skew the
-        // tablet boundaries. Mirrors the rewrite-INSERT base pinning in
-        // LakeOnlineRewriteJobBase.runPartitionRewrite.
-        context.getSessionVariable().setEnableMaterializedViewRewrite(false);
-        context.getSessionVariable().setEnableSyncMaterializedViewRewrite(false);
         if (queryTimeoutSeconds > 0) {
             context.getSessionVariable().setQueryTimeoutS(queryTimeoutSeconds);
         }
@@ -378,7 +299,6 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
     private List<SampleRow> decodeRows(
             List<TResultBatch> resultBatches,
             List<Column> sortKeyColumns,
-            List<SecondaryIndexSpec> secondaryIndexSortKeys,
             List<Column> partitionSourceColumns) throws StarRocksException {
         List<SampleRow> rows = new ArrayList<>();
         if (resultBatches == null) {
@@ -390,7 +310,7 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
                 continue;
             }
             for (ByteBuffer rowBuffer : batchRows) {
-                rows.add(decodeRow(rowBuffer, sortKeyColumns, secondaryIndexSortKeys, partitionSourceColumns));
+                rows.add(decodeRow(rowBuffer, sortKeyColumns, partitionSourceColumns));
             }
         }
         return rows;
@@ -398,15 +318,12 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
 
     /**
      * Decode one HTTP_PROTOCAL JSON row ({@code {"data":[<val0>, ...]}}) into a
-     * {@link SampleRow}. The JSON array carries {@code sortKeyColumns.size() +
-     * <sum of each secondary spec's sort-key size> + partitionSourceColumns.size()}
-     * cells in projection order: the first slice fills the row's sort-key
-     * tuple, the middle slice fills one id-tagged {@link IndexTuple} per
-     * {@link SecondaryIndexSpec} (in spec order), and the trailing slice fills
-     * its partition-source tuple. When {@code secondaryIndexSortKeys} is empty
-     * the middle slice is empty and, combined with an empty
-     * {@code partitionSourceColumns}, the row collapses to the pre-extension
-     * single-tuple shape.
+     * {@link SampleRow}. The JSON array carries
+     * {@code sortKeyColumns.size() + partitionSourceColumns.size()} cells in
+     * projection order: the first slice fills the row's sort-key tuple, the
+     * trailing slice fills its partition-source tuple. When
+     * {@code partitionSourceColumns} is empty the trailing slice is empty and
+     * the row collapses to the pre-extension single-tuple shape.
      *
      * <p>Nullable columns accept JSON nulls and decode to
      * {@link com.starrocks.catalog.NullVariant}; non-nullable columns surface a
@@ -418,38 +335,22 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
     private SampleRow decodeRow(
             ByteBuffer rowBuffer,
             List<Column> sortKeyColumns,
-            List<SecondaryIndexSpec> secondaryIndexSortKeys,
             List<Column> partitionSourceColumns) throws StarRocksException {
-        int secondaryArity = 0;
-        for (SecondaryIndexSpec secondaryIndexSpec : secondaryIndexSortKeys) {
-            secondaryArity += secondaryIndexSpec.sortKey().size();
-        }
-        int expectedArity = sortKeyColumns.size() + secondaryArity + partitionSourceColumns.size();
+        int expectedArity = sortKeyColumns.size() + partitionSourceColumns.size();
         JsonArray dataArray = extractDataArray(rowBuffer, expectedArity);
         List<Variant> sortKeyValues = new ArrayList<>(sortKeyColumns.size());
         for (int columnIndex = 0; columnIndex < sortKeyColumns.size(); columnIndex++) {
             sortKeyValues.add(decodeCell(
                     dataArray.get(columnIndex), sortKeyColumns.get(columnIndex), COLUMN_ROLE_SORT_KEY));
         }
-        List<IndexTuple> secondaryIndexTuples = new ArrayList<>(secondaryIndexSortKeys.size());
-        int cursor = sortKeyColumns.size();
-        for (SecondaryIndexSpec secondaryIndexSpec : secondaryIndexSortKeys) {
-            List<Column> indexSortKey = secondaryIndexSpec.sortKey();
-            List<Variant> indexValues = new ArrayList<>(indexSortKey.size());
-            for (Column column : indexSortKey) {
-                indexValues.add(decodeCell(dataArray.get(cursor), column, COLUMN_ROLE_SECONDARY_INDEX));
-                cursor++;
-            }
-            secondaryIndexTuples.add(new IndexTuple(secondaryIndexSpec.indexMetaId(), indexValues));
-        }
         List<Variant> partitionSourceValues = new ArrayList<>(partitionSourceColumns.size());
         for (int columnIndex = 0; columnIndex < partitionSourceColumns.size(); columnIndex++) {
             partitionSourceValues.add(decodeCell(
-                    dataArray.get(cursor + columnIndex),
+                    dataArray.get(sortKeyColumns.size() + columnIndex),
                     partitionSourceColumns.get(columnIndex),
                     COLUMN_ROLE_PARTITION_SOURCE));
         }
-        return new SampleRow(sortKeyValues, partitionSourceValues, secondaryIndexTuples);
+        return new SampleRow(sortKeyValues, partitionSourceValues);
     }
 
     /**
@@ -509,7 +410,6 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
     }
 
     private static final String COLUMN_ROLE_SORT_KEY = "sort-key";
-    private static final String COLUMN_ROLE_SECONDARY_INDEX = "secondary-index";
     private static final String COLUMN_ROLE_PARTITION_SOURCE = "partition-source";
 
     /**
@@ -518,14 +418,5 @@ abstract class AbstractSqlSampleSubqueryExecutor implements SampleSubqueryExecut
      */
     protected static List<String> identsOf(List<String> columnNames) {
         return columnNames.stream().map(SqlUtils::getIdentSql).collect(Collectors.toList());
-    }
-
-    /**
-     * Backtick-quotes each column's own name into a SQL identifier. Column-typed sibling of
-     * {@link #identsOf}, shared by the default {@link #secondaryProjectionIdents} and by
-     * name-aligned subclasses that project by target column name.
-     */
-    protected static List<String> columnIdentsOf(List<Column> columns) {
-        return columns.stream().map(column -> SqlUtils.getIdentSql(column.getName())).collect(Collectors.toList());
     }
 }

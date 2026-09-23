@@ -136,22 +136,6 @@ public class AdminSkipCommittedTransactionTest {
     }
 
     @Test
-    public void testCopyConstructorPropagatesNoOpPublishFields() {
-        // Regression test for the codex P1 finding: TransactionState's
-        // copy constructor must propagate isNoOpPublish and noOpPublishReason
-        // so that the marker survives the COMMITTED -> VISIBLE copy-on-write
-        // transition in finishTransaction().
-        TransactionState src = new TransactionState(424242L, "lbl-copy", null,
-                TransactionState.LoadJobSourceType.LAKE_COMPACTION,
-                TransactionState.TxnCoordinator.fromThisFE(), 60_000L);
-        src.markAsNoOpPublish("propagated-through-copy-ctor");
-
-        TransactionState dst = new TransactionState(src);
-        assertTrue(dst.isNoOpPublish(), "copy constructor must propagate isNoOpPublish=true");
-        assertEquals("propagated-through-copy-ctor", dst.getNoOpPublishReason());
-    }
-
-    @Test
     public void testGlobalMgrRejectsUnknownTxnId() throws Exception {
         // GlobalTransactionMgr scans all per-db txn managers to find the
         // owning DB for a given txn id. With an empty map, the lookup fails

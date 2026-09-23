@@ -14,16 +14,14 @@
 
 #include "storage/rows_mapper.h"
 
-#include "base/testutil/assert.h"
-#include "base/utility/defer_op.h"
 #include "common/config_primary_key_fwd.h"
-#include "common/config_storage_fwd.h"
 #include "fs/fs.h"
-#include "fs/fs_factory.h"
 #include "fs/fs_util.h"
 #include "storage/data_dir.h"
 #include "storage/lake/filenames.h"
 #include "storage/storage_engine.h"
+#include "testutil/assert.h"
+#include "util/defer_op.h"
 
 namespace starrocks {
 
@@ -147,7 +145,7 @@ TEST_F(RowsMapperTest, test_open_with_size_in_fileinfo) {
     ASSERT_OK(builder.finalize());
 
     // Get file size
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString(filename));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(filename));
     ASSIGN_OR_ABORT(auto rfile, fs->new_random_access_file(filename));
     ASSIGN_OR_ABORT(int64_t file_size, rfile->get_size());
     rfile.reset();
@@ -572,11 +570,6 @@ TEST_F(RowsMapperTest, test_crm_file_gc) {
         dir->perform_crm_gc(config::unused_crm_file_threshold_second);
     }
     {
-        // get_stores() hands back the shared engine's DataDir, and every later test in this binary
-        // writes its rows mapper (and pkdump) files under its tmp dir, so put the directory back on
-        // the way out -- otherwise they all fail with "<tablet>_<rowset>.crm: No such file or
-        // directory".
-        DeferOp restore_tmp_dir([&]() { (void)fs::create_directories(dir->get_tmp_path()); });
         ASSERT_OK(fs::remove(dir->get_tmp_path()));
         // collect files
         dir->perform_tmp_path_scan();

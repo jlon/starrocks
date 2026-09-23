@@ -52,7 +52,6 @@ TEST_F(VectorizedBinaryPredicateTest, eqExpr) {
     expr->_children.push_back(&col2);
 
     // normal int8
-#ifdef STARROCKS_JIT_ENABLE
     {
         ColumnPtr ptr = expr->evaluate(nullptr, nullptr);
         ExprsTestHelper::verify_with_jit(
@@ -70,7 +69,6 @@ TEST_F(VectorizedBinaryPredicateTest, eqExpr) {
                 },
                 expr->is_compilable(&runtime_state));
     }
-#endif
 }
 
 TEST_F(VectorizedBinaryPredicateTest, neExpr) {
@@ -85,7 +83,6 @@ TEST_F(VectorizedBinaryPredicateTest, neExpr) {
     expr->_children.push_back(&col1);
     expr->_children.push_back(&col2);
 
-#ifdef STARROCKS_JIT_ENABLE
     // normal int8
     {
         ColumnPtr ptr = expr->evaluate(nullptr, nullptr);
@@ -104,7 +101,6 @@ TEST_F(VectorizedBinaryPredicateTest, neExpr) {
                 },
                 expr->is_compilable(&runtime_state));
     }
-#endif
 }
 
 TEST_F(VectorizedBinaryPredicateTest, geExpr) {
@@ -119,7 +115,6 @@ TEST_F(VectorizedBinaryPredicateTest, geExpr) {
     expr->_children.push_back(&col2);
 
     // normal int8
-#ifdef STARROCKS_JIT_ENABLE
     {
         ColumnPtr ptr = expr->evaluate(nullptr, nullptr);
         ExprsTestHelper::verify_with_jit(
@@ -137,7 +132,6 @@ TEST_F(VectorizedBinaryPredicateTest, geExpr) {
                 },
                 expr->is_compilable(&runtime_state));
     }
-#endif
 }
 
 TEST_F(VectorizedBinaryPredicateTest, nullLtExpr) {
@@ -184,7 +178,6 @@ TEST_F(VectorizedBinaryPredicateTest, nullLtExpr) {
             }
         }
     }
-#ifdef STARROCKS_JIT_ENABLE
     {
         ColumnPtr v = expr->evaluate(nullptr, nullptr);
         ExprsTestHelper::verify_with_jit(
@@ -205,7 +198,6 @@ TEST_F(VectorizedBinaryPredicateTest, nullLtExpr) {
                 },
                 expr->is_compilable(&runtime_state));
     }
-#endif
 }
 
 TEST_F(VectorizedBinaryPredicateTest, mergeNullLtExpr) {
@@ -249,7 +241,6 @@ TEST_F(VectorizedBinaryPredicateTest, mergeNullLtExpr) {
     }
 
     col2.flag = 1;
-#ifdef STARROCKS_JIT_ENABLE
     {
         ColumnPtr v = expr->evaluate(nullptr, nullptr);
         ExprsTestHelper::verify_with_jit(
@@ -274,7 +265,6 @@ TEST_F(VectorizedBinaryPredicateTest, mergeNullLtExpr) {
                 },
                 expr->is_compilable(&runtime_state));
     }
-#endif
 }
 
 TEST_F(VectorizedBinaryPredicateTest, eqForNullExpr) {
@@ -291,7 +281,6 @@ TEST_F(VectorizedBinaryPredicateTest, eqForNullExpr) {
     expr->_children.push_back(&col2);
 
     // normal int8
-#ifdef STARROCKS_JIT_ENABLE
     {
         ColumnPtr ptr = expr->evaluate(nullptr, nullptr);
         ExprsTestHelper::verify_with_jit(
@@ -309,7 +298,6 @@ TEST_F(VectorizedBinaryPredicateTest, eqForNullExpr) {
                 },
                 expr->is_compilable(&runtime_state));
     }
-#endif
 }
 
 TEST_F(VectorizedBinaryPredicateTest, nullEqForNullExpr) {
@@ -361,7 +349,6 @@ TEST_F(VectorizedBinaryPredicateTest, nullEqForNullExpr) {
             }
         }
     }
-#ifdef STARROCKS_JIT_ENABLE
     {
         ColumnPtr v = expr->evaluate(nullptr, nullptr);
         ExprsTestHelper::verify_with_jit(
@@ -382,7 +369,6 @@ TEST_F(VectorizedBinaryPredicateTest, nullEqForNullExpr) {
                 },
                 expr->is_compilable(&runtime_state));
     }
-#endif
 }
 
 TEST_F(VectorizedBinaryPredicateTest, nullAndNotNullEqForNullExpr) {
@@ -419,7 +405,7 @@ TEST_F(VectorizedBinaryPredicateTest, nullAndNotNullEqForNullExpr) {
             ASSERT_EQ(1, (int)BooleanColumn::static_pointer_cast(ptr)->get_data()[j]);
         }
     }
-#ifdef STARROCKS_JIT_ENABLE
+
     {
         ColumnPtr v = expr->evaluate(nullptr, nullptr);
         ExprsTestHelper::verify_with_jit(
@@ -440,7 +426,6 @@ TEST_F(VectorizedBinaryPredicateTest, nullAndNotNullEqForNullExpr) {
                 },
                 expr->is_compilable(&runtime_state));
     }
-#endif
 }
 
 TEST_F(VectorizedBinaryPredicateTest, diffNullEqForNullExpr) {
@@ -482,7 +467,7 @@ TEST_F(VectorizedBinaryPredicateTest, diffNullEqForNullExpr) {
             }
         }
     }
-#ifdef STARROCKS_JIT_ENABLE
+
     {
         ColumnPtr v = expr->evaluate(nullptr, nullptr);
         ExprsTestHelper::verify_with_jit(
@@ -499,7 +484,6 @@ TEST_F(VectorizedBinaryPredicateTest, diffNullEqForNullExpr) {
                 },
                 expr->is_compilable(&runtime_state));
     }
-#endif
 }
 
 // Unit test cases for string predicates.

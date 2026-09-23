@@ -53,7 +53,6 @@ import org.apache.logging.log4j.Logger;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -92,8 +91,6 @@ public class JDBCMetadata implements ConnectorMetadata {
     static final long DEFAULT_MAX_LIFETIME_MS = 300_000L;
     static final long MINIMUM_KEEPALIVE_TIME_MS = 30_000L;
     static final long KEEPALIVE_DISABLED = 0L;
-    private static final List<String> SUPPORTED_SCHEMA_RESOLVERS =
-            ImmutableList.of("postgresql", "mysql", "oracle", "sqlserver", "clickhouse");
 
     public JDBCMetadata(Map<String, String> properties, String catalogName) {
         this(properties, catalogName, null);
@@ -109,7 +106,22 @@ public class JDBCMetadata implements ConnectorMetadata {
             LOG.warn(e.getMessage(), e);
             throw new StarRocksConnectorException("doesn't find class: " + e.getMessage());
         }
-        schemaResolver = createSchemaResolver();
+        if (properties.get(JDBCResource.DRIVER_CLASS).toLowerCase().contains("mysql")) {
+            schemaResolver = new MysqlSchemaResolver();
+        } else if (properties.get(JDBCResource.DRIVER_CLASS).toLowerCase().contains("postgresql")) {
+            schemaResolver = new PostgresSchemaResolver();
+        } else if (properties.get(JDBCResource.DRIVER_CLASS).toLowerCase().contains("mariadb")) {
+            schemaResolver = new MysqlSchemaResolver();
+        } else if (properties.get(JDBCResource.DRIVER_CLASS).toLowerCase().contains("clickhouse")) {
+            schemaResolver = new ClickhouseSchemaResolver(properties);
+        } else if (properties.get(JDBCResource.DRIVER_CLASS).toLowerCase().contains("oracle")) {
+            schemaResolver = new OracleSchemaResolver(properties);
+        } else if (properties.get(JDBCResource.DRIVER_CLASS).toLowerCase().contains("sqlserver")) {
+            schemaResolver = new SqlServerSchemaResolver();
+        } else {
+            LOG.warn("{} not support yet", properties.get(JDBCResource.DRIVER_CLASS));
+            throw new StarRocksConnectorException(properties.get(JDBCResource.DRIVER_CLASS) + " not support yet");
+        }
         if (dataSource == null) {
             dataSource = createHikariDataSource();
         }
@@ -125,63 +137,6 @@ public class JDBCMetadata implements ConnectorMetadata {
             driverName = "org.mariadb.jdbc.Driver";
         }
         return driverName;
-    }
-
-    /**
-     * Creates the appropriate SchemaResolver based on configuration.
-     * Priority:
-     * 1. If schema_resolver property is specified, use that resolver
-     * 2. Otherwise, auto-detect based on driver class name
-     */
-    private JDBCSchemaResolver createSchemaResolver() {
-        // Check for explicit schema_resolver property first
-        String schemaResolverType = properties.get(JDBCResource.SCHEMA_RESOLVER);
-        if (schemaResolverType != null && !schemaResolverType.trim().isEmpty()) {
-            return createSchemaResolverFromProperty(schemaResolverType.trim());
-        }
-
-        // Fall back to driver class name detection
-        String driverClass = properties.get(JDBCResource.DRIVER_CLASS).toLowerCase();
-        if (driverClass.contains("mysql")) {
-            return new MysqlSchemaResolver();
-        } else if (driverClass.contains("postgresql")) {
-            return new PostgresSchemaResolver();
-        } else if (driverClass.contains("mariadb")) {
-            return new MysqlSchemaResolver();
-        } else if (driverClass.contains("clickhouse")) {
-            return new ClickhouseSchemaResolver(properties);
-        } else if (driverClass.contains("oracle")) {
-            return new OracleSchemaResolver(properties);
-        } else if (driverClass.contains("sqlserver")) {
-            return new SqlServerSchemaResolver();
-        } else {
-            LOG.warn("{} not support yet", properties.get(JDBCResource.DRIVER_CLASS));
-            throw new StarRocksConnectorException(properties.get(JDBCResource.DRIVER_CLASS) + " not support yet");
-        }
-    }
-
-    /**
-     * Creates a SchemaResolver from the explicitly specified resolver type.
-     * @param resolverType the type of resolver (e.g., "postgresql", "mysql")
-     * @return the appropriate JDBCSchemaResolver instance
-     */
-    private JDBCSchemaResolver createSchemaResolverFromProperty(String resolverType) {
-        switch (resolverType.toLowerCase()) {
-            case "postgresql":
-                return new PostgresSchemaResolver();
-            case "mysql":
-                return new MysqlSchemaResolver();
-            case "oracle":
-                return new OracleSchemaResolver();
-            case "sqlserver":
-                return new SqlServerSchemaResolver();
-            case "clickhouse":
-                return new ClickhouseSchemaResolver(properties);
-            default:
-                throw new StarRocksConnectorException(
-                        "Unknown schema_resolver: " + resolverType +
-                        ". Supported values: " + String.join(", ", SUPPORTED_SCHEMA_RESOLVERS));
-        }
     }
 
     String getJdbcUrl() {
@@ -392,10 +347,8 @@ public class JDBCMetadata implements ConnectorMetadata {
                                 j -> ConnectorTableId.CONNECTOR_ID_GENERATOR.getNextId().asLong());
                         Table table = schemaResolver.getTable(tableId, tblName, fullSchema,
                                 partitionColumns, dbName, catalogName, properties);
-                        if (table != null) {
-                            if (table instanceof JDBCTable && !originalJdbcTypes.isEmpty()) {
-                                ((JDBCTable) table).setOriginalJdbcColumnTypes(originalJdbcTypes);
-                            }
+                        if (table instanceof JDBCTable && !originalJdbcTypes.isEmpty()) {
+                            ((JDBCTable) table).setOriginalJdbcColumnTypes(originalJdbcTypes);
                         }
                         return table;
                     } catch (SQLException | DdlException e) {
@@ -412,38 +365,6 @@ public class JDBCMetadata implements ConnectorMetadata {
         } catch (SQLException e) {
             LOG.warn("get table comment for JDBC catalog fail!", e);
             return "";
-        }
-    }
-
-    @Override
-    public Table getTableFromQuery(ConnectContext context, String dbName, String query) {
-        String normalizedQuery = JDBCTable.normalizePassThroughQuery(query);
-        String metadataQuery = "SELECT * FROM (" + normalizedQuery + ") starrocks_query WHERE 1 = 0";
-        try (Connection connection = getConnection();
-                Statement statement = connection.createStatement()) {
-            int queryTimeoutSeconds = schemaResolver.getQueryTimeoutSeconds();
-            if (queryTimeoutSeconds > 0) {
-                statement.setQueryTimeout(queryTimeoutSeconds);
-            }
-
-            try (ResultSet resultSet = statement.executeQuery(metadataQuery)) {
-                Map<String, Integer> originalJdbcTypes = new HashMap<>();
-                List<Column> fullSchema = schemaResolver.convertToSRTable(resultSet.getMetaData(), originalJdbcTypes);
-                if (fullSchema.isEmpty()) {
-                    throw new StarRocksConnectorException("pass-through query returned no columns");
-                }
-
-                long tableId = ConnectorTableId.CONNECTOR_ID_GENERATOR.getNextId().asLong();
-                JDBCTable queryTable = new JDBCTable(tableId, "_query_" + tableId, fullSchema, dbName, catalogName,
-                        properties);
-                queryTable.setPassThroughQuery(normalizedQuery);
-                if (!originalJdbcTypes.isEmpty()) {
-                    queryTable.setOriginalJdbcColumnTypes(originalJdbcTypes);
-                }
-                return queryTable;
-            }
-        } catch (SQLException | DdlException e) {
-            throw new StarRocksConnectorException("get query table for JDBC catalog fail!", e);
         }
     }
 

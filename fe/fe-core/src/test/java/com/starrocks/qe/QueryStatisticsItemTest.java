@@ -21,6 +21,8 @@ class QueryStatisticsItemTest {
 
     @Test
     void testQueryStatisticsItem() {
+        String queryId = "123";
+        String warehouseName = "wh1";
 
         final QueryStatisticsItem item = new QueryStatisticsItem.Builder()
                 .customQueryId("abc")

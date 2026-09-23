@@ -28,7 +28,6 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.HiveTable;
-import com.starrocks.catalog.JDBCTable;
 import com.starrocks.catalog.MaterializedIndexMeta;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
@@ -39,14 +38,12 @@ import com.starrocks.catalog.TableFunctionTable;
 import com.starrocks.catalog.TableName;
 import com.starrocks.catalog.View;
 import com.starrocks.common.AnalysisException;
-import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
 import com.starrocks.common.Pair;
 import com.starrocks.common.profile.Timer;
 import com.starrocks.common.profile.Tracers;
-import com.starrocks.connector.ConnectorMetadata;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.CatalogMgr;
 import com.starrocks.server.GlobalStateMgr;
@@ -99,11 +96,9 @@ import com.starrocks.sql.ast.expression.FunctionParams;
 import com.starrocks.sql.ast.expression.IntLiteral;
 import com.starrocks.sql.ast.expression.LiteralExprFactory;
 import com.starrocks.sql.ast.expression.SlotRef;
-import com.starrocks.sql.ast.expression.StringLiteral;
 import com.starrocks.sql.common.MetaUtils;
 import com.starrocks.sql.common.TypeManager;
 import com.starrocks.sql.optimizer.dump.HiveMetaStoreTableDumpInfo;
-import com.starrocks.sql.parser.NodePosition;
 import com.starrocks.type.BooleanType;
 import com.starrocks.type.IntegerType;
 import com.starrocks.type.NullType;
@@ -137,8 +132,6 @@ import static com.starrocks.thrift.PlanNodesConstants.CACHE_STATS_TABLET_ID_COLU
 import static com.starrocks.thrift.PlanNodesConstants.CACHE_STATS_TOTAL_BYTES_COLUMN_NAME;
 
 public class QueryAnalyzer {
-    private static final String JDBC_QUERY_TABLE_FUNCTION_USAGE =
-            "JDBC query table function only supports TABLE(<catalog>.native_query('<sql>'))";
     private final ConnectContext session;
     private final MetadataMgr metadataMgr;
 
@@ -161,9 +154,9 @@ public class QueryAnalyzer {
     }
 
     /**
-     * Pre-resolve external (non-internal catalog) relations without touching internal table metadata.
+     * Pre-resolve external (non-internal catalog) table relations without touching internal table metadata.
      * This is used to avoid holding PlannerMetaLock while doing potentially slow connector metadata fetch
-     * (e.g. JDBC external tables and JDBC native_query schema inference).
+     * (e.g. JDBC).
      */
     public void analyzeExternalTablesOnly(StatementBase node) {
         analyzeExternalTablesOnly(node, false);
@@ -181,93 +174,6 @@ public class QueryAnalyzer {
 
     public void analyze(StatementBase node, Scope parent) {
         new Visitor().process(node, parent);
-    }
-
-    private static class JdbcQueryTableFunctionName {
-        private final String catalogName;
-
-        private JdbcQueryTableFunctionName(String catalogName) {
-            this.catalogName = catalogName;
-        }
-    }
-
-    private static JdbcQueryTableFunctionName tryParseCanonicalJdbcQueryTableFunctionName(String functionName) {
-        List<String> parts = Arrays.stream(functionName.split("\\."))
-                .filter(part -> !part.isEmpty())
-                .collect(Collectors.toList());
-        if (parts.size() == 2 && parts.get(1).equalsIgnoreCase("native_query")) {
-            return new JdbcQueryTableFunctionName(parts.get(0));
-        }
-        return null;
-    }
-
-    private static JdbcQueryTableFunctionName tryParseJdbcQueryTableFunctionName(String functionName) {
-        List<String> parts = Arrays.stream(functionName.split("\\."))
-                .filter(part -> !part.isEmpty())
-                .collect(Collectors.toList());
-        if (parts.isEmpty()) {
-            return null;
-        }
-
-        String lastPart = parts.get(parts.size() - 1);
-        if (lastPart.equalsIgnoreCase("native_query")) {
-            if (parts.size() == 2) {
-                return new JdbcQueryTableFunctionName(parts.get(0));
-            }
-
-            throw new SemanticException(JDBC_QUERY_TABLE_FUNCTION_USAGE);
-        }
-
-        if (lastPart.equalsIgnoreCase("query") && parts.size() == 3
-                && parts.get(1).equalsIgnoreCase("system")) {
-            throw new SemanticException(JDBC_QUERY_TABLE_FUNCTION_USAGE);
-        }
-
-        return null;
-    }
-
-    private JDBCTable resolveJdbcQueryTable(JdbcQueryTableFunctionName functionName, String passThroughQuery) {
-        Optional<ConnectorMetadata> metadata = metadataMgr.getOptionalMetadata(functionName.catalogName);
-        if (metadata.isEmpty()) {
-            throw new SemanticException("Unknown catalog '%s'", functionName.catalogName);
-        }
-
-        String currentDb = null;
-        if (functionName.catalogName.equalsIgnoreCase(session.getCurrentCatalog())) {
-            currentDb = session.getDatabase();
-        }
-
-        Table table;
-        try {
-            table = metadata.get().getTableFromQuery(session, currentDb, passThroughQuery);
-        } catch (RuntimeException e) {
-            throw new SemanticException("Failed to resolve JDBC query table function: %s", e.getMessage());
-        }
-
-        if (!(table instanceof JDBCTable jdbcTable) || !jdbcTable.isQueryTable()) {
-            throw new SemanticException("Catalog '%s' does not support JDBC query table function",
-                    functionName.catalogName);
-        }
-        return jdbcTable;
-    }
-
-    private Scope buildJdbcQueryTableScope(TableFunctionRelation node, JDBCTable jdbcTable) {
-        node.setQueryTable(jdbcTable);
-        TableName relationName = node.getResolveTableName();
-        ImmutableList.Builder<Field> fields = ImmutableList.builder();
-        for (Column column : jdbcTable.getFullSchema()) {
-            String columnName = column.getName();
-            fields.add(new Field(columnName,
-                    column.getType(),
-                    relationName,
-                    new SlotRef(relationName, columnName, columnName),
-                    true,
-                    column.isAllowNull()));
-        }
-
-        Scope outputScope = new Scope(RelationId.of(node), new RelationFields(fields.build()));
-        node.setScope(outputScope);
-        return outputScope;
     }
 
     private class GeneratedColumnExprMappingCollector implements AstVisitorExtendInterface<Void, Scope> {
@@ -426,22 +332,12 @@ public class QueryAnalyzer {
     }
 
     private class Visitor implements AstVisitorExtendInterface<Scope, Scope> {
-        // Names of the recursive CTEs whose recursive members are currently being analyzed, innermost
-        // on top. A stack, not a single value: a recursive CTE nested inside another one must not
-        // overwrite the outer name and then clear it, or a reference back to the outer CTE stops being
-        // recognized as recursive and its definition gets expanded without end (StackOverflowError /
-        // hang in the table collectors).
-        private final Deque<String> recursiveCteStack = new ArrayDeque<>();
+        // for recursive cte analyze
+        private String currentRecursiveCTE = null;
         // Fallback for cyclic view detection when there is no session; the shared path lives on the
         // session (see viewExpansionStack()) so it survives the fresh QueryAnalyzer that each
         // scalar/IN/EXISTS subquery spawns.
         private final Set<String> localViewExpansionStack = new HashSet<>();
-        // Fallback for the recursive-CTE analysis path when there is no session; see
-        // recursiveCteAnalysisPath(). recursiveCteStack above is per-Visitor and cannot see a
-        // recursive reference that a subquery resolves in its own fresh Visitor, so the shared path
-        // on the session is what catches those.
-        private final Set<String> localRecursiveCtePath = new HashSet<>();
-        private final Deque<AnalyzeState> queryBlockAnalyzeStates = new ArrayDeque<>();
 
         public Visitor() {
         }
@@ -451,14 +347,6 @@ public class QueryAnalyzer {
         // still observed; only when session is null do we fall back to the per-Visitor set.
         private Set<String> viewExpansionStack() {
             return session != null ? session.getViewExpansionPath() : localViewExpansionStack;
-        }
-
-        // Names of the recursive CTEs currently being analyzed, shared via the session so a recursive
-        // reference routed through a scalar/IN/EXISTS subquery (which gets its own QueryAnalyzer/Visitor,
-        // hence an empty recursiveCteStack) is still observed; only when session is null do we fall back
-        // to the per-Visitor set.
-        private Set<String> recursiveCteAnalysisPath() {
-            return session != null ? session.getRecursiveCteAnalysisPath() : localRecursiveCtePath;
         }
 
         public Scope process(ParseNode node, Scope scope) {
@@ -499,12 +387,6 @@ public class QueryAnalyzer {
                 boolean isRecursive = stmt.isHasRecursiveCTE();
                 if (isRecursive) {
                     isRecursive = tryProcessRecursiveCte(withQuery, cteScope);
-                }
-                if (isRecursive
-                        && withQuery.getMaterializationHint() != CTERelation.CTEMaterializationHint.NONE) {
-                    throw new SemanticException(
-                            "[materialized]/[not_materialized] hints are not allowed on recursive CTEs",
-                            withQuery.getPos());
                 }
                 if (!isRecursive) {
                     processCteRelation(withQuery, cteScope);
@@ -549,38 +431,27 @@ public class QueryAnalyzer {
             withQuery.setScope(new Scope(RelationId.of(withQuery), new RelationFields(cteOutputs)));
             cteScope.addCteQueries(cteName, withQuery);
             int outputSize = anchorScope.getRelationFields().size();
-            this.recursiveCteStack.push(cteName);
-            // Also mark it on the session-shared path so a reference resolved inside a subquery's own
-            // Visitor can still tell this CTE is mid-analysis. addedToPath guards a same-named CTE
-            // nested inside another so only the outermost occurrence clears the entry.
-            boolean addedToPath = recursiveCteAnalysisPath().add(cteName);
-            try {
-                for (int i = 1; i < unionRelation.getRelations().size(); ++i) {
-                    Scope relation = process(unionRelation.getRelations().get(i), cteScope);
-                    if (relation.getRelationFields().size() != outputSize) {
-                        throw new SemanticException("Operands have unequal number of columns");
-                    }
-                    for (int fieldIdx = 0; fieldIdx < relation.getRelationFields().size(); ++fieldIdx) {
-                        Field field = relation.getRelationFields().getAllFields().get(fieldIdx);
-                        Type fieldType = field.getType();
-                        if (fieldType.isOnlyMetricType() && !unionRelation.getQualifier().equals(SetQualifier.ALL)) {
-                            throw new SemanticException("%s not support set operation", fieldType);
-                        }
-                        Type childRelationType = relation.getRelationFields().getFieldByIndex(fieldIdx).getType();
-                        if (!childRelationType.matchesType(outputTypes[fieldIdx])
-                                && !TypeManager.canCastTo(childRelationType, outputTypes[fieldIdx])) {
-                            throw new SemanticException(
-                                    String.format("Unequality return types '%s' and '%s' in recursive cte",
-                                            outputTypes[fieldIdx], childRelationType));
-                        }
-                    }
+            this.currentRecursiveCTE = cteName;
+            for (int i = 1; i < unionRelation.getRelations().size(); ++i) {
+                Scope relation = process(unionRelation.getRelations().get(i), cteScope);
+                if (relation.getRelationFields().size() != outputSize) {
+                    throw new SemanticException("Operands have unequal number of columns");
                 }
-            } finally {
-                this.recursiveCteStack.pop();
-                if (addedToPath) {
-                    recursiveCteAnalysisPath().remove(cteName);
+                for (int fieldIdx = 0; fieldIdx < relation.getRelationFields().size(); ++fieldIdx) {
+                    Field field = relation.getRelationFields().getAllFields().get(fieldIdx);
+                    Type fieldType = field.getType();
+                    if (fieldType.isOnlyMetricType() && !unionRelation.getQualifier().equals(SetQualifier.ALL)) {
+                        throw new SemanticException("%s not support set operation", fieldType);
+                    }
+                    Type childRelationType = relation.getRelationFields().getFieldByIndex(fieldIdx).getType();
+                    if (!childRelationType.matchesType(outputTypes[fieldIdx])
+                            && !TypeManager.canCastTo(childRelationType, outputTypes[fieldIdx])) {
+                        throw new SemanticException(String.format("Unequality return types '%s' and '%s' in recursive cte",
+                                outputTypes[fieldIdx], childRelationType));
+                    }
                 }
             }
+            this.currentRecursiveCTE = null;
             if (!withQuery.isRecursive()) {
                 return false;
             }
@@ -629,16 +500,6 @@ public class QueryAnalyzer {
         @Override
         public Scope visitSelect(SelectRelation selectRelation, Scope scope) {
             AnalyzeState analyzeState = new AnalyzeState();
-            queryBlockAnalyzeStates.push(analyzeState);
-            try {
-                return analyzeSelectRelation(selectRelation, scope, analyzeState);
-            } finally {
-                queryBlockAnalyzeStates.pop();
-            }
-        }
-
-        private Scope analyzeSelectRelation(SelectRelation selectRelation, Scope scope,
-                                            AnalyzeState analyzeState) {
             //Record aliases at this level to prevent alias conflicts
             Set<TableName> aliasSet = new HashSet<>();
             Relation resolvedRelation = resolveTableRef(selectRelation.getRelation(), scope, aliasSet);
@@ -756,16 +617,6 @@ public class QueryAnalyzer {
             ((TableRelation) fromRelation).setPruneScanColumns(scanColumns);
         }
 
-        private boolean hasTemporalClause(TableRelation tableRelation) {
-            return tableRelation.getQueryPeriod() != null || tableRelation.getQueryPeriodString() != null;
-        }
-
-        private void checkNoTemporalClauseOnNonTableRelation(TableRelation tableRelation, String relationType) {
-            if (hasTemporalClause(tableRelation)) {
-                throw unsupportedException("Unsupported relation type for temporal clauses, relation type: " + relationType);
-            }
-        }
-
         private Relation resolveTableRef(Relation relation, Scope scope, Set<TableName> aliasSet) {
             if (relation instanceof JoinRelation) {
                 JoinRelation join = (JoinRelation) relation;
@@ -811,8 +662,6 @@ public class QueryAnalyzer {
                 if (tableName != null && Strings.isNullOrEmpty(tableName.getDb())) {
                     Optional<CTERelation> withQuery = scope.getCteQueries(tableName.getTbl());
                     if (withQuery.isPresent()) {
-                        checkNoTemporalClauseOnNonTableRelation(tableRelation, "CTE");
-
                         CTERelation withRelation = withQuery.get();
                         withRelation.addTableRef();
                         RelationFields withRelationFields = withQuery.get().getRelationFields();
@@ -833,36 +682,14 @@ public class QueryAnalyzer {
                         // cte used in outer query and sub-query can't use same relation-id and field
                         CTERelation newCteRelation = new CTERelation(withRelation.getCteMouldId(), tableName.getTbl(),
                                 withRelation.getColumnOutputNames(), withRelation.getCteQueryStatement(),
-                                withRelation.isRecursive(), false, NodePosition.ZERO,
-                                withRelation.getMaterializationHint());
+                                withRelation.isRecursive(), false);
                         newCteRelation.setAlias(tableRelation.getAlias());
                         newCteRelation.setResolvedInFromClause(true);
                         newCteRelation.setScope(
                                 new Scope(RelationId.of(newCteRelation), new RelationFields(outputFields.build())));
-                        if (!recursiveCteStack.isEmpty() && recursiveCteStack.contains(tableName.getTbl())) {
-                            if (tableName.getTbl().equals(recursiveCteStack.peek())) {
-                                // Direct self-reference in the recursive member of the CTE being analyzed.
-                                newCteRelation.setRecursive(true);
-                                withRelation.setRecursive(true);
-                            } else {
-                                // Reference to an OUTER recursive CTE from inside a nested CTE/subquery. This
-                                // cross-scope recursive reference is not supported (and left the analyzer to
-                                // expand it forever); reject it instead of hanging. Use the same message as
-                                // RecursiveCTEAstCheck (the enable_recursive_cte=true path) so multi-level
-                                // recursive CTEs are rejected consistently however they reach the analyzer.
-                                throw new SemanticException("Doesn't support multi-level recursive CTE",
-                                        tableRelation.getPos());
-                            }
-                        } else if (recursiveCteAnalysisPath().contains(tableName.getTbl())) {
-                            // The name is a recursive CTE whose recursive member is still being analyzed in
-                            // an enclosing scope, yet this reference is resolved by a nested QueryAnalyzer
-                            // whose own recursiveCteStack does not contain it -- i.e. the reference sits
-                            // inside a scalar/IN/EXISTS subquery of the recursive member. A recursive
-                            // reference is only legal in the recursive member's FROM clause; inside a
-                            // subquery it previously slipped past the guard and expanded forever
-                            // (StackOverflowError / "Unknown error"). Reject it with the same message.
-                            throw new SemanticException("Doesn't support multi-level recursive CTE",
-                                    tableRelation.getPos());
+                        if (currentRecursiveCTE != null && currentRecursiveCTE.equals(tableName.getTbl())) {
+                            newCteRelation.setRecursive(true);
+                            withRelation.setRecursive(true);
                         }
                         return newCteRelation;
                     }
@@ -889,13 +716,8 @@ public class QueryAnalyzer {
 
                 Relation r;
                 if (table instanceof View) {
-                    checkNoTemporalClauseOnNonTableRelation(tableRelation, table.getType().name());
-
                     View view = (View) table;
-                    QueryStatement queryStatement = takePreResolvedViewBody(view);
-                    if (queryStatement == null) {
-                        queryStatement = view.getQueryStatement();
-                    }
+                    QueryStatement queryStatement = view.getQueryStatement();
                     ViewRelation viewRelation = new ViewRelation(tableName, view, queryStatement);
 
                     inheritPolicyRewriteFlag(tableRelation, viewRelation, queryStatement);
@@ -903,23 +725,18 @@ public class QueryAnalyzer {
 
                     r = viewRelation;
                 } else if (table instanceof ConnectorView) {
-                    checkNoTemporalClauseOnNonTableRelation(tableRelation, table.getType().name());
-
                     ConnectorView connectorView = (ConnectorView) table;
+                    QueryStatement queryStatement = connectorView.getQueryStatement();
                     View view = new View(connectorView.getId(), connectorView.getName(), connectorView.getFullSchema(),
                             connectorView.getType());
                     view.setInlineViewDefWithSqlMode(connectorView.getInlineViewDef(), 0);
-                    QueryStatement queryStatement = takePreResolvedViewBody(view);
-                    if (queryStatement == null) {
-                        queryStatement = connectorView.getQueryStatement();
-                    }
                     ViewRelation viewRelation = new ViewRelation(tableName, view, queryStatement);
                     inheritPolicyRewriteFlag(tableRelation, viewRelation, queryStatement);
                     viewRelation.setAlias(tableRelation.getAlias());
 
                     r = viewRelation;
                 } else {
-                    if (hasTemporalClause(tableRelation) && !table.isTemporal()) {
+                    if (tableRelation.getQueryPeriodString() != null && !table.isTemporal()) {
                         throw unsupportedException("Unsupported table type for temporal clauses, table type: " +
                                 table.getType());
                     }
@@ -1019,14 +836,6 @@ public class QueryAnalyzer {
                     columns.put(field, column);
                     fields.add(field);
                 }
-                // Add virtual columns for sync MV queries as well
-                for (Column column : getVirtualColumns(table)) {
-                    SlotRef slot = new SlotRef(tableName, column.getName(), column.getName());
-                    Field field = new Field(column.getName(), column.getType(), tableName, slot, false,
-                            column.isAllowNull());
-                    columns.put(field, column);
-                    fields.add(field);
-                }
             } else if (node.isCacheStatsQuery()) {
                 if (!table.isCloudNativeTableOrMaterializedView()) {
                     throw new SemanticException("_CACHE_STATS_ hint is only supported for Lake Table");
@@ -1078,17 +887,13 @@ public class QueryAnalyzer {
                 }
 
                 if (node.isBinlogQuery()) {
-                    throw new SemanticException("Legacy _BINLOG_ queries are no longer supported");
-                }
-
-                // Add virtual columns for OLAP tables
-                for (Column column : getVirtualColumns(table)) {
-                    SlotRef slot = new SlotRef(tableName, column.getName(), column.getName());
-                    // Virtual columns are not visible in SELECT * but can be explicitly referenced
-                    Field field = new Field(column.getName(), column.getType(), tableName, slot, false,
-                            column.isAllowNull());
-                    columns.put(field, column);
-                    fields.add(field);
+                    for (Column column : getBinlogMetaColumns()) {
+                        SlotRef slot = new SlotRef(tableName, column.getName(), column.getName());
+                        Field field = new Field(column.getName(), column.getType(), tableName, slot, true,
+                                column.isAllowNull());
+                        columns.put(field, column);
+                        fields.add(field);
+                    }
                 }
             }
 
@@ -1128,16 +933,6 @@ public class QueryAnalyzer {
             columns.add(new Column(BINLOG_VERSION_COLUMN_NAME, IntegerType.BIGINT));
             columns.add(new Column(BINLOG_SEQ_ID_COLUMN_NAME, IntegerType.BIGINT));
             columns.add(new Column(BINLOG_TIMESTAMP_COLUMN_NAME, IntegerType.BIGINT));
-            return columns;
-        }
-
-        private List<Column> getVirtualColumns(Table table) {
-            List<Column> columns = new ArrayList<>();
-            // Add _tablet_id_ virtual column for OLAP tables
-            if (table.isNativeTableOrMaterializedView() && Config.enable_virtual_columns) {
-                OlapTable olapTable = (OlapTable) table;
-                columns.addAll(olapTable.getVirtualColumns());
-            }
             return columns;
         }
 
@@ -1281,23 +1076,8 @@ public class QueryAnalyzer {
                 Scope joinScope = new Scope(RelationId.of(join),
                         leftScope.getRelationFields().joinWith(rightScope.getRelationFields()));
                 joinScope.setParent(parentScope);
-                AnalyzeState joinAnalyzeState = new AnalyzeState();
-                analyzeExpression(joinEqual, joinAnalyzeState, joinScope);
+                analyzeExpression(joinEqual, new AnalyzeState(), joinScope);
 
-                if (!join.getJoinOp().isInnerJoin() && !join.getJoinOp().isCrossJoin()) {
-                    try {
-                        AIFunctionUsageAnalyzer.verifyNoAIFunctions(
-                                joinEqual, AIFunctionUsageAnalyzer.PlacementContext.JOIN_ON_CLAUSE);
-                    } catch (SemanticException exception) {
-                        throw new SemanticException(exception.getDetailMsg()
-                                + "; AI functions are supported only for INNER/CROSS joins", joinEqual.getPos());
-                    }
-                }
-                if (!queryBlockAnalyzeStates.isEmpty()) {
-                    AnalyzeState queryBlockAnalyzeState = queryBlockAnalyzeStates.peek();
-                    queryBlockAnalyzeState.mergeOuterColumnReference(joinAnalyzeState.hasOuterColumnReference());
-                    queryBlockAnalyzeState.addJoinOnPredicate(joinEqual);
-                }
                 AnalyzerUtils.verifyNoAggregateFunctions(joinEqual, "JOIN");
                 AnalyzerUtils.verifyNoWindowFunctions(joinEqual, "JOIN");
                 AnalyzerUtils.verifyNoGroupingFunctions(joinEqual, "JOIN");
@@ -1310,7 +1090,7 @@ public class QueryAnalyzer {
 
                 // Validate ASOF JOIN conditions
                 if (join.getJoinOp().isAsofJoin()) {
-                    validateAsofJoinConditions(joinEqual, leftScope, rightScope);
+                    validateAsofJoinConditions(joinEqual);
                 }
 
                 // check the join on predicate, example:
@@ -1380,12 +1160,12 @@ public class QueryAnalyzer {
             return newFields;
         }
 
-        private void validateAsofJoinConditions(Expr joinPredicate, Scope leftScope, Scope rightScope) {
+        private void validateAsofJoinConditions(Expr joinPredicate) {
             if (joinPredicate == null) {
                 throw new SemanticException("ASOF JOIN requires ON clause with join conditions");
             }
 
-            AsofJoinConditionValidator validator = new AsofJoinConditionValidator(leftScope, rightScope);
+            AsofJoinConditionValidator validator = new AsofJoinConditionValidator();
             validator.validate(joinPredicate);
         }
 
@@ -1457,7 +1237,7 @@ public class QueryAnalyzer {
          * @return Final RelationFields - deduplicated if USING clause present, original joinedFields otherwise
          *
          * @see com.starrocks.sql.optimizer.transformer.RelationTransformer#buildFullOuterJoinUsingPlan(
-         * JoinRelation, OptExprBuilder, LogicalPlan, LogicalPlan)
+         * JoinRelation, OptExprBuilder, ScalarOperator)
          */
         private RelationFields createJoinRelationFields(RelationFields joinedFields, JoinRelation join,
                                                         Scope leftScope, Scope rightScope) {
@@ -1973,8 +1753,6 @@ public class QueryAnalyzer {
             Type[] argTypes = new Type[args.size()];
             for (int i = 0; i < args.size(); ++i) {
                 analyzeExpression(args.get(i), analyzeState, scope);
-                AIFunctionUsageAnalyzer.verifyNoAIFunctions(
-                        args.get(i), AIFunctionUsageAnalyzer.PlacementContext.TABLE_FUNCTION_ARGUMENT);
                 argTypes[i] = args.get(i).getType();
 
                 AnalyzerUtils.verifyNoAggregateFunctions(args.get(i), "Table Function");
@@ -1982,11 +1760,6 @@ public class QueryAnalyzer {
                 AnalyzerUtils.verifyNoGroupingFunctions(args.get(i), "Table Function");
             }
             List<String> names = node.getFunctionParams().getExprsNames();
-            Scope queryTableScope = tryResolveJdbcQueryTableFunction(node, names);
-            if (queryTableScope != null) {
-                return queryTableScope;
-            }
-
             String[] namesArray = null;
             if (names != null && !names.isEmpty()) {
                 namesArray = names.toArray(String[]::new);
@@ -2070,49 +1843,10 @@ public class QueryAnalyzer {
 
         @Override
         public Scope visitNormalizedTableFunction(NormalizedTableFunctionRelation node, Scope scope) {
-            visitJoin(node, scope);
+            Scope ignored = visitJoin(node, scope);
             // Only the scope of the table function is visible outside.
             node.setScope(node.getRight().getScope());
             return node.getScope();
-        }
-
-        private Scope tryResolveJdbcQueryTableFunction(TableFunctionRelation node, List<String> argNames) {
-            JdbcQueryTableFunctionName functionName = tryParseJdbcQueryTableFunctionName(
-                    node.getFunctionName().getFunction());
-            if (functionName == null) {
-                return null;
-            }
-
-            if (node.getColumnOutputNames() != null) {
-                throw new SemanticException("column aliases are not supported for JDBC query table function");
-            }
-
-            List<Expr> args = node.getFunctionParams().exprs();
-            if (args.size() != 1) {
-                throw new SemanticException("JDBC query table function requires exactly one query argument");
-            }
-            if (argNames != null && !argNames.isEmpty()) {
-                throw new SemanticException(JDBC_QUERY_TABLE_FUNCTION_USAGE);
-            }
-
-            Expr queryExpr = args.get(0);
-            if (!(queryExpr instanceof StringLiteral)) {
-                throw new SemanticException("JDBC query table function argument must be a string literal");
-            }
-            String passThroughQuery;
-            try {
-                passThroughQuery = JDBCTable.normalizePassThroughQuery(((StringLiteral) queryExpr).getStringValue());
-            } catch (IllegalArgumentException e) {
-                throw new SemanticException(e.getMessage());
-            }
-
-            node.setChildExpressions(args);
-
-            JDBCTable jdbcTable = node.getQueryTable();
-            if (jdbcTable == null) {
-                jdbcTable = resolveJdbcQueryTable(functionName, passThroughQuery);
-            }
-            return buildJdbcQueryTableScope(node, jdbcTable);
         }
 
         private List<Expr> appendPositionalDefaultArgExprs(FunctionParams functionParams, Function fn) {
@@ -2155,23 +1889,13 @@ public class QueryAnalyzer {
     }
 
     /**
-     * How deep the pre-pass follows nested views. A bound rather than a cycle check: a view that references
-     * itself cannot be created, but a definition can still be rewritten into a cycle, and the pre-pass must
-     * never be the thing that hangs or overflows. Whatever it stops short of is simply expanded under the
-     * lock, the way all of it was before.
-     */
-    private static final int MAX_PRE_RESOLVED_VIEW_DEPTH = 16;
-
-    /**
-     * A lightweight visitor that pre-resolves external (non-internal catalog) relations,
+     * A lightweight visitor that pre-resolves only external (non-internal catalog) TableRelation,
      * so connector metadata fetch is done without holding PlannerMetaLock.
-     * Similar to TableCollector but inverts the logic: skips internal tables, pre-resolves external
-     * TableRelation and JDBC native_query table functions.
+     * Similar to TableCollector but inverts the logic: skips internal tables, pre-resolves external tables.
      */
     private class ExternalTablesOnlyVisitor extends AstTraverser<Void, Void> {
         private final Deque<Set<String>> cteNameStack = new ArrayDeque<>();
         private final boolean refreshFilesystemExternalTables;
-        private int viewExpansionDepth;
 
         private ExternalTablesOnlyVisitor(boolean refreshFilesystemExternalTables) {
             this.refreshFilesystemExternalTables = refreshFilesystemExternalTables;
@@ -2237,10 +1961,8 @@ public class QueryAnalyzer {
                 return null;
             }
 
-            // Only pre-resolve external tables (non-internal catalog). An internal object still gets one
-            // look, because a view is an internal object whose body may read through a connector.
+            // Only pre-resolve external tables (non-internal catalog)
             if (CatalogMgr.isInternalCatalog(catalogName)) {
-                preResolveViewBody(catalogName, dbName, tableName.getTbl());
                 return null;
             }
 
@@ -2262,99 +1984,11 @@ public class QueryAnalyzer {
                         throw unsupportedException("Unsupported table type for partition clause, type: " + table.getType());
                     }
                     tableRelation.setTable(table);
-                    if (table instanceof ConnectorView connectorView) {
-                        // A view in an external catalog: same story as an internal one, its body is opaque
-                        // until expansion. Capture it under the View the expansion will build for it.
-                        preResolveConnectorViewBody(connectorView);
-                    }
                 }
                 // If table == null (CTE or non-existent table), leave it unresolved.
                 // The main visitor will handle it correctly.
             }
             return null;
-        }
-
-        /**
-         * Parse the body of the view this name refers to, if it is one, and pre-resolve the external tables
-         * inside it. Nothing here is allowed to change what the statement does: a name that turns out not to
-         * be a view, a view that no longer exists, or a body that will not parse is left entirely to the
-         * locked analyzer, which reports it the way it always has.
-         *
-         * <p>The lookup reads internal catalog metadata without the lock. It only reads -- and only the
-         * definition text, which {@code PreResolvedViewBodies} re-checks against the live view once the lock
-         * is held -- so a view redefined in between costs a re-parse, not a wrong answer.
-         */
-        private void preResolveViewBody(String catalogName, String dbName, String tableName) {
-            if (viewExpansionDepth >= MAX_PRE_RESOLVED_VIEW_DEPTH) {
-                return;
-            }
-            Table table;
-            try {
-                table = metadataMgr.getTable(session, catalogName, dbName, tableName);
-            } catch (RuntimeException e) {
-                return;
-            }
-            if (!(table instanceof View view)) {
-                return;
-            }
-            QueryStatement body;
-            try {
-                body = view.getQueryStatement();
-            } catch (RuntimeException e) {
-                return;
-            }
-            captureViewBody(view, body);
-        }
-
-        /**
-         * Same as above for a view in an external catalog. Its body has to come from
-         * {@link ConnectorView#getQueryStatement()} -- that one applies the SQL dialect and qualifies the
-         * relations inside -- while the key has to be the throwaway {@link View} expansion will look it up
-         * with.
-         */
-        private void preResolveConnectorViewBody(ConnectorView connectorView) {
-            if (viewExpansionDepth >= MAX_PRE_RESOLVED_VIEW_DEPTH) {
-                return;
-            }
-            QueryStatement body;
-            try {
-                body = connectorView.getQueryStatement();
-            } catch (RuntimeException e) {
-                return;
-            }
-            captureViewBody(asViewForPreResolve(connectorView), body);
-        }
-
-        private void captureViewBody(View view, QueryStatement body) {
-            // A view body is its own name scope: a CTE declared by the enclosing statement must not shadow a
-            // table named inside it. Walk the body with the enclosing scopes set aside.
-            Deque<Set<String>> enclosingCtes = new ArrayDeque<>(cteNameStack);
-            cteNameStack.clear();
-            viewExpansionDepth++;
-            try {
-                // Nested views are reached by recursion: the body's own relations run through visitTable.
-                visit(body);
-            } catch (RuntimeException e) {
-                // Pre-resolution is an optimization. Whatever this was, the locked analyzer will meet it
-                // again and is the one that gets to report it.
-                return;
-            } finally {
-                viewExpansionDepth--;
-                cteNameStack.clear();
-                cteNameStack.addAll(enclosingCtes);
-            }
-            session.getPreResolvedViewBodies().put(view, body);
-        }
-
-        /**
-         * The throwaway {@link View} that {@code resolveTableRef} mints for a connector view, rebuilt here so
-         * the body is filed under the same identity and definition text the expansion will look it up with.
-         */
-        private View asViewForPreResolve(ConnectorView connectorView) {
-            View view = new View(connectorView.getId(), connectorView.getName(), connectorView.getFullSchema(),
-                    connectorView.getType());
-            view.setInlineViewDefWithSqlMode(connectorView.getInlineViewDef(), 0);
-            return view;
         }
 
         private Table refreshFilesystemExternalTable(String catalogName, String dbName,
@@ -2379,61 +2013,6 @@ public class QueryAnalyzer {
             if (statement.getQueryStatement() != null) {
                 visit(statement.getQueryStatement());
             }
-            return null;
-        }
-
-        @Override
-        public Void visitNormalizedTableFunction(NormalizedTableFunctionRelation node, Void context) {
-            if (node.getRight() != null) {
-                visit(node.getRight(), context);
-            }
-            return null;
-        }
-
-        @Override
-        public Void visitTableFunction(TableFunctionRelation node, Void context) {
-            if (node.getQueryTable() != null) {
-                return null;
-            }
-
-            JdbcQueryTableFunctionName functionName =
-                    tryParseCanonicalJdbcQueryTableFunctionName(node.getFunctionName().getFunction());
-            if (functionName == null) {
-                return null;
-            }
-
-            if (node.getColumnOutputNames() != null) {
-                return null;
-            }
-
-            List<Expr> args = node.getFunctionParams().exprs();
-            List<String> argNames = node.getFunctionParams().getExprsNames();
-            if (args.size() != 1 || (argNames != null && !argNames.isEmpty())) {
-                return null;
-            }
-
-            Expr queryExpr = args.get(0);
-            if (!(queryExpr instanceof StringLiteral)) {
-                return null;
-            }
-
-            String passThroughQuery;
-            try {
-                passThroughQuery = JDBCTable.normalizePassThroughQuery(((StringLiteral) queryExpr).getStringValue());
-            } catch (IllegalArgumentException e) {
-                return null;
-            }
-
-            Optional<ConnectorMetadata> metadata = metadataMgr.getOptionalMetadata(functionName.catalogName);
-            if (metadata.isEmpty()) {
-                return null;
-            }
-
-            JDBCTable jdbcTable;
-            try (Timer ignored = Tracers.watchScope("AnalyzeTable")) {
-                jdbcTable = resolveJdbcQueryTable(functionName, passThroughQuery);
-            }
-            node.setQueryTable(jdbcTable);
             return null;
         }
 
@@ -2565,14 +2144,6 @@ public class QueryAnalyzer {
             }
             return scope;
         }
-    }
-
-    /**
-     * The body the unlocked pre-pass already parsed and resolved the external tables of, when it got to this
-     * view and the view has not been redefined since. Null means expand it here, as before.
-     */
-    private QueryStatement takePreResolvedViewBody(View view) {
-        return session.getPreResolvedViewBodies().take(view);
     }
 
     public Table resolveTable(TableRelation tableRelation) {
@@ -2852,25 +2423,9 @@ public class QueryAnalyzer {
     }
 
     private static class AsofJoinConditionValidator {
-        // Which side of the join an operand of the temporal condition reads its columns from.
-        private enum OperandSide {
-            LEFT,
-            RIGHT,
-            BOTH,
-            // Reads neither child: a constant, or a column of an enclosing query.
-            NONE
-        }
-
-        private final Scope leftScope;
-        private final Scope rightScope;
         private int equalityPredicateCount = 0;
         private int inequalityPredicateCount = 0;
         private boolean containsOrOperator = false;
-
-        AsofJoinConditionValidator(Scope leftScope, Scope rightScope) {
-            this.leftScope = leftScope;
-            this.rightScope = rightScope;
-        }
 
         public void validate(Expr joinPredicate) {
             visit(joinPredicate);
@@ -2902,7 +2457,6 @@ public class QueryAnalyzer {
                 } else if (binary.getOp().isRange()) {
                     inequalityPredicateCount++;
                     validateTemporalConditionTypes(binary);
-                    validateTemporalConditionSides(binary);
                 } else {
                     throw new SemanticException("ASOF JOIN does not support '" + binary.getOp() + "' operator " +
                             "in join ON clause");
@@ -2928,61 +2482,6 @@ public class QueryAnalyzer {
 
         private boolean isTemporalOrderingType(Type type) {
             return type.isBigint() || type.isDate() || type.isDatetime();
-        }
-
-        // The temporal condition is what the ASOF match is computed on: the BE reads one operand from
-        // the probe chunk and the other from the build chunk. If both operands read the same side there
-        // is no temporal relation between the two tables at all, and the BE ends up asking the build
-        // chunk for a column that only the probe side carries.
-        private void validateTemporalConditionSides(BinaryPredicate predicate) {
-            OperandSide leftOperandSide = operandSide(predicate.getChild(0));
-            OperandSide rightOperandSide = operandSide(predicate.getChild(1));
-
-            // Exactly one operand per side, in either order. Anything else - both operands on one side, an
-            // operand mixing the two, or an operand that reads neither child (a constant, an outer
-            // reference) - leaves the join without a temporal column on one of its sides.
-            boolean relatesTheTwoSides =
-                    (leftOperandSide == OperandSide.LEFT && rightOperandSide == OperandSide.RIGHT) ||
-                            (leftOperandSide == OperandSide.RIGHT && rightOperandSide == OperandSide.LEFT);
-
-            if (!relatesTheTwoSides) {
-                throw new SemanticException(
-                        "ASOF JOIN temporal condition must compare a column from the left side of the join "
-                                + "with a column from the right side, found: " + ExprToSql.toMySql(predicate),
-                        predicate.getPos());
-            }
-        }
-
-        private OperandSide operandSide(Expr operand) {
-            List<SlotRef> slotRefs = Lists.newArrayList();
-            operand.collect(SlotRef.class, slotRefs);
-
-            boolean readsLeft = false;
-            boolean readsRight = false;
-            for (SlotRef slotRef : slotRefs) {
-                if (readsScope(leftScope, slotRef)) {
-                    readsLeft = true;
-                } else if (readsScope(rightScope, slotRef)) {
-                    readsRight = true;
-                }
-            }
-
-            if (readsLeft && readsRight) {
-                return OperandSide.BOTH;
-            } else if (readsLeft) {
-                return OperandSide.LEFT;
-            } else if (readsRight) {
-                return OperandSide.RIGHT;
-            }
-            return OperandSide.NONE;
-        }
-
-        // Only this scope's own fields count. `Scope.tryResolveField` walks up to the parent scope, which
-        // resolves an outer query's column here: with a chained join whose left child is itself a join (that
-        // scope does have a parent), a right-side column that shares its name with an outer relation would be
-        // charged to the left side and a perfectly valid join rejected.
-        private boolean readsScope(Scope scope, SlotRef slotRef) {
-            return !scope.getRelationFields().resolveFields(slotRef).isEmpty();
         }
     }
 }

@@ -3,5 +3,4 @@ label: 'Scalar'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: scalar-functions
+  type: generated-index

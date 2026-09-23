@@ -53,7 +53,6 @@ import com.starrocks.scheduler.TaskRunBuilder;
 import com.starrocks.scheduler.TaskRunManager;
 import com.starrocks.scheduler.TaskRunProcessor;
 import com.starrocks.scheduler.mv.BaseTableSnapshotInfo;
-import com.starrocks.scheduler.mv.MVRefreshProcessor;
 import com.starrocks.scheduler.mv.pct.MVPCTRefreshProcessor;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.Analyzer;
@@ -146,7 +145,6 @@ public abstract class MVTestBase extends StarRocksTestBase {
     @BeforeAll
     public static void beforeClass() throws Exception {
         FeConstants.runningUnitTest = true;
-        Config.enable_virtual_columns = false;
 
         CachingMvPlanContextBuilder.getInstance().rebuildCache();
         PseudoCluster.getOrCreateWithRandomPort(true, 1);
@@ -758,9 +756,7 @@ public abstract class MVTestBase extends StarRocksTestBase {
         Assertions.assertTrue(stmt != null, "Expected a valid StatementBase but got null:" + explainQuery);
         ExecuteOption executeOption = buildExecuteOption(stmt);
         TaskRun taskRun = taskManager.buildTaskRun(task, executeOption);
-        MVRefreshProcessor.ProcessExecPlan processExecPlan =
-                taskManager.getMVRefreshProcessExecPlan(taskRun, task, executeOption, stmt);
-        return processExecPlan == null ? null : processExecPlan.execPlan();
+        return taskManager.getMVRefreshExecPlan(taskRun, task, executeOption, stmt);
     }
 
     public static List<String> extractColumnValues(String sql, int columnIndex) {

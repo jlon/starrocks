@@ -3,5 +3,4 @@ label: 'Semi-structured'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: semi_structured
+  type: generated-index

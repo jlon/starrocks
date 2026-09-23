@@ -14,9 +14,8 @@
 
 #pragma once
 
-#include "common/statusor.h"
+#include "exec/exec_node.h"
 #include "exec/pipeline/set/union_passthrough_operator.h"
-#include "exec_primitive/exec_node.h"
 #include "pipeline/exchange/local_exchange.h"
 #include "runtime/runtime_state.h"
 
@@ -33,7 +32,7 @@ public:
     Status get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos) override;
     void close(RuntimeState* state) override;
 
-    StatusOr<pipeline::OpFactories> decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
+    pipeline::OpFactories decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
 
 private:
     void _convert_pass_through_slot_map(const std::map<SlotId, SlotId>& slot_map);

@@ -3,5 +3,4 @@ label: 'Struct'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: struct-functions
+  type: generated-index

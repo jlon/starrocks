@@ -28,12 +28,7 @@ public class CreateViewStmt extends DdlStmt {
     private final boolean ifNotExists;
     private final boolean replace;
     private final String comment;
-    // The resolved SQL SECURITY characteristic: false maps to SECURITY NONE, true maps to SECURITY INVOKER.
-    // When the statement omits the SECURITY clause this is resolved from the session variable in the analyze stage.
-    private boolean security;
-    // Whether the statement explicitly specified a SECURITY clause. When false, the analyzer fills in the
-    // default from the default_view_sql_security session variable.
-    private final boolean securityExplicit;
+    private final boolean security;
     protected QueryStatement queryStatement;
 
     //Resolved by Analyzer
@@ -52,9 +47,7 @@ public class CreateViewStmt extends DdlStmt {
                           boolean security,
                           QueryStatement queryStmt,
                           NodePosition pos) {
-        // Callers that bypass the parser provide the security value directly, so treat it as explicit.
-        this(ifNotExists, replace, tableRef, colWithComments, comment, security, true, queryStmt, pos,
-                Maps.newHashMap());
+        this(ifNotExists, replace, tableRef, colWithComments, comment, security, queryStmt, pos, Maps.newHashMap());
     }
 
     public CreateViewStmt(boolean ifNotExists,
@@ -63,20 +56,6 @@ public class CreateViewStmt extends DdlStmt {
                           List<ColWithComment> colWithComments,
                           String comment,
                           boolean security,
-                          QueryStatement queryStmt,
-                          NodePosition pos,
-                          Map<String, String> properties) {
-        // Callers that bypass the parser provide the security value directly, so treat it as explicit.
-        this(ifNotExists, replace, tableRef, colWithComments, comment, security, true, queryStmt, pos, properties);
-    }
-
-    public CreateViewStmt(boolean ifNotExists,
-                          boolean replace,
-                          TableRef tableRef,
-                          List<ColWithComment> colWithComments,
-                          String comment,
-                          boolean security,
-                          boolean securityExplicit,
                           QueryStatement queryStmt,
                           NodePosition pos,
                           Map<String, String> properties) {
@@ -87,7 +66,6 @@ public class CreateViewStmt extends DdlStmt {
         this.colWithComments = colWithComments;
         this.comment = Strings.nullToEmpty(comment);
         this.security = security;
-        this.securityExplicit = securityExplicit;
         this.queryStatement = queryStmt;
         this.properties = properties != null ? properties : Maps.newHashMap();
     }
@@ -130,14 +108,6 @@ public class CreateViewStmt extends DdlStmt {
 
     public boolean isSecurity() {
         return security;
-    }
-
-    public void setSecurity(boolean security) {
-        this.security = security;
-    }
-
-    public boolean isSecurityExplicit() {
-        return securityExplicit;
     }
 
     public QueryStatement getQueryStatement() {

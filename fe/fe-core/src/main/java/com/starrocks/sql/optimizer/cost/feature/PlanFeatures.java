@@ -30,7 +30,10 @@ import java.util.Set;
 public class PlanFeatures {
 
     private static final ImmutableSet<OperatorType> EXCLUDE_OPERATORS = ImmutableSet.of(
-            OperatorType.PHYSICAL_MERGE_JOIN
+            OperatorType.PHYSICAL_MERGE_JOIN,
+            OperatorType.PHYSICAL_STREAM_SCAN,
+            OperatorType.PHYSICAL_STREAM_JOIN,
+            OperatorType.PHYSICAL_STREAM_AGG
     );
 
     // query plan

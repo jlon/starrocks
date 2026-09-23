@@ -16,20 +16,19 @@
 
 #include <unordered_set>
 
-#include "base/hash/hash_std.hpp"
-#include "base/phmap/phmap.h"
-#include "base/string/slice.h"
 #include "column/column_hash.h"
 #include "column/column_helper.h"
-#include "column/runtime_type_traits.h"
-#include "common/statusor.h"
+#include "column/type_traits.h"
 #include "exec/except_hash_set.h"
-#include "exec/pipeline_node.h"
-#include "exec_primitive/pipeline/operator_factory.h"
+#include "exec/exec_node.h"
+#include "exec/olap_common.h"
+#include "exec/pipeline/operator.h"
 #include "exprs/expr_context.h"
 #include "gutil/casts.h"
 #include "runtime/mem_pool.h"
-#include "storage_primitive/olap_scan_keys.h"
+#include "util/hash_util.hpp"
+#include "util/phmap/phmap.h"
+#include "util/slice.h"
 
 namespace starrocks {
 class DescriptorTbl;
@@ -38,7 +37,7 @@ class TupleDescriptor;
 } // namespace starrocks
 
 namespace starrocks {
-class ExceptNode final : public PipelineNode {
+class ExceptNode final : public ExecNode {
 public:
     ExceptNode(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs);
 
@@ -49,9 +48,12 @@ public:
     }
 
     Status init(const TPlanNode& tnode, RuntimeState* state = nullptr) override;
+    Status prepare(RuntimeState* state) override;
+    Status open(RuntimeState* state) override;
+    Status get_next(RuntimeState* state, ChunkPtr* row_batch, bool* eos) override;
     void close(RuntimeState* state) override;
 
-    StatusOr<pipeline::OpFactories> decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
+    pipeline::OpFactories decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
 
     int64_t mem_usage() const {
         int64_t usage = 0;
@@ -68,7 +70,7 @@ private:
     /// Tuple id resolved in Prepare() to set tuple_desc_;
     const int _tuple_id;
     /// Descriptor for tuples this union node constructs.
-    [[maybe_unused]] const TupleDescriptor* _tuple_desc{nullptr};
+    const TupleDescriptor* _tuple_desc;
     // Exprs materialized by this node. The i-th result expr list refers to the i-th child.
     std::vector<std::vector<ExprContext*>> _child_expr_lists;
     std::vector<std::vector<ExprContext*>> _local_partition_by_exprs;
@@ -88,9 +90,9 @@ private:
     // pool for allocate key.
     std::unique_ptr<MemPool> _build_pool;
 
-    [[maybe_unused]] RuntimeProfile::Counter* _build_set_timer = nullptr; // time to build hash set
-    [[maybe_unused]] RuntimeProfile::Counter* _erase_duplicate_row_timer = nullptr;
-    [[maybe_unused]] RuntimeProfile::Counter* _get_result_timer = nullptr;
+    RuntimeProfile::Counter* _build_set_timer = nullptr; // time to build hash set
+    RuntimeProfile::Counter* _erase_duplicate_row_timer = nullptr;
+    RuntimeProfile::Counter* _get_result_timer = nullptr;
 };
 
 } // namespace starrocks

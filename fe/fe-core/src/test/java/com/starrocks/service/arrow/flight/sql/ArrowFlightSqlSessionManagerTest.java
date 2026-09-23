@@ -20,7 +20,6 @@ package com.starrocks.service.arrow.flight.sql;
 import com.starrocks.authentication.AuthenticationHandler;
 import com.starrocks.authorization.PrivilegeException;
 import com.starrocks.common.Pair;
-import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.common.util.UUIDUtil;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.ConnectScheduler;
@@ -33,9 +32,7 @@ import com.starrocks.service.ExecuteEnv;
 import com.starrocks.service.arrow.flight.sql.session.ArrowFlightSqlSessionManager;
 import com.starrocks.system.Frontend;
 import com.starrocks.thrift.TUniqueId;
-import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.FlightRuntimeException;
-import org.apache.arrow.memory.BufferAllocator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
@@ -43,7 +40,6 @@ import org.mockito.MockedStatic;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -96,30 +92,17 @@ public class ArrowFlightSqlSessionManagerTest {
     }
 
     private void mockAuthentication(MockedStatic<AuthenticationHandler> mockedAuth) {
-        mockAuthentication(mockedAuth, null);
-    }
-
-    private void mockAuthentication(MockedStatic<AuthenticationHandler> mockedAuth,
-                                    AtomicReference<ArrowFlightSqlConnectContext> contextRef) {
         mockedAuth.when(() -> AuthenticationHandler.authenticate(any(), any(), any(), any()))
                 .thenAnswer(invocation -> {
                     ConnectContext ctx = invocation.getArgument(0);
                     ctx.setCurrentUserIdentity(null);
                     ctx.setQualifiedUser("testUser");
-                    if (contextRef != null) {
-                        contextRef.set((ArrowFlightSqlConnectContext) ctx);
-                    }
                     return null;
                 });
     }
 
-    private void assertAllocatorClosed(ArrowFlightSqlConnectContext context) {
-        BufferAllocator allocator = Deencapsulation.getField(context, "allocator");
-        assertThrows(IllegalStateException.class, allocator::assertOpen);
-    }
-
     @Test
-    public void testInitializeSession_success() throws Exception {
+    public void testInitializeSession_success() {
         try (MockedStatic<ExecuteEnv> mockedEnv = mockStatic(ExecuteEnv.class);
                 MockedStatic<UUIDUtil> mockedUUID = mockStatic(UUIDUtil.class);
                 MockedStatic<GlobalStateMgr> mockedGlobalState = mockStatic(GlobalStateMgr.class);
@@ -144,15 +127,13 @@ public class ArrowFlightSqlSessionManagerTest {
     }
 
     @Test
-    public void testInitializeSession_registerConnectionFail() throws Exception {
-        AtomicReference<ArrowFlightSqlConnectContext> contextRef = new AtomicReference<>();
+    public void testInitializeSession_registerConnectionFail() {
         try (MockedStatic<ExecuteEnv> mockedEnv = mockStatic(ExecuteEnv.class);
                 MockedStatic<UUIDUtil> mockedUUID = mockStatic(UUIDUtil.class);
                 MockedStatic<GlobalStateMgr> mockedGlobalState = mockStatic(GlobalStateMgr.class);
-                MockedStatic<GlobalVariable> mockedGlobalVar = mockStatic(GlobalVariable.class);
                 MockedStatic<AuthenticationHandler> mockedAuth = mockStatic(AuthenticationHandler.class)) {
 
-            mockAuthentication(mockedAuth, contextRef);
+            mockAuthentication(mockedAuth);
 
             ExecuteEnv mockEnv = mock(ExecuteEnv.class);
             mockedEnv.when(ExecuteEnv::getInstance).thenReturn(mockEnv);
@@ -162,52 +143,16 @@ public class ArrowFlightSqlSessionManagerTest {
 
             mockedUUID.when(UUIDUtil::genUUID).thenReturn(mockUUID);
             mockedUUID.when(() -> UUIDUtil.toTUniqueId(mockUUID)).thenReturn(mockTUniqueId);
-            mockedGlobalVar.when(GlobalVariable::isArrowFlightProxyEnabled).thenReturn(false);
 
             mockGlobalStateMgr(mockedGlobalState);
 
             assertThrows(FlightRuntimeException.class, () -> sessionManager
                     .initializeSession("testUser", "127.0.0.1", "testPassword"));
-            assertThrows(IllegalArgumentException.class,
-                    () -> sessionManager.validateToken(mockUUID.toString()));
-            assertAllocatorClosed(contextRef.get());
         }
     }
 
     @Test
-    public void testInitializeSession_connectionIdExhausted() throws Exception {
-        AtomicReference<ArrowFlightSqlConnectContext> contextRef = new AtomicReference<>();
-        try (MockedStatic<ExecuteEnv> mockedEnv = mockStatic(ExecuteEnv.class);
-                MockedStatic<UUIDUtil> mockedUUID = mockStatic(UUIDUtil.class);
-                MockedStatic<GlobalStateMgr> mockedGlobalState = mockStatic(GlobalStateMgr.class);
-                MockedStatic<GlobalVariable> mockedGlobalVar = mockStatic(GlobalVariable.class);
-                MockedStatic<AuthenticationHandler> mockedAuth = mockStatic(AuthenticationHandler.class)) {
-
-            mockAuthentication(mockedAuth, contextRef);
-
-            ExecuteEnv mockEnv = mock(ExecuteEnv.class);
-            mockedEnv.when(ExecuteEnv::getInstance).thenReturn(mockEnv);
-            when(mockEnv.getScheduler()).thenReturn(mockScheduler);
-            when(mockScheduler.getNextConnectionId()).thenThrow(
-                    new ConnectScheduler.ConnectionIdExhaustedException("No available connection ID"));
-
-            mockedUUID.when(UUIDUtil::genUUID).thenReturn(mockUUID);
-            mockedUUID.when(() -> UUIDUtil.toTUniqueId(mockUUID)).thenReturn(mockTUniqueId);
-            mockedGlobalVar.when(GlobalVariable::isArrowFlightProxyEnabled).thenReturn(false);
-
-            mockGlobalStateMgr(mockedGlobalState);
-
-            FlightRuntimeException error = assertThrows(FlightRuntimeException.class, () -> sessionManager
-                    .initializeSession("testUser", "127.0.0.1", "testPassword"));
-            assertEquals(CallStatus.RESOURCE_EXHAUSTED.code(), error.status().code());
-            assertThrows(IllegalArgumentException.class,
-                    () -> sessionManager.validateToken(mockUUID.toString()));
-            assertAllocatorClosed(contextRef.get());
-        }
-    }
-
-    @Test
-    public void testValidateToken() throws Exception {
+    public void testValidateToken() {
         try (MockedStatic<ExecuteEnv> mockedEnv = mockStatic(ExecuteEnv.class);
                 MockedStatic<UUIDUtil> mockedUUID = mockStatic(UUIDUtil.class);
                 MockedStatic<GlobalStateMgr> mockedGlobalState = mockStatic(GlobalStateMgr.class);
@@ -236,7 +181,7 @@ public class ArrowFlightSqlSessionManagerTest {
     }
 
     @Test
-    public void testCloseSession() throws Exception {
+    public void testCloseSession() {
         try (MockedStatic<ExecuteEnv> mockedEnv = mockStatic(ExecuteEnv.class);
                 MockedStatic<UUIDUtil> mockedUUID = mockStatic(UUIDUtil.class);
                 MockedStatic<GlobalStateMgr> mockedGlobalState = mockStatic(GlobalStateMgr.class);
@@ -359,7 +304,7 @@ public class ArrowFlightSqlSessionManagerTest {
     }
 
     @Test
-    public void testInitializeSession_tokenFormat() throws Exception {
+    public void testInitializeSession_tokenFormat() {
         try (MockedStatic<ExecuteEnv> mockedEnv = mockStatic(ExecuteEnv.class);
                 MockedStatic<UUIDUtil> mockedUUID = mockStatic(UUIDUtil.class);
                 MockedStatic<GlobalStateMgr> mockedGlobalState = mockStatic(GlobalStateMgr.class);

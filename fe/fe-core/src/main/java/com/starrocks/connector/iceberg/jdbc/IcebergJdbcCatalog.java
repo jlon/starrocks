@@ -52,7 +52,6 @@ import java.util.stream.Collectors;
 
 import static com.starrocks.connector.ConnectorTableId.CONNECTOR_ID_GENERATOR;
 import static com.starrocks.connector.iceberg.IcebergCatalogProperties.ICEBERG_CUSTOM_PROPERTIES_PREFIX;
-import static com.starrocks.connector.iceberg.IcebergCatalogProperties.ICEBERG_JDBC_CATALOG_NAME;
 import static com.starrocks.connector.iceberg.IcebergMetadata.LOCATION_PROPERTY;
 import static org.apache.iceberg.CatalogProperties.WAREHOUSE_LOCATION;
 
@@ -94,11 +93,8 @@ public class IcebergJdbcCatalog implements IcebergCatalog {
                     ICEBERG_CUSTOM_PROPERTIES_PREFIX + WAREHOUSE_LOCATION));
         }
 
-        String jdbcCatalogName = copiedProperties.getOrDefault(ICEBERG_JDBC_CATALOG_NAME, name);
-        copiedProperties.remove(ICEBERG_JDBC_CATALOG_NAME);
+        this.delegate = (JdbcCatalog) CatalogUtil.loadCatalog(JdbcCatalog.class.getName(), name, copiedProperties, conf);
 
-        this.delegate = (JdbcCatalog) CatalogUtil.loadCatalog(
-                JdbcCatalog.class.getName(), jdbcCatalogName, copiedProperties, conf);
     }
 
 

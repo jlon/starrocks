@@ -21,15 +21,9 @@
 #include <thread>
 #include <utility>
 
-#include "base/testutil/assert.h"
-#include "column/chunk_factory.h"
 #include "column/datum_tuple.h"
-#include "common/config_exec_fwd.h"
-#include "fs/fs_factory.h"
 #include "fs/fs_util.h"
-#include "gutil/walltime.h"
 #include "runtime/descriptor_helper.h"
-#include "runtime/descriptors.h"
 #include "runtime/runtime_state.h"
 #include "service/brpc_service_test_util.h"
 #include "storage/async_delta_writer.h"
@@ -40,10 +34,11 @@
 #include "storage/rowset/rowset_writer_context.h"
 #include "storage/rowset/segment_options.h"
 #include "storage/storage_engine.h"
-#include "storage/storage_metrics.h"
 #include "storage/tablet.h"
 #include "storage/tablet_manager.h"
 #include "storage/txn_manager.h"
+#include "testutil/assert.h"
+#include "util/starrocks_metrics.h"
 
 namespace starrocks {
 
@@ -117,7 +112,8 @@ public:
         std::vector<TTupleId> row_tuples = std::vector<TTupleId>{0};
         DescriptorTbl* tbl = nullptr;
         DescriptorTbl::create(&_runtime_state, &_pool, table_builder.desc_tbl(), &tbl, config::vector_chunk_size);
-        auto* tuple_desc = tbl->get_tuple_descriptor(row_tuples[0]);
+        auto* row_desc = _pool.add(new RowDescriptor(*tbl, row_tuples));
+        auto* tuple_desc = row_desc->tuple_descriptors()[0];
 
         return tuple_desc;
     }
@@ -163,7 +159,7 @@ public:
         ASSERT_TRUE(RowsetFactory::create_rowset_writer(writer_context, &rowset_writer).ok());
         std::vector<uint32_t> column_indexes{0};
         auto schema = ChunkHelper::convert_schema(tablet->tablet_schema(), column_indexes);
-        auto chunk = ChunkFactory::new_chunk(schema, num_rows);
+        auto chunk = ChunkHelper::new_chunk(schema, num_rows);
         for (auto i = 0; i < num_rows; ++i) {
             chunk->columns()[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int32_t>(i)));
         }
@@ -173,7 +169,7 @@ public:
 
     void attach_segment_data(SegmentPB& segment_pb, brpc::Controller* controller) {
         std::shared_ptr<FileSystem> fs;
-        ASSIGN_OR_ABORT(fs, FileSystemFactory::CreateSharedFromString(segment_pb.path()));
+        ASSIGN_OR_ABORT(fs, FileSystem::CreateSharedFromString(segment_pb.path()));
         auto res = fs->new_random_access_file(segment_pb.path());
         ASSERT_TRUE(res.ok());
         auto rfile = std::move(res.value());
@@ -201,7 +197,7 @@ public:
     void check_single_segment_rowset_result(RowsetSharedPtr& rowset, int num_rows) {
         ASSERT_EQ(1, rowset->rowset_meta()->num_segments());
         SegmentReadOptions seg_options;
-        ASSIGN_OR_ABORT(seg_options.fs, FileSystemFactory::CreateSharedFromString("posix://"));
+        ASSIGN_OR_ABORT(seg_options.fs, FileSystem::CreateSharedFromString("posix://"));
         OlapReaderStatistics stats;
         seg_options.stats = &stats;
         std::string segment_file = Rowset::segment_file_path(_tablet->schema_hash_path(), rowset->rowset_id(), 0);
@@ -213,7 +209,7 @@ public:
 
         const auto& seg_iterator = res.value();
         ASSERT_TRUE(seg_iterator->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
-        auto chunk = ChunkFactory::new_chunk(seg_iterator->schema(), 100);
+        auto chunk = ChunkHelper::new_chunk(seg_iterator->schema(), 100);
         int count = 0;
         while (true) {
             auto st = seg_iterator->get_next(chunk.get());
@@ -279,8 +275,8 @@ TEST_F(SegmentFlushExecutorTest, test_write_and_commit_segment) {
     // just verify the metrics have value, rather than verify it accurately
     // because other test cases may also update the metrics concurrently if
     // run tests in parallel, and it's hard to get the accurate value
-    ASSERT_TRUE(StorageMetrics::instance()->segment_flush_total.value() > 0);
-    ASSERT_TRUE(StorageMetrics::instance()->segment_flush_bytes_total.value() > 0);
+    ASSERT_TRUE(StarRocksMetrics::instance()->segment_flush_total.value() > 0);
+    ASSERT_TRUE(StarRocksMetrics::instance()->segment_flush_bytes_total.value() > 0);
 }
 
 TEST_F(SegmentFlushExecutorTest, test_submit_after_cancel) {

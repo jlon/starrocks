@@ -20,8 +20,6 @@ import com.starrocks.sql.ast.DmlStmt;
 import com.starrocks.thrift.TUniqueId;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -38,7 +36,6 @@ public class ExplicitTxnState {
     // Track tables that are WRITE targets (insert/update/delete) in this explicit transaction.
     // We use table id for uniqueness even if renamed.
     private final Set<Long> modifiedTableIds = new HashSet<>();
-    private final Map<Long, Set<Long>> planningLayoutReservations = new HashMap<>();
 
     public ExplicitTxnState() {
     }
@@ -76,23 +73,6 @@ public class ExplicitTxnState {
 
     public Set<Long> getModifiedTableIds() {
         return modifiedTableIds;
-    }
-
-    void reservePlanningLayout(long dbId, long tableId) {
-        planningLayoutReservations.computeIfAbsent(dbId, ignored -> new HashSet<>()).add(tableId);
-    }
-
-    boolean hasPlanningLayoutReservation(long dbId, List<Long> tableIds) {
-        Set<Long> reserved = planningLayoutReservations.get(dbId);
-        return reserved != null && !Collections.disjoint(reserved, tableIds);
-    }
-
-    Set<Long> getPlanningLayoutTables(long dbId) {
-        return planningLayoutReservations.getOrDefault(dbId, Collections.emptySet());
-    }
-
-    void retainPlanningLayoutsForDatabase(long dbId) {
-        planningLayoutReservations.keySet().removeIf(reservedDbId -> reservedDbId != dbId);
     }
 
     public static class ExplicitTxnStateItem {

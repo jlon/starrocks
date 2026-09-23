@@ -18,22 +18,20 @@
 #include <string>
 #include <vector>
 
-#include "base/string/slice.h"
-#include "base/testutil/assert.h"
-#include "exec/exec_env.h"
 #include "fs/fs_memory.h"
 #include "gen_cpp/segment.pb.h"
 #include "roaring/roaring.hh"
-#include "runtime/mem_tracker.h"
+#include "runtime/exec_env.h"
 #include "storage/index/inverted/builtin/builtin_inverted_index_iterator.h"
 #include "storage/index/inverted/builtin/builtin_inverted_reader.h"
 #include "storage/index/inverted/builtin/builtin_inverted_writer.h"
 #include "storage/index/inverted/builtin/builtin_simple_analyzer.h"
 #include "storage/index/inverted/inverted_index_common.h"
-#include "storage/index/inverted/inverted_index_option.h"
 #include "storage/rowset/bitmap_index_reader.h"
 #include "storage/tablet_index.h"
 #include "storage/types.h"
+#include "testutil/assert.h"
+#include "util/slice.h"
 
 namespace starrocks {
 
@@ -963,7 +961,7 @@ TEST_F(BuiltinInvertedIndexTest, test_complex_wildcard_query) {
 // Verify that BuiltinInvertedReader correctly tracks memory via the builtin_inverted_index_mem_tracker.
 // The tracker balance should be zero after the reader is destroyed.
 TEST_F(BuiltinInvertedIndexTest, test_mem_tracker_balance) {
-    auto* tracker = RuntimeEnv::GetInstance()->builtin_inverted_index_mem_tracker();
+    auto* tracker = GlobalEnv::GetInstance()->builtin_inverted_index_mem_tracker();
     int64_t baseline = tracker != nullptr ? tracker->consumption() : 0;
 
     std::vector<std::string> values = {"alpha", "beta", "gamma"};
@@ -1025,7 +1023,7 @@ TEST_F(BuiltinInvertedIndexTest, test_mem_tracker_balance) {
 
 // Verify that load failure does not cause a tracker imbalance.
 TEST_F(BuiltinInvertedIndexTest, test_mem_tracker_balance_on_load_failure) {
-    auto* tracker = RuntimeEnv::GetInstance()->builtin_inverted_index_mem_tracker();
+    auto* tracker = GlobalEnv::GetInstance()->builtin_inverted_index_mem_tracker();
     int64_t baseline = tracker != nullptr ? tracker->consumption() : 0;
 
     {
@@ -1049,7 +1047,7 @@ TEST_F(BuiltinInvertedIndexTest, test_mem_tracker_balance_on_load_failure) {
 // does not cause a tracker imbalance. This covers the error path in load() where
 // _bitmap_index->load() fails and _bitmap_index is reset.
 TEST_F(BuiltinInvertedIndexTest, test_mem_tracker_balance_on_bitmap_load_failure) {
-    auto* tracker = RuntimeEnv::GetInstance()->builtin_inverted_index_mem_tracker();
+    auto* tracker = GlobalEnv::GetInstance()->builtin_inverted_index_mem_tracker();
     int64_t baseline = tracker != nullptr ? tracker->consumption() : 0;
 
     {
@@ -1144,7 +1142,7 @@ TEST_F(BuiltinInvertedIndexTest, test_mem_usage_before_and_after_load) {
 // Verify that multiple BuiltinInvertedReaders cumulatively track their memory,
 // and that the tracker returns to baseline after all readers are destroyed.
 TEST_F(BuiltinInvertedIndexTest, test_mem_tracker_multiple_readers) {
-    auto* tracker = RuntimeEnv::GetInstance()->builtin_inverted_index_mem_tracker();
+    auto* tracker = GlobalEnv::GetInstance()->builtin_inverted_index_mem_tracker();
     int64_t baseline = tracker != nullptr ? tracker->consumption() : 0;
 
     std::vector<std::string> values = {"x", "y", "z"};
@@ -1221,7 +1219,7 @@ TEST_F(BuiltinInvertedIndexTest, test_mem_tracker_multiple_readers) {
 
 // Verify memory tracking works correctly with the English parser path (tokenized index).
 TEST_F(BuiltinInvertedIndexTest, test_mem_tracker_english_parser) {
-    auto* tracker = RuntimeEnv::GetInstance()->builtin_inverted_index_mem_tracker();
+    auto* tracker = GlobalEnv::GetInstance()->builtin_inverted_index_mem_tracker();
     int64_t baseline = tracker != nullptr ? tracker->consumption() : 0;
 
     std::vector<std::string> values = {"hello world", "foo bar baz"};
@@ -1296,28 +1294,6 @@ TEST_F(BuiltinInvertedIndexTest, test_simple_analyzer) {
 
     analyzer2.tokenize(nullptr, 0, tokens);
     ASSERT_TRUE(tokens.empty());
-}
-
-TEST_F(BuiltinInvertedIndexTest, test_is_builtin_inverted_index) {
-    {
-        TabletIndex tablet_index;
-        ASSERT_FALSE(is_builtin_inverted_index(tablet_index));
-    }
-    {
-        TabletIndex tablet_index;
-        tablet_index.add_common_properties(INVERTED_IMP_KEY, TYPE_CLUCENE);
-        ASSERT_FALSE(is_builtin_inverted_index(tablet_index));
-    }
-    {
-        TabletIndex tablet_index;
-        tablet_index.add_common_properties(INVERTED_IMP_KEY, TYPE_BUILTIN);
-        ASSERT_TRUE(is_builtin_inverted_index(tablet_index));
-    }
-    {
-        TabletIndex tablet_index;
-        tablet_index.add_common_properties(INVERTED_IMP_KEY, "invalid");
-        ASSERT_FALSE(is_builtin_inverted_index(tablet_index));
-    }
 }
 
 } // namespace starrocks

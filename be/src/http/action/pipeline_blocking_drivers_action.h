@@ -23,11 +23,10 @@
 #include <mutex>
 #include <unordered_map>
 
-#include "platform/http/http_handler.h"
+#include "http/http_handler.h"
+#include "runtime/exec_env.h"
 
 namespace starrocks {
-
-class ExecEnv;
 
 class PipelineBlockingDriversAction : public HttpHandler {
 public:

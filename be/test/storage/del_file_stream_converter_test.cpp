@@ -19,15 +19,15 @@
 #include <memory>
 #include <vector>
 
-#include "base/testutil/assert.h"
 #include "column/chunk.h"
+#include "column/datum.h"
 #include "column/schema.h"
-#include "column/serde/column_array_serde.h"
 #include "fs/fs.h"
 #include "fs/fs_memory.h"
+#include "serde/column_array_serde.h"
+#include "storage/primary_key_encoder.h"
 #include "storage/tablet_schema.h"
-#include "storage_primitive/primary_key_encoder.h"
-#include "types/datum.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 

@@ -17,9 +17,7 @@ package com.starrocks.alter;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.MaterializedView;
-import com.starrocks.catalog.MaterializedViewRefreshType;
 import com.starrocks.catalog.OlapTable;
-import com.starrocks.common.MaterializedViewExceptions;
 import com.starrocks.connector.iceberg.MockIcebergMetadata;
 import com.starrocks.qe.DDLStmtExecutor;
 import com.starrocks.scheduler.mv.ivm.MVIVMTestBase;
@@ -236,30 +234,6 @@ public class AlterMaterializedViewTest extends MVTestBase {
         Assertions.assertEquals(MaterializedView.RefreshMode.INCREMENTAL, mv.getCurrentRefreshMode());
     }
 
-    @Test
-    public void testLegacyIncrementalAlterRejected() throws Exception {
-        String mvName = "legacy_incremental_alter_mv";
-        starRocksAssert.withMaterializedView("create materialized view test." + mvName + "\n" +
-                "distributed by hash(deptno) buckets 3\n" +
-                "refresh manual\n" +
-                "as select deptno, sum(salary) as total_salary from emps group by deptno;");
-        try {
-            MaterializedView mv = (MaterializedView) GlobalStateMgr.getCurrentState()
-                    .getLocalMetastore().getTable("test", mvName);
-            mv.getRefreshScheme().setType(MaterializedViewRefreshType.INCREMENTAL);
-
-            AlterMaterializedViewStmt statement =
-                    (AlterMaterializedViewStmt) UtFrameUtils.parseStmtWithNewParser(
-                            "alter materialized view " + mvName + " inactive", connectContext);
-            AlterJobException exception = Assertions.assertThrows(AlterJobException.class,
-                    () -> GlobalStateMgr.getCurrentState().getLocalMetastore().alterMaterializedView(statement));
-            Assertions.assertEquals(MaterializedViewExceptions.unsupportedReasonForLegacyIncrementalMaintenance(),
-                    exception.getMessage());
-        } finally {
-            starRocksAssert.dropMaterializedView("test." + mvName);
-        }
-    }
-
     private static void checkTableStateToNormal(OlapTable tb) throws InterruptedException {
         // waiting table state to normal
         int retryTimes = 5;
@@ -440,43 +414,6 @@ public class AlterMaterializedViewTest extends MVTestBase {
         Assertions.assertEquals(3, mv.getColumns().size());
 
         alterMVDropColumn(dropStmt, true);
-    }
-
-    @Test
-    public void testDropColumnOnUnionMV() throws Exception {
-        starRocksAssert.withTable("CREATE TABLE base_t1_union\n" +
-                "(\n" +
-                "    id int,\n" +
-                "    a int,\n" +
-                "    b int\n" +
-                ")\n" +
-                "DUPLICATE KEY(`id`)" +
-                "DISTRIBUTED BY HASH (id) BUCKETS 3\n" +
-                "PROPERTIES('replication_num' = '1');");
-        starRocksAssert.withTable("CREATE TABLE base_t2_union\n" +
-                "(\n" +
-                "    id int,\n" +
-                "    a int,\n" +
-                "    b int\n" +
-                ")\n" +
-                "DUPLICATE KEY(`id`)" +
-                "DISTRIBUTED BY HASH (id) BUCKETS 3\n" +
-                "PROPERTIES('replication_num' = '1');");
-        starRocksAssert.withMaterializedView("CREATE MATERIALIZED VIEW mv_union_test\n" +
-                "DISTRIBUTED BY HASH(id) BUCKETS 3\n" +
-                "REFRESH MANUAL\n" +
-                "PROPERTIES (\n" +
-                "\"replication_num\" = \"1\"\n" +
-                ")\n" +
-                "AS SELECT id, a, b FROM base_t1_union UNION ALL SELECT id, a, b FROM base_t2_union;");
-
-        // DROP COLUMN on a UNION MV should fail with a clear error, not ClassCastException
-        String dropStmt = "alter materialized view mv_union_test drop column b";
-        alterMVDropColumn(dropStmt, true);
-
-        // ADD COLUMN on a UNION MV should also fail with a clear error
-        String addStmt = "alter materialized view mv_union_test add column cnt as count(a)";
-        alterMVAddColumn(addStmt, true);
     }
 
     @Test

@@ -1,7 +1,0 @@
-position: 130
-label: 'Administration'
-collapsible: true
-collapsed: true
-link:
-  id: administration
-  type: doc

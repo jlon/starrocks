@@ -25,10 +25,7 @@
 #include <thread>
 #include <vector>
 
-#include "base/testutil/assert.h"
-#include "base/testutil/id_generator.h"
-#include "base/testutil/sync_point.h"
-#include "common/config_lake_fwd.h"
+#include "common/config.h"
 #include "fs/fs_util.h"
 #include "runtime/mem_tracker.h"
 #include "storage/lake/filenames.h"
@@ -40,6 +37,9 @@
 #include "storage/lake/update_manager.h"
 #include "storage/metadata_util.h"
 #include "storage/tablet_schema.h"
+#include "testutil/assert.h"
+#include "testutil/id_generator.h"
+#include "testutil/sync_point.h"
 
 namespace starrocks::lake {
 
@@ -1024,13 +1024,8 @@ TEST_F(TableSchemaServiceTest, build_initial_metadata) {
 
         ASSIGN_OR_ABORT(auto metadata, _tablet_manager->build_initial_metadata(tablet_id, resp));
         ASSERT_TRUE(metadata->has_range());
-        // The TTabletRange carried inclusivity flags but no bounds (a fully unbounded Range.all).
-        // convert_t_range_to_pb_range persists an inclusivity flag only alongside a present bound, so the
-        // persisted range keeps neither a bound nor a stray inclusivity flag.
-        ASSERT_FALSE(metadata->range().has_lower_bound());
-        ASSERT_FALSE(metadata->range().has_upper_bound());
-        ASSERT_FALSE(metadata->range().has_lower_bound_included());
-        ASSERT_FALSE(metadata->range().has_upper_bound_included());
+        ASSERT_TRUE(metadata->range().lower_bound_included());
+        ASSERT_FALSE(metadata->range().upper_bound_included());
     }
 
     // Case 4: tablet_ranges set but does not contain this tablet

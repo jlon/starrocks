@@ -14,7 +14,6 @@
 
 #include "exprs/in_const_predicate.hpp"
 
-#include "exprs/expr_context.h"
 #include "gutil/strings/substitute.h"
 #include "types/logical_type_infra.h"
 

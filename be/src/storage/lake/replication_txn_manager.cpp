@@ -21,25 +21,23 @@
 #include <numeric>
 #include <set>
 
-#include "base/string/string_parser.hpp"
-#include "base/utility/defer_op.h"
+#include "agent/agent_server.h"
+#include "agent/master_info.h"
+#include "agent/task_signatures_manager.h"
 #include "column/schema.h"
-#include "common/config_http_fwd.h"
-#include "common/config_rowset_fwd.h"
-#include "common/system/backend_options.h"
-#include "common/system/master_info.h"
-#include "common/util/thrift_client_cache.h"
 #include "fs/fs.h"
 #include "fs/fs_memory.h"
+#include "fs/key_cache.h"
 #include "gen_cpp/BackendService.h"
 #include "gen_cpp/Types_constants.h"
 #include "gutil/strings/split.h"
 #include "gutil/strings/stringpiece.h"
 #include "gutil/strings/substitute.h"
-#include "platform/http/http_client.h"
-#include "platform/key_cache.h"
-#include "platform/thrift_rpc_helper.h"
+#include "http/http_client.h"
+#include "runtime/client_cache.h"
 #include "runtime/current_thread.h"
+#include "runtime/exec_env.h"
+#include "service/backend_options.h"
 #include "storage/chunk_helper.h"
 #include "storage/del_file_stream_converter.h"
 #include "storage/delete_handler.h"
@@ -59,23 +57,11 @@
 #include "storage/snapshot_manager.h"
 #include "storage/tablet_updates.h"
 #include "types/logical_type.h"
+#include "util/defer_op.h"
+#include "util/string_parser.hpp"
+#include "util/thrift_rpc_helper.h"
 
 namespace starrocks::lake {
-namespace {
-
-template <typename EncryptionMetas>
-Status validate_unencrypted_shared_nothing_source(const EncryptionMetas& encryption_metas) {
-    for (const auto& encryption_meta : encryption_metas) {
-        if (!encryption_meta.empty()) {
-            return Status::NotSupported(
-                    "Cross-cluster replication from encrypted shared-nothing source files to shared-data targets is "
-                    "not supported");
-        }
-    }
-    return Status::OK();
-}
-
-} // namespace
 
 Status ReplicationTxnManager::remote_snapshot(const TRemoteSnapshotRequest& request, TSnapshotInfo* src_snapshot_info) {
     if (UNLIKELY(StorageEngine::instance()->bg_worker_stopped())) {
@@ -176,8 +162,7 @@ Status ReplicationTxnManager::remote_snapshot(const TRemoteSnapshotRequest& requ
     return tablet.put_txn_slog(txn_log);
 }
 
-Status ReplicationTxnManager::replicate_snapshot(const TReplicateSnapshotRequest& request,
-                                                 ThreadPool* replicate_file_thread_pool) {
+Status ReplicationTxnManager::replicate_snapshot(const TReplicateSnapshotRequest& request) {
     if (UNLIKELY(StorageEngine::instance()->bg_worker_stopped())) {
         return Status::InternalError("Process is going to quit. The replicate snapshot will stop");
     }
@@ -205,7 +190,7 @@ Status ReplicationTxnManager::replicate_snapshot(const TReplicateSnapshotRequest
     ASSIGN_OR_RETURN(auto tablet_metadata, tablet.get_metadata(request.visible_version));
 
     if (request.src_tablet_type == TTabletType::TABLET_TYPE_LAKE) {
-        auto status = _lake_replication_txn_manager->replicate_lake_remote_storage(request, replicate_file_thread_pool);
+        auto status = _lake_replication_txn_manager->replicate_lake_remote_storage(request);
         if (!status.ok()) {
             LOG(WARNING) << "Failed to replicate lake remote file, tablet_id: " << request.tablet_id
                          << ", txn_id: " << request.transaction_id << ", src_tablet_id: " << request.src_tablet_id
@@ -244,7 +229,7 @@ Status ReplicationTxnManager::replicate_snapshot(const TReplicateSnapshotRequest
 Status ReplicationTxnManager::clear_snapshots(const TxnLogPtr& txn_slog) {
     const auto& txn_meta = txn_slog->op_replication().txn_meta();
     return ReplicationUtils::release_remote_snapshot(txn_meta.src_backend_host(), txn_meta.src_backend_port(),
-                                                     txn_meta.src_snapshot_path(), _snapshot_client);
+                                                     txn_meta.src_snapshot_path());
 }
 
 Status ReplicationTxnManager::make_remote_snapshot(const TRemoteSnapshotRequest& request,
@@ -261,8 +246,7 @@ Status ReplicationTxnManager::make_remote_snapshot(const TRemoteSnapshotRequest&
         // Make snapshot in remote olap engine
         status = ReplicationUtils::make_remote_snapshot(src_be.host, src_be.be_port, request.src_tablet_id,
                                                         request.src_schema_hash, request.src_visible_version, timeout_s,
-                                                        missed_versions, missing_version_ranges, src_snapshot_path,
-                                                        _snapshot_client);
+                                                        missed_versions, missing_version_ranges, src_snapshot_path);
         if (!status.ok()) {
             continue;
         }
@@ -466,11 +450,6 @@ Status ReplicationTxnManager::replicate_remote_snapshot(const TReplicateSnapshot
 Status ReplicationTxnManager::convert_rowset_meta(
         const RowsetMeta& rowset_meta, TTransactionId transaction_id, TxnLogPB::OpWrite* op_write,
         std::unordered_map<std::string, std::pair<std::string, FileEncryptionPair>>* filename_map) {
-    const auto& source_meta = rowset_meta.get_meta_pb_without_schema();
-    RETURN_IF_ERROR(validate_unencrypted_shared_nothing_source(source_meta.segment_encryption_metas()));
-    RETURN_IF_ERROR(validate_unencrypted_shared_nothing_source(source_meta.delfile_encryption_metas()));
-    RETURN_IF_ERROR(validate_unencrypted_shared_nothing_source(source_meta.updatefile_encryption_metas()));
-
     // Convert rowset metadata
     auto* rowset_metadata = op_write->mutable_rowset();
     rowset_metadata->set_id(rowset_meta.get_rowset_seg_id());
@@ -514,8 +493,6 @@ Status ReplicationTxnManager::convert_rowset_meta(
         std::string old_del_filename = rowset_id + '_' + std::to_string(del_id) + ".del";
         std::string new_del_filename = gen_del_filename(transaction_id);
 
-        // No crc32c: the content is produced by the snapshot download (and possibly re-encoded by
-        // DelFileStreamConverter), so it is not known here. Absent means readers skip verification.
         auto* del_meta = op_write->add_dels_meta();
         del_meta->set_name(new_del_filename);
         FileEncryptionPair encryption_pair;
@@ -600,7 +577,6 @@ Status ReplicationTxnManager::convert_dcg_meta_for_non_pk(
                         dcg_pb.column_ids_size(), dcg_pb.column_files_size(), dcg_snapshot_pb.rowset_id(i),
                         dcg_snapshot_pb.segment_id(i), j));
             }
-            RETURN_IF_ERROR(validate_unencrypted_shared_nothing_source(dcg_pb.encryption_metas()));
             for (int k = 0; k < dcg_pb.column_files_size(); k++) {
                 const auto& old_cols_filename = dcg_pb.column_files(k);
                 std::string new_cols_filename = gen_cols_filename(transaction_id);
@@ -642,7 +618,6 @@ Status ReplicationTxnManager::convert_dcg_meta_for_pk(
                         "segment {}",
                         dcg->column_ids().size(), dcg->relative_column_files().size(), segment_id));
             }
-            RETURN_IF_ERROR(validate_unencrypted_shared_nothing_source(dcg->encryption_metas()));
             for (size_t i = 0; i < dcg->relative_column_files().size(); i++) {
                 const auto& old_cols_filename = dcg->relative_column_files()[i];
                 std::string new_cols_filename = gen_cols_filename(transaction_id);

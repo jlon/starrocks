@@ -36,21 +36,20 @@
 
 #include <roaring/roaring.hh>
 
-#include "base/concurrency/once.h"
 #include "column/column_helper.h"
 #include "common/status.h"
 #include "fs/fs.h"
 #include "gen_cpp/segment.pb.h"
+#include "storage/range.h"
+#include "storage/rowset/common.h"
 #include "storage/rowset/indexed_column_reader.h"
-#include "storage_primitive/bitmap_index_iterator.h"
-#include "storage_primitive/range.h"
-#include "storage_primitive/rowid_types.h"
+#include "util/once.h"
 
 namespace starrocks {
 
 class FileSystem;
 class TypeInfo;
-class SegmentBitmapIndexIterator;
+class BitmapIndexIterator;
 class IndexedColumnReader;
 class IndexedColumnIterator;
 
@@ -74,7 +73,6 @@ public:
     // create a new column iterator. Client should delete returned iterator
     // REQUIRES: the index data has been successfully `load()`ed into memory.
     Status new_iterator(const IndexReadOptions& opts, BitmapIndexIterator** iterator);
-    Status new_iterator(const IndexReadOptions& opts, SegmentBitmapIndexIterator** iterator);
 
     // REQUIRES: the index data has been successfully `load()`ed into memory.
     int64_t bitmap_nums() { return _bitmap_column_reader->num_values(); }
@@ -111,7 +109,7 @@ public:
     }
 
 private:
-    friend class SegmentBitmapIndexIterator;
+    friend class BitmapIndexIterator;
 
     void _reset();
 
@@ -131,15 +129,14 @@ private:
     bool _owned_mem_tracker;
 };
 
-class SegmentBitmapIndexIterator : public BitmapIndexIterator {
+class BitmapIndexIterator {
 public:
     using DictPredicate = std::function<StatusOr<ColumnPtr>(const Column&)>;
 
-    SegmentBitmapIndexIterator(BitmapIndexReader* reader, std::unique_ptr<IndexedColumnIterator> dict_iter,
-                               std::unique_ptr<IndexedColumnIterator> bitmap_iter,
-                               std::unique_ptr<IndexedColumnIterator> ngram_dict_iter,
-                               std::unique_ptr<IndexedColumnIterator> ngram_bitmap_iter, bool has_null,
-                               rowid_t num_bitmap)
+    BitmapIndexIterator(BitmapIndexReader* reader, std::unique_ptr<IndexedColumnIterator> dict_iter,
+                        std::unique_ptr<IndexedColumnIterator> bitmap_iter,
+                        std::unique_ptr<IndexedColumnIterator> ngram_dict_iter,
+                        std::unique_ptr<IndexedColumnIterator> ngram_bitmap_iter, bool has_null, rowid_t num_bitmap)
             : _reader(reader),
               _dict_column_iter(std::move(dict_iter)),
               _bitmap_column_iter(std::move(bitmap_iter)),
@@ -148,20 +145,7 @@ public:
               _has_null(has_null),
               _num_bitmap(num_bitmap) {}
 
-    // Virtual so subclasses can hang extra owned state (e.g. a transient
-    // BitmapIndexReader + RandomAccessFile backing an Index Delta Group
-    // .idx file) and release it on destruction.
-    ~SegmentBitmapIndexIterator() override = default;
-
-    // User-declared destructor suppresses the implicit move members, so define
-    // them explicitly; otherwise std::move() silently falls back to copy, which
-    // is deleted because of the unique_ptr members below.
-    SegmentBitmapIndexIterator(SegmentBitmapIndexIterator&&) = default;
-    SegmentBitmapIndexIterator& operator=(SegmentBitmapIndexIterator&&) = default;
-    SegmentBitmapIndexIterator(const SegmentBitmapIndexIterator&) = delete;
-    SegmentBitmapIndexIterator& operator=(const SegmentBitmapIndexIterator&) = delete;
-
-    bool has_null_bitmap() const override { return _has_null; }
+    bool has_null_bitmap() const { return _has_null; }
 
     rowid_t num_dictionaries() const;
 
@@ -182,7 +166,7 @@ public:
     //
     // Returns NotFound when no such value exists (all values in dictionary < `value`).
     // Returns other error status otherwise.
-    Status seek_dictionary(const void* value, bool* exact_match) override;
+    Status seek_dictionary(const void* value, bool* exact_match);
 
     StatusOr<Buffer<rowid_t>> seek_dictionary_by_predicate(const DictPredicate& predicate, const Slice& from_value,
                                                            size_t search_size);
@@ -190,10 +174,18 @@ public:
     Status next_batch_dictionary(size_t* n, Column* column);
 
     // Read bitmap at the given ordinal into `result`.
-    Status read_bitmap(rowid_t ordinal, Roaring* result) override;
+    Status read_bitmap(rowid_t ordinal, Roaring* result);
+
+    Status read_null_bitmap(Roaring* result) {
+        if (has_null_bitmap()) {
+            // null bitmap is always stored at last
+            return read_bitmap(bitmap_nums() - 1, result);
+        }
+        return Status::OK(); // keep result empty
+    }
 
     // Read and union all bitmaps in range [from, to) into `result`
-    Status read_union_bitmap(rowid_t from, rowid_t to, Roaring* result) override;
+    Status read_union_bitmap(rowid_t from, rowid_t to, Roaring* result);
 
     // Read and union all bitmaps in range into `result`.
     //
@@ -201,11 +193,11 @@ public:
     // for (size_t i = 0; i < range.size(); i++) {
     //     read_union_bitmap(range[i].begin(), range[i].end(), &result);
     // }
-    Status read_union_bitmap(const SparseRange<>& range, Roaring* result) override;
+    Status read_union_bitmap(const SparseRange<>& range, Roaring* result);
 
     Status read_union_bitmap(const Buffer<rowid_t>& rowids, Roaring* result);
 
-    rowid_t bitmap_nums() const override { return _num_bitmap; }
+    rowid_t bitmap_nums() const { return _num_bitmap; }
 
     rowid_t ngram_bitmap_nums() const {
         if (_reader != nullptr) {
@@ -214,7 +206,7 @@ public:
         return 0;
     }
 
-    rowid_t current_ordinal() const override { return _current_rowid; }
+    rowid_t current_ordinal() const { return _current_rowid; }
 
 private:
     BitmapIndexReader* _reader;

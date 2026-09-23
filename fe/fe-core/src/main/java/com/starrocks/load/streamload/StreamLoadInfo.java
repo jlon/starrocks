@@ -32,13 +32,11 @@ import com.starrocks.sql.ast.ImportColumnDesc;
 import com.starrocks.sql.ast.ImportColumnsStmt;
 import com.starrocks.sql.ast.ImportMetadataStmt;
 import com.starrocks.sql.ast.ImportWhereStmt;
-import com.starrocks.sql.ast.LoadStmt;
 import com.starrocks.sql.ast.RowDelimiter;
 import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.parser.ParsingException;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TCompressionType;
-import com.starrocks.thrift.TEnvelopeType;
 import com.starrocks.thrift.TFileFormatType;
 import com.starrocks.thrift.TFileType;
 import com.starrocks.thrift.TPartialUpdateMode;
@@ -49,7 +47,6 @@ import com.starrocks.warehouse.cngroup.CRAcquireContext;
 import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.parquet.Strings;
 
 import java.util.List;
 import java.util.Optional;
@@ -66,7 +63,6 @@ public class StreamLoadInfo {
     private boolean stripOuterArray;
     private String jsonPaths;
     private String jsonRoot;
-    private TEnvelopeType envelope = TEnvelopeType.NONE;
 
     // optional
     private List<ImportColumnDesc> columnExprDescs = Lists.newArrayList();
@@ -251,14 +247,6 @@ public class StreamLoadInfo {
         this.jsonRoot = jsonRoot;
     }
 
-    public TEnvelopeType getEnvelope() {
-        return envelope;
-    }
-
-    public void setEnvelope(TEnvelopeType envelope) {
-        this.envelope = envelope;
-    }
-
     public boolean isPartialUpdate() {
         return partialUpdate;
     }
@@ -399,23 +387,6 @@ public class StreamLoadInfo {
             params.getStripOuterArray().ifPresent(value -> stripOuterArray = value);
         }
 
-        Optional<TEnvelopeType> envelopeOpt = params.getEnvelope();
-        if (envelopeOpt.isPresent() && envelopeOpt.get() != TEnvelopeType.NONE) {
-            if (formatType != TFileFormatType.FORMAT_JSON) {
-                throw new StarRocksException(
-                        StreamLoadHttpHeader.HTTP_ENVELOPE + " can only be specified when format is json");
-            }
-            if (!Strings.isNullOrEmpty(jsonRoot)) {
-                throw new StarRocksException(
-                        StreamLoadHttpHeader.HTTP_JSONROOT + " cannot be specified when envelope is set");
-            }
-            if (stripOuterArray) {
-                throw new StarRocksException(
-                        StreamLoadHttpHeader.HTTP_STRIP_OUTER_ARRAY + " cannot be specified when envelope is set");
-            }
-            envelope = envelopeOpt.get();
-        }
-
         params.getTransmissionCompressionType().ifPresent(
                 value -> compressionType = CompressionUtils.findTCompressionByName(value));
         params.getLoadDop().ifPresent(value -> loadParallelRequestNum = value);
@@ -472,9 +443,6 @@ public class StreamLoadInfo {
             jsonRoot = routineLoadJob.getJsonRoot();
         }
         stripOuterArray = routineLoadJob.isStripOuterArray();
-        if (routineLoadJob.getEnvelope().equalsIgnoreCase(LoadStmt.ENVELOPE_DEBEZIUM)) {
-            envelope = TEnvelopeType.DEBEZIUM;
-        }
         partialUpdate = routineLoadJob.isPartialUpdate();
         partialUpdateMode = TPartialUpdateMode.ROW_MODE;
         if (routineLoadJob.getSessionVariables().containsKey(SessionVariable.EXEC_MEM_LIMIT)) {

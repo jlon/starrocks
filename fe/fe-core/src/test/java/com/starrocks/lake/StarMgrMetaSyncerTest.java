@@ -152,15 +152,12 @@ public class StarMgrMetaSyncerTest {
         long tableId = 2L;
         long partitionId = 3L;
         long physicalPartitionId = 4L;
+        long indexId = 5L;
 
 
         new Expectations() {
             {
                 GlobalStateMgr.getCurrentState();
-                minTimes = 0;
-                result = globalStateMgr;
-
-                GlobalStateMgr.getServingState();
                 minTimes = 0;
                 result = globalStateMgr;
             }
@@ -199,12 +196,6 @@ public class StarMgrMetaSyncerTest {
                 globalStateMgr.getColocateTableIndex();
                 minTimes = 0;
                 result = colocateTableIndex;
-
-                // StarMgrMetaSyncer.runAfterLeaseValid() only runs the destructive shard/worker deletion when
-                // the captured leader lease is still valid; keep it valid so tests exercise that path.
-                globalStateMgr.isLeaderLeaseValid((com.starrocks.server.LeaderLease) any);
-                minTimes = 0;
-                result = true;
             }
         };
 
@@ -342,7 +333,7 @@ public class StarMgrMetaSyncerTest {
             }
         };
 
-        starMgrMetaSyncer.runAfterLeaseValid();
+        starMgrMetaSyncer.runAfterCatalogReady();
         Assertions.assertEquals(1, starOSAgent.listShardGroup().size());
     }
 
@@ -405,7 +396,8 @@ public class StarMgrMetaSyncerTest {
             }
         };
 
-        Assertions.assertThrows(DdlException.class, () -> starMgrMetaSyncer.syncTableMeta("db", "table", true));
+        Exception exception =
+                Assertions.assertThrows(DdlException.class, () -> starMgrMetaSyncer.syncTableMeta("db", "table", true));
         starMgrMetaSyncer.syncTableMetaAndColocationInfo();
     }
 
@@ -425,67 +417,8 @@ public class StarMgrMetaSyncerTest {
             }
         };
 
-        Assertions.assertThrows(DdlException.class, () -> starMgrMetaSyncer.syncTableMeta("db", "table", true));
-    }
-
-    @Test
-    public void testSyncTableMetaIgnoresMissingShardGroupForRecycleBinPartition() throws Exception {
-        long dbId = 100;
-        long tableId = 1000;
-        long liveShardGroupId = 10000;
-        long recycledShardGroupId = 10001;
-
-        List<Column> baseSchema = new ArrayList<>();
-        KeysType keysType = KeysType.AGG_KEYS;
-        PartitionInfo partitionInfo = new PartitionInfo(PartitionType.RANGE);
-        DistributionInfo defaultDistributionInfo = new HashDistributionInfo();
-        OlapTable table = new LakeTable(tableId, "lake_table", baseSchema, keysType, partitionInfo, defaultDistributionInfo);
-
-        MaterializedIndex liveIndex = new MaterializedIndex();
-        liveIndex.setShardGroupId(liveShardGroupId);
-        liveIndex.getTablets().add(new LakeTablet(10));
-        Partition livePartition = new Partition(101, 201, "p_live", liveIndex, defaultDistributionInfo);
-        table.addPartition(livePartition);
-
-        MaterializedIndex recycledIndex = new MaterializedIndex();
-        recycledIndex.setShardGroupId(recycledShardGroupId);
-        recycledIndex.getTablets().add(new LakeTablet(20));
-        Partition recycledPartition = new Partition(102, 202, "p_recycled", recycledIndex, defaultDistributionInfo);
-
-        Database db = new Database(dbId, "db");
-        Set<Long> deletedShardIds = new HashSet<>();
-
-        new Expectations(localMetastore) {
-            {
-                localMetastore.getTable(dbId, tableId);
-                result = table;
-
-                localMetastore.getAllPartitionsIncludeRecycleBin(table);
-                result = Lists.newArrayList(livePartition, recycledPartition);
-            }
-        };
-
-        new MockUp<StarOSAgent>() {
-            @Mock
-            public List<Long> listShard(long groupId) throws DdlException {
-                if (groupId == liveShardGroupId) {
-                    return Lists.newArrayList(10L, 11L);
-                }
-                if (groupId == recycledShardGroupId) {
-                    throw new DdlException("arbitrary message",
-                            new StarClientException(StatusCode.NOT_EXIST, "arbitrary cause message"));
-                }
-                return Lists.newArrayList();
-            }
-
-            @Mock
-            public void deleteShards(Set<Long> shardIds) {
-                deletedShardIds.addAll(shardIds);
-            }
-        };
-
-        Assertions.assertTrue(starMgrMetaSyncer.syncTableMetaInternal(db, table, false));
-        Assertions.assertEquals(new HashSet<>(Lists.newArrayList(11L)), deletedShardIds);
+        Exception exception =
+                Assertions.assertThrows(DdlException.class, () -> starMgrMetaSyncer.syncTableMeta("db", "table", true));
     }
 
     @Test
@@ -1362,92 +1295,6 @@ public class StarMgrMetaSyncerTest {
     }
 
     @Test
-    public void testSyncTableMetaProtectsSharedShardGroupInSnapshot() throws Exception {
-        long dbId = 100L;
-        long tableId = 1000L;
-        long parentId = 100L;
-        long oldPhysicalId = 101L;
-        long newPhysicalId = 102L;
-        long sharedGroupId = 200L;
-
-        Database db = new Database(dbId, "db");
-        OlapTable table = new LakeTable(tableId, "table", new ArrayList<>(), KeysType.AGG_KEYS,
-                new PartitionInfo(PartitionType.RANGE), new HashDistributionInfo());
-
-        MaterializedIndex oldIndex = new MaterializedIndex(300L,
-                MaterializedIndex.IndexState.NORMAL, sharedGroupId);
-        oldIndex.addTablet(new LakeTablet(111L), null, false);
-        MaterializedIndex newIndex = new MaterializedIndex(300L,
-                MaterializedIndex.IndexState.NORMAL, sharedGroupId);
-        newIndex.addTablet(new LakeTablet(222L), null, false);
-
-        PhysicalPartition oldPhysical = new PhysicalPartition(oldPhysicalId, parentId, oldIndex);
-        PhysicalPartition newPhysical = new PhysicalPartition(newPhysicalId, parentId, newIndex);
-        final boolean[] protectByIndex = {false};
-        Set<Long> deletedShards = new HashSet<>();
-        List<Partition> metastorePartitions = new ArrayList<>();
-
-        new Expectations(localMetastore) {{
-                localMetastore.getTable(dbId, tableId);
-                minTimes = 0;
-                result = table;
-
-                localMetastore.getAllPartitionsIncludeRecycleBin((OlapTable) any);
-                minTimes = 0;
-                result = metastorePartitions;
-            }};
-
-        new MockUp<StarOSAgent>() {
-            @Mock
-            public List<Long> listShard(long groupId) {
-                return Lists.newArrayList(111L, 222L, 333L);
-            }
-
-            @Mock
-            public void deleteShards(Set<Long> shardIds) {
-                deletedShards.addAll(shardIds);
-            }
-        };
-
-        new MockUp<ClusterSnapshotMgr>() {
-            @Mock
-            public boolean isMaterializedIndexInClusterSnapshotInfo(
-                    long ignoredDbId, long ignoredTableId, long ignoredPartId,
-                    long physicalPartId, long ignoredIndexId) {
-                return protectByIndex[0] && physicalPartId == oldPhysicalId;
-            }
-
-            @Mock
-            public boolean isShardGroupIdInClusterSnapshotInfo(
-                    long ignoredDbId, long ignoredTableId, long ignoredPartId,
-                    long physicalPartId, long ignoredShardGroupId) {
-                return !protectByIndex[0] && physicalPartId == oldPhysicalId;
-            }
-        };
-
-        for (boolean protectByIndexValue : new boolean[] {true, false}) {
-            protectByIndex[0] = protectByIndexValue;
-            for (List<PhysicalPartition> physicalPartitionOrder :
-                    Lists.newArrayList(Lists.newArrayList(oldPhysical, newPhysical),
-                            Lists.newArrayList(newPhysical, oldPhysical))) {
-                metastorePartitions.clear();
-                metastorePartitions.add(new Partition(parentId, "p", new HashDistributionInfo()) {
-                    @Override
-                    public Collection<PhysicalPartition> getSubPartitions() {
-                        return physicalPartitionOrder;
-                    }
-                });
-                deletedShards.clear();
-
-                boolean changed = starMgrMetaSyncer.syncTableMetaInternal(db, table, false);
-
-                Assertions.assertFalse(changed);
-                Assertions.assertTrue(deletedShards.isEmpty());
-            }
-        }
-    }
-
-    @Test
     public void testSyncerRejectByClusterSnapshot() {
         final ClusterSnapshotMgr localClusterSnapshotMgr = new ClusterSnapshotMgr();
         final StarMgrMetaSyncer syncer = new StarMgrMetaSyncer();
@@ -1549,13 +1396,13 @@ public class StarMgrMetaSyncerTest {
 
         long oldConfig = Config.shard_group_clean_threshold_sec;
         Config.shard_group_clean_threshold_sec = 0;
-        syncer.runAfterLeaseValid();
+        syncer.runAfterCatalogReady();
         ClusterSnapshotJob j3 = localClusterSnapshotMgr.createAutomatedSnapshotJob();
         j3.setState(ClusterSnapshotJobState.FINISHED);
-        syncer.runAfterLeaseValid();
+        syncer.runAfterCatalogReady();
         ClusterSnapshotJob j4 = localClusterSnapshotMgr.createAutomatedSnapshotJob();
         j4.setState(ClusterSnapshotJobState.FINISHED);
-        syncer.runAfterLeaseValid();
+        syncer.runAfterCatalogReady();
         Config.shard_group_clean_threshold_sec = oldConfig;
     }
 
@@ -1657,7 +1504,7 @@ public class StarMgrMetaSyncerTest {
             cleanedGroupIds.clear();
             // shardGroupSet1 will be expired
             long begin = System.currentTimeMillis();
-            starMgrMetaSyncer.runAfterLeaseValid();
+            starMgrMetaSyncer.runAfterCatalogReady();
             long elapse = System.currentTimeMillis() - begin;
             LOG.warn("The check takes {}ms", elapse);
             Assertions.assertTrue(elapse < 5000, String.format("The check takes %dms.", elapse));
@@ -1669,7 +1516,7 @@ public class StarMgrMetaSyncerTest {
             cleanedGroupIds.clear();
             // shardGroupSet1 and shardGroupSet2 will be expired
             long begin = System.currentTimeMillis();
-            starMgrMetaSyncer.runAfterLeaseValid();
+            starMgrMetaSyncer.runAfterCatalogReady();
             long elapse = System.currentTimeMillis() - begin;
             LOG.warn("The check takes {}ms", elapse);
             Assertions.assertTrue(elapse < 5000, String.format("The check takes %dms.", elapse));
@@ -1749,7 +1596,7 @@ public class StarMgrMetaSyncerTest {
             Config.shard_group_clean_threshold_sec = 4; // 4 seconds
             cleanedGroupIds.clear();
             long begin = System.currentTimeMillis();
-            starMgrMetaSyncer.runAfterLeaseValid();
+            starMgrMetaSyncer.runAfterCatalogReady();
             long elapse = System.currentTimeMillis() - begin;
             Assertions.assertTrue(elapse >= delayMs.get());
             // Nothing cleaned
@@ -1760,7 +1607,7 @@ public class StarMgrMetaSyncerTest {
             Config.shard_group_clean_threshold_sec = 4; // 4 seconds
             cleanedGroupIds.clear();
             long begin = System.currentTimeMillis();
-            starMgrMetaSyncer.runAfterLeaseValid();
+            starMgrMetaSyncer.runAfterCatalogReady();
             long elapse = System.currentTimeMillis() - begin;
             Assertions.assertTrue(elapse >= delayMs.get());
             // All cleaned
@@ -1872,7 +1719,7 @@ public class StarMgrMetaSyncerTest {
 
         cleanedGroupIds.clear();
         Assertions.assertEquals(0L, groupCounter.get());
-        starMgrMetaSyncer.runAfterLeaseValid();
+        starMgrMetaSyncer.runAfterCatalogReady();
         // all groups should be counted
         Assertions.assertEquals(groupIds.size(), groupCounter.get());
         // Assertions.assertEquals(expectedCleanedGroupIds.size(), cleanedGroupIds.size());
@@ -1927,7 +1774,7 @@ public class StarMgrMetaSyncerTest {
         };
 
         Assertions.assertTrue(deletedShardIds.isEmpty());
-        StarMgrMetaSyncer.dropTabletAndDeleteShard(computeResource, allShardIds, starOSAgent, false, false);
+        StarMgrMetaSyncer.dropTabletAndDeleteShard(computeResource, allShardIds, starOSAgent, false);
         Assertions.assertEquals(successIds.size(), deletedShardIds.size());
         Set<Long> expectedShardIds = new HashSet<>(successIds);
         Assertions.assertEquals(expectedShardIds, deletedShardIds);
@@ -1977,61 +1824,10 @@ public class StarMgrMetaSyncerTest {
         };
 
         Assertions.assertTrue(deletedShardIds.isEmpty());
-        StarMgrMetaSyncer.dropTabletAndDeleteShard(computeResource, shardIds, starOSAgent, false, false);
+        StarMgrMetaSyncer.dropTabletAndDeleteShard(computeResource, shardIds, starOSAgent, false);
         Assertions.assertEquals(shardIds.size(), deletedShardIds.size());
         Set<Long> expectedShardIds = new HashSet<>(shardIds);
         Assertions.assertEquals(expectedShardIds, deletedShardIds);
-    }
-
-    @Test
-    public void testDropTabletAndDeleteShardSendsRangeDistribution() throws StarRocksException {
-        // The flag has to reach BE, because a reshard-consumed tablet whose metadata is already vacuumed
-        // away has no other way to say its files are shared with the tablets that replaced it.
-        ComputeResource computeResource = GlobalStateMgr.getCurrentState().getWarehouseMgr().getBackgroundComputeResource();
-        List<Long> shardIds = Stream.of(2000L, 2001L).collect(Collectors.toList());
-        long computeNodeId = 10001L;
-        ComputeNode computeNode = new ComputeNode(computeNodeId, "127.0.0.1", 9060);
-
-        List<DeleteTabletRequest> captured = Lists.newArrayList();
-        new MockUp<BrpcProxy>() {
-            @Mock
-            public LakeService getLakeService(String host, int port) throws RpcException {
-                return new PseudoBackend.PseudoLakeService();
-            }
-        };
-        new MockUp<PseudoBackend.PseudoLakeService>() {
-            @Mock
-            Future<DeleteTabletResponse> deleteTablet(DeleteTabletRequest request) {
-                captured.add(request);
-                DeleteTabletResponse resp = new DeleteTabletResponse();
-                resp.status = new StatusPB();
-                resp.status.statusCode = TStatusCode.OK.getValue();
-                resp.failedTablets = Lists.newArrayList();
-                return CompletableFuture.completedFuture(resp);
-            }
-        };
-        new Expectations(starOSAgent) {
-            {
-                starOSAgent.getPrimaryComputeNodeIdByShard(anyLong, anyLong);
-                result = computeNodeId;
-                systemInfoService.getBackendOrComputeNode(computeNodeId);
-                result = computeNode;
-            }
-        };
-        new MockUp<StarOSAgent>() {
-            @Mock
-            public void deleteShards(Set<Long> shardIds) throws DdlException {
-            }
-        };
-
-        StarMgrMetaSyncer.dropTabletAndDeleteShard(computeResource, shardIds, starOSAgent, false, true);
-        Assertions.assertEquals(1, captured.size());
-        Assertions.assertEquals(Boolean.TRUE, captured.get(0).isRangeDistribution);
-
-        captured.clear();
-        StarMgrMetaSyncer.dropTabletAndDeleteShard(computeResource, shardIds, starOSAgent, false, false);
-        Assertions.assertEquals(1, captured.size());
-        Assertions.assertEquals(Boolean.FALSE, captured.get(0).isRangeDistribution);
     }
 
     @Test
@@ -2042,6 +1838,7 @@ public class StarMgrMetaSyncerTest {
         long groupIdToClear = shardGroupId + 1;
         // build shardGroupInfos
         List<Long> allShardIds = Stream.of(1000L, 1001L, 1002L, 1003L).collect(Collectors.toList());
+        int numOfShards = allShardIds.size();
         List<ShardGroupInfo> shardGroupInfos = new ArrayList<>();
         ShardGroupInfo info = ShardGroupInfo.newBuilder()
                 .setGroupId(groupIdToClear)
@@ -2103,6 +1900,7 @@ public class StarMgrMetaSyncerTest {
         long groupIdToClear = shardGroupId + 1;
         // build shardGroupInfos
         List<Long> allShardIds = Stream.of(1000L, 1001L, 1002L, 1003L).collect(Collectors.toList());
+        int numOfShards = allShardIds.size();
         List<ShardGroupInfo> shardGroupInfos = new ArrayList<>();
         ShardGroupInfo info = ShardGroupInfo.newBuilder()
                 .setGroupId(groupIdToClear)

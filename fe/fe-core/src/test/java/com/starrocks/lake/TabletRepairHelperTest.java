@@ -31,7 +31,6 @@ import com.starrocks.common.Config;
 import com.starrocks.common.ExceptionChecker;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.jmockit.Deencapsulation;
-import com.starrocks.ha.FrontendNodeType;
 import com.starrocks.lake.TabletRepairHelper.PhysicalPartitionInfo;
 import com.starrocks.proto.GetTabletMetadatasRequest;
 import com.starrocks.proto.GetTabletMetadatasResponse;
@@ -45,7 +44,6 @@ import com.starrocks.proto.TabletMetadataRepairStatus;
 import com.starrocks.proto.TabletResult;
 import com.starrocks.rpc.LakeServiceWithMetrics;
 import com.starrocks.rpc.RpcException;
-import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.ast.AdminRepairTableStmt;
 import com.starrocks.sql.ast.LakeTabletStatus;
@@ -94,9 +92,6 @@ public class TabletRepairHelperTest {
 
     @BeforeEach
     public void beforeEach() {
-        // Repairing tablet metadata takes a gtid, which only the leader may do.
-        GlobalStateMgr.getCurrentState().setFrontendNodeType(FrontendNodeType.LEADER);
-
         nodeToTablets = Maps.newHashMap();
         node = new ComputeNode(1L, "127.0.0.1", 9050);
         node.setBrpcPort(8060);

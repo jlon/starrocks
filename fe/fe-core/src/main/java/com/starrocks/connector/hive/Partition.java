@@ -51,6 +51,7 @@ public class Partition implements PartitionInfo {
         return parameters;
     }
 
+    @Override
     public RemoteFileInputFormat getFileFormat() {
         return inputFormat;
     }
@@ -59,6 +60,7 @@ public class Partition implements PartitionInfo {
         return textFileFormatDesc;
     }
 
+    @Override
     public String getFullPath() {
         return fullPath;
     }

@@ -28,13 +28,15 @@ import com.starrocks.connector.CacheUpdateProcessor;
 import com.starrocks.connector.DatabaseTableName;
 import com.starrocks.connector.iceberg.CachingIcebergCatalog;
 import com.starrocks.connector.iceberg.IcebergCatalog;
-import com.starrocks.connector.paimon.CachingPaimonCatalog;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.MetadataMgr;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.MvUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.paimon.catalog.CachingCatalog;
+import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.Identifier;
 
 import java.util.List;
 import java.util.Map;
@@ -44,6 +46,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 
 public class ConnectorTableMetadataProcessor extends FrontendDaemon {
@@ -56,7 +59,7 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
 
     private final ExecutorService refreshRemoteFileExecutor;
     private final Map<String, IcebergCatalog> cachingIcebergCatalogs = new ConcurrentHashMap<>();
-    private final Map<String, CachingPaimonCatalog> cachingPaimonCatalogs = new ConcurrentHashMap<>();
+    private final Map<String, Catalog> paimonCatalogs = new ConcurrentHashMap<>();
 
     public void registerTableInfo(BaseTableInfo tableInfo) {
         registeredTableInfos.add(tableInfo);
@@ -84,14 +87,14 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
         cachingIcebergCatalogs.remove(catalogName);
     }
 
-    public void registerPaimonCatalog(String catalogName, CachingPaimonCatalog paimonCatalog) {
+    public void registerPaimonCatalog(String catalogName, Catalog paimonCatalog) {
         LOG.info("register to caching paimon catalog on {} in the ConnectorTableMetadataProcessor", catalogName);
-        cachingPaimonCatalogs.put(catalogName, paimonCatalog);
+        paimonCatalogs.put(catalogName, paimonCatalog);
     }
 
     public void unRegisterPaimonCatalog(String catalogName) {
         LOG.info("unregister to caching paimon catalog on {} in the ConnectorTableMetadataProcessor", catalogName);
-        cachingPaimonCatalogs.remove(catalogName);
+        paimonCatalogs.remove(catalogName);
     }
 
     public ConnectorTableMetadataProcessor() {
@@ -111,7 +114,7 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
         if (Config.enable_background_refresh_connector_metadata) {
             refreshCatalogTable();
             refreshIcebergCachingCatalog();
-            refreshPaimonCachingCatalog();
+            refreshPaimonCatalog();
         }
     }
 
@@ -170,18 +173,49 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
     }
 
     @VisibleForTesting
-    public void refreshPaimonCachingCatalog() {
-        List<String> catalogNames = Lists.newArrayList(cachingPaimonCatalogs.keySet());
+    public void refreshPaimonCatalog() {
+        List<String> catalogNames = Lists.newArrayList(paimonCatalogs.keySet());
         for (String catalogName : catalogNames) {
-            CachingPaimonCatalog paimonCatalog = cachingPaimonCatalogs.get(catalogName);
+            Catalog paimonCatalog = paimonCatalogs.get(catalogName);
             if (paimonCatalog == null) {
-                LOG.error("Failed to get cachingPaimonCatalog by catalog {}.", catalogName);
+                LOG.error("Failed to get paimonCatalog by catalog {}.", catalogName);
                 continue;
             }
-            long startTime = System.currentTimeMillis();
-            paimonCatalog.refreshCatalog();
-            LOG.info("Finish to refresh paimon caching catalog {}, cost: {} ms",
-                    catalogName, System.currentTimeMillis() - startTime);
+            LOG.info("Start to refresh paimon catalog {}", catalogName);
+            for (String dbName : paimonCatalog.listDatabases()) {
+                try {
+                    for (String tblName : paimonCatalog.listTables(dbName)) {
+                        try {
+                            List<Future<?>> futures = Lists.newArrayList();
+                            futures.add(refreshRemoteFileExecutor.submit(() ->
+                                    paimonCatalog.invalidateTable(new Identifier(dbName, tblName))
+                            ));
+                            futures.add(refreshRemoteFileExecutor.submit(() ->
+                                    paimonCatalog.getTable(new Identifier(dbName, tblName))
+                            ));
+                            if (paimonCatalog instanceof CachingCatalog) {
+                                futures.add(refreshRemoteFileExecutor.submit(() -> {
+                                            try {
+                                                ((CachingCatalog) paimonCatalog).refreshPartitions(
+                                                        new Identifier(dbName, tblName));
+                                            } catch (Catalog.TableNotExistException e) {
+                                                throw new RuntimeException(e);
+                                            }
+                                        }
+                                ));
+                            }
+                            for (Future<?> future : futures) {
+                                future.get();
+                            }
+                        } catch (Exception e) {
+                            LOG.warn("Failed to refresh paimon table {}.{}, msg: ", dbName, tblName, e);
+                        }
+                    }
+                } catch (Exception e) {
+                    LOG.warn("Failed to list tables in paimon database {}, msg: ", dbName, e);
+                }
+            }
+            LOG.info("Finish to refresh paimon catalog {}", catalogName);
         }
     }
 

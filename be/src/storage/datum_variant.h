@@ -14,14 +14,11 @@
 
 #pragma once
 
-#include <utility>
-
 #include "column/copied_datum.h"
 #include "column/datum_convert.h"
 #include "fmt/format.h"
-#include "runtime/type_info_allocator_adapter.h"
+#include "runtime/types.h"
 #include "storage/types.h"
-#include "types/type_descriptor.h"
 
 namespace starrocks {
 
@@ -29,7 +26,7 @@ class DatumVariant {
 public:
     DatumVariant() = default;
 
-    DatumVariant(TypeInfoPtr type, const Datum& value) : _type(std::move(type)), _value(value) {}
+    DatumVariant(const TypeInfoPtr& type, const Datum& value) : _type(type), _value(value) {}
 
     const TypeInfoPtr& type() const { return _type; }
 
@@ -87,13 +84,7 @@ inline Status DatumVariant::from_proto(const VariantPB& variant_pb, Datum* dest_
     if (variant_pb.variant_type() == VariantTypePB::NULL_VALUE) {
         dest_datum->set_null();
     } else if (variant_pb.variant_type() == VariantTypePB::NORMAL_VALUE && variant_pb.has_value()) {
-        const TypeInfoAllocator* allocator = nullptr;
-        TypeInfoAllocator type_info_allocator;
-        if (mem_pool != nullptr) {
-            type_info_allocator = make_type_info_allocator(mem_pool);
-            allocator = &type_info_allocator;
-        }
-        RETURN_IF_ERROR(datum_from_string(type_info.get(), dest_datum, variant_pb.value(), allocator));
+        RETURN_IF_ERROR(datum_from_string(type_info.get(), dest_datum, variant_pb.value(), mem_pool));
     } else {
         return Status::InvalidArgument("Invalid variant value");
     }

@@ -50,8 +50,7 @@ public class MergeProjectWithChildRule extends TransformationRule {
     @Override
     public boolean check(OptExpression input, OptimizerContext context) {
         if (!input.getInputs().isEmpty() &&
-                (input.getInputs().get(0).getOp().getOpType() == OperatorType.LOGICAL_META_SCAN ||
-                        input.getInputs().get(0).getOp().getOpType() == OperatorType.LOGICAL_AI_PROJECT)) {
+                input.getInputs().get(0).getOp().getOpType() == OperatorType.LOGICAL_META_SCAN) {
             return false;
         } else {
             return true;

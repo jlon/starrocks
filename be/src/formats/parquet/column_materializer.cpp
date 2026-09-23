@@ -18,16 +18,15 @@
 
 #include <algorithm>
 
-#include "base/simd/simd.h"
-#include "base/utility/defer_op.h"
 #include "column/chunk.h"
-#include "common/config_scan_io_fwd.h"
-#include "common/runtime_profile.h"
-#include "exprs/chunk_predicate_evaluator.h"
+#include "common/config.h"
+#include "exec/exec_node.h"
 #include "exprs/expr.h"
 #include "formats/parquet/read_range_planner.h"
-#include "runtime/chunk_helper.h"
 #include "runtime/descriptors.h"
+#include "simd/simd.h"
+#include "storage/chunk_helper.h"
+#include "util/defer_op.h"
 
 namespace starrocks::parquet {
 
@@ -96,12 +95,12 @@ Status ColumnMaterializer::init_read_chunk() {
     for (const auto& column : _param.read_cols) {
         read_slots.emplace_back(column.slot_desc);
     }
-    if (!_param.scan_ctx->reserved_field_slots.empty()) {
-        for (auto* slot : _param.scan_ctx->reserved_field_slots) {
+    if (!_param.scanner_ctx->reserved_field_slots.empty()) {
+        for (auto* slot : _param.scanner_ctx->reserved_field_slots) {
             read_slots.push_back(slot);
         }
     }
-    ASSIGN_OR_RETURN(_read_chunk, RuntimeChunkHelper::new_chunk_checked(read_slots, _param.chunk_size));
+    ASSIGN_OR_RETURN(_read_chunk, ChunkHelper::new_chunk_checked(read_slots, _param.chunk_size));
     return Status::OK();
 }
 
@@ -121,8 +120,8 @@ ChunkPtr ColumnMaterializer::create_read_chunk(const std::vector<SlotId>& slot_i
         ColumnPtr& column = _read_chunk->get_column_by_slot_id(slot_id);
         chunk->append_column(column, slot_id);
     }
-    if (include_reserved_fields && !_param.scan_ctx->reserved_field_slots.empty()) {
-        for (const auto* slot : _param.scan_ctx->reserved_field_slots) {
+    if (include_reserved_fields && !_param.scanner_ctx->reserved_field_slots.empty()) {
+        for (const auto* slot : _param.scanner_ctx->reserved_field_slots) {
             ColumnPtr& column = _read_chunk->get_column_by_slot_id(slot->id());
             chunk->append_column(column, slot->id());
         }
@@ -163,8 +162,8 @@ StatusOr<size_t> ColumnMaterializer::read_active_range_round_by_round(const Rang
     DeferOp defer([&]() { _column_read_order_ctx->update_ctx(round_cost, first_selectivity); });
     size_t hit_count = 0;
 
-    if (!_param.scan_ctx->reserved_field_slots.empty()) {
-        for (const auto* slot : _param.scan_ctx->reserved_field_slots) {
+    if (!_param.scanner_ctx->reserved_field_slots.empty()) {
+        for (const auto* slot : _param.scanner_ctx->reserved_field_slots) {
             SlotId slot_id = slot->id();
             RETURN_IF_ERROR(read_slot(slot_id, range, filter, chunk));
             if (_post_read_conjuncts_by_slot.find(slot_id) != _post_read_conjuncts_by_slot.end()) {
@@ -245,16 +244,16 @@ StatusOr<size_t> ColumnMaterializer::eval_slot_conjuncts(const std::vector<ExprC
     ColumnPtr& column = (*chunk)->get_column_by_slot_id(slot_id);
     temp_chunk->append_column(column, slot_id);
     temp_chunk->set_missing_column_provider((*chunk)->missing_column_provider());
-    return ChunkPredicateEvaluator::eval_conjuncts_into_filter(ctxs, temp_chunk.get(), filter);
+    return ExecNode::eval_conjuncts_into_filter(ctxs, temp_chunk.get(), filter);
 }
 
 Status ColumnMaterializer::read_range(const std::vector<int>& read_columns, const Range<uint64_t>& range,
                                       const Filter* filter, ChunkPtr* chunk, bool ignore_reserved_field) {
-    if (read_columns.empty() && _param.scan_ctx->reserved_field_slots.empty()) {
+    if (read_columns.empty() && _param.scanner_ctx->reserved_field_slots.empty()) {
         return Status::OK();
     }
-    if (!ignore_reserved_field && !_param.scan_ctx->reserved_field_slots.empty()) {
-        for (const auto& slot : _param.scan_ctx->reserved_field_slots) {
+    if (!ignore_reserved_field && !_param.scanner_ctx->reserved_field_slots.empty()) {
+        for (const auto& slot : _param.scanner_ctx->reserved_field_slots) {
             RETURN_IF_ERROR(read_slot(slot->id(), range, filter, chunk));
         }
     }
@@ -271,7 +270,7 @@ Status ColumnMaterializer::fill_dst_column(SlotId slot_id, ColumnPtr& dst, Colum
     return (*_column_readers)[slot_id]->fill_dst_column(dst, src);
 }
 
-void ColumnMaterializer::collect_io_ranges(std::vector<SharedBufferedInputStream::IORange>* ranges, int64_t* end,
+void ColumnMaterializer::collect_io_ranges(std::vector<io::SharedBufferedInputStream::IORange>* ranges, int64_t* end,
                                            ColumnIOTypeFlags types) {
     _read_range_planner->collect_ranges(_active_column_indices, true, ranges, end, types);
     // Still plan lazy column ranges so that materialize_slot() can read them
@@ -376,8 +375,8 @@ Status ColumnMaterializer::emit_physical_columns(ChunkPtr& active_chunk, ChunkPt
                                             active_chunk->get_column_by_slot_id(slot_id)));
         }
     }
-    if (!_param.scan_ctx->reserved_field_slots.empty()) {
-        for (const auto* slot : _param.scan_ctx->reserved_field_slots) {
+    if (!_param.scanner_ctx->reserved_field_slots.empty()) {
+        for (const auto* slot : _param.scanner_ctx->reserved_field_slots) {
             SlotId slot_id = slot->id();
             RETURN_IF_ERROR(fill_dst_column(slot_id, (*dst)->get_column_by_slot_id(slot_id),
                                             active_chunk->get_column_by_slot_id(slot_id)));
@@ -397,10 +396,6 @@ void ColumnMaterializer::classify_columns(const std::unordered_set<SlotId>& defe
     const auto& conjunct_ctxs_by_slot = _param.conjunct_ctxs_by_slot;
     int read_col_idx = 0;
     for (auto& column : _param.read_cols) {
-        if (column.is_extended_variant_virtual) {
-            ++read_col_idx;
-            continue;
-        }
         SlotId slot_id = column.slot_id();
         auto it = conjunct_ctxs_by_slot.find(slot_id);
         if (it != conjunct_ctxs_by_slot.end()) {
@@ -423,7 +418,7 @@ void ColumnMaterializer::classify_columns(const std::unordered_set<SlotId>& defe
                 (*_column_readers)[slot_id]->set_can_lazy_decode(true);
             }
             add_active_column(read_col_idx);
-        } else if (config::parquet_late_materialization_enable && deferred_source_slots.count(slot_id) == 0) {
+        } else if (config::parquet_late_materialization_enable) {
             add_lazy_column(read_col_idx);
             (*_column_readers)[slot_id]->set_can_lazy_decode(true);
         } else {
@@ -432,8 +427,8 @@ void ColumnMaterializer::classify_columns(const std::unordered_set<SlotId>& defe
         ++read_col_idx;
     }
 
-    if (!_param.scan_ctx->reserved_field_slots.empty()) {
-        for (auto* slot : _param.scan_ctx->reserved_field_slots) {
+    if (!_param.scanner_ctx->reserved_field_slots.empty()) {
+        for (auto* slot : _param.scanner_ctx->reserved_field_slots) {
             SlotId slot_id = slot->id();
             auto it = conjunct_ctxs_by_slot.find(slot_id);
             if (it != conjunct_ctxs_by_slot.end()) {

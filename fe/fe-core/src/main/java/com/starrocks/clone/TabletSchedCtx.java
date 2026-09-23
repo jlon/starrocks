@@ -983,8 +983,6 @@ public class TabletSchedCtx implements Comparable<TabletSchedCtx> {
                     .addColumns(indexMeta.getSchema())
                     .setBloomFilterColumnNames(olapTable.getBfColumnIds())
                     .setBloomFilterFpp(olapTable.getBfFpp())
-                    .setZstdCompressionColumns(olapTable.getZstdCompressionColumnIds(),
-                            olapTable.getZstdCompressionPageSizes())
                     .setIndexes(olapTable.getCopiedIndexes())
                     .setSortKeyIndexes(indexMeta.getSortKeyIdxes())
                     .setSortKeyUniqueIds(indexMeta.getSortKeyUniqueIds())
@@ -1229,14 +1227,13 @@ public class TabletSchedCtx implements Comparable<TabletSchedCtx> {
                 reportedTablet.getMin_readable_version());
 
         if (replica.getState() == ReplicaState.CLONE) {
-            GlobalStateMgr.getCurrentState().getEditLog().logAddReplica(info, wal -> {
-                replica.setState(ReplicaState.NORMAL);
-                tablet.setLastFullCloneFinishedTimeMs(System.currentTimeMillis());
-            });
+            replica.setState(ReplicaState.NORMAL);
+            tablet.setLastFullCloneFinishedTimeMs(System.currentTimeMillis());
+            GlobalStateMgr.getCurrentState().getEditLog().logAddReplica(info);
         } else {
             // if in VERSION_INCOMPLETE, replica is not newly created, thus the state is not CLONE
             // so, we keep it state unchanged, and log update replica
-            GlobalStateMgr.getCurrentState().getEditLog().logUpdateReplica(info, wal -> {});
+            GlobalStateMgr.getCurrentState().getEditLog().logUpdateReplica(info);
         }
         return String.format("version:%d min_readable_version:%d", reportedTablet.getVersion(),
                 reportedTablet.getMin_readable_version());

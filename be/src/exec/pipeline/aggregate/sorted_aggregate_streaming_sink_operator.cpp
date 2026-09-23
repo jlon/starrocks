@@ -53,7 +53,7 @@ Status SortedAggregateStreamingSinkOperator::set_finishing(RuntimeState* state) 
     ASSIGN_OR_RETURN(auto res, _aggregator->pull_eos_chunk());
     DCHECK(_accumulator.need_input());
     if (res && !res->is_empty()) {
-        _accumulator.push(res);
+        _accumulator.push(std::move(res));
     }
     _accumulator.finalize();
     while (_accumulator.has_output()) {
@@ -85,7 +85,7 @@ Status SortedAggregateStreamingSinkOperator::push_chunk(RuntimeState* state, con
     }
     DCHECK(_accumulator.need_input());
     if (res && !res->is_empty()) {
-        _accumulator.push(res);
+        _accumulator.push(std::move(res));
     }
     if (_accumulator.has_output()) {
         auto accumulated = std::move(_accumulator.pull());

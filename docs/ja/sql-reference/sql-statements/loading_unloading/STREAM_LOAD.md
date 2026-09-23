@@ -77,7 +77,6 @@ HTTPリクエストメソッドを指定します。これは必須パラメー�
 -H "jsonpaths: [ \"<json_path1>\"[, \"<json_path2>\", ...] ]"
 -H "strip_outer_array: true | false"
 -H "json_root: <json_path>"
--H "envelope: debezium"
 -H "ignore_json_size: true | false"
 -H "compression: <compression_algorithm> | Content-Encoding: <compression_algorithm>"
 ```
@@ -141,13 +140,12 @@ HTTPリクエストメソッドを指定します。これは必須パラメー�
 #### JSONパラメータ
 
 | パラメータ         | 必須 | 説明                                                  |
-| ----------------- | -------- | ------------------------------------------------------------ |
-| jsonpaths         | いいえ       | JSONデータファイルから読み込むキーの名前。このパラメータは、マッチモードを使用してJSONデータを読み込む場合にのみ指定する必要があります。このパラメータの値はJSON形式です。[JSONデータ読み込みの列マッピングを設定する](#configure-column-mapping-for-json-data-loading)を参照してください。           |
-| strip_outer_array | いいえ       | 最外部の配列構造を除去するかどうかを指定します。有効な値: `true` および `false`。デフォルト値: `false`。<br />実際のビジネスシナリオでは、JSONデータが角括弧 `[]` のペアで示される最外部の配列構造を持つ場合があります。この場合、このパラメータを `true` に設定することを推奨します。これにより、システムは最外部の角括弧 `[]` を削除し、各内部配列を個別のデータレコードとして読み込みます。このパラメータを `false` に設定した場合、システムはJSONデータファイル全体を1つの配列として解析し、その配列を単一のデータレコードとして読み込みます。<br />たとえば、JSONデータが`[ {"category" : 1, "author" : 2}, {"category" : 3, "author" : 4} ]`の場合、このパラメータを`true`に設定すると、`{"category" : 1, "author" : 2}`と`{"category" : 3, "author" : 4}`は別々のデータレコードとして解析され、別々のテーブル行に読み込まれます。|
-| json_root         | いいえ       | JSONデータファイルから読み込むJSONデータのルート要素です。このパラメータは、マッチモードを使用してJSONデータを読み込む場合にのみ指定する必要があります。このパラメータの値は有効なJsonPath文字列です。デフォルトでは、このパラメータの値は空であり、JSONデータファイルのすべてのデータが読み込まれることを示します。詳細については、このトピックの[ルート要素を指定したマッチモードでJSONデータを読み込む](#load-json-data-using-matched-mode-with-root-element-specified)セクションを参照してください。|
-| envelope          | いいえ       | JSONデータのCDCエンベロープ形式を指定します。有効な値：`debezium`。デフォルト：未設定（エンベロープラッピングなし）。`debezium`に設定すると、StarRocksは各JSONメッセージをDebezium CDCイベントとして解析します。メッセージには`op`フィールド（`c`=作成、`u`=更新、`d`=削除、`r`=スナップショット読み取り）と、実際の行データを保持する`after`フィールド（c/u/rの場合）または`before`フィールド（dの場合）が含まれている必要があります。`payload`が`null`であるトゥームストーンメッセージは暗黙的にスキップされます。`json_root`または`strip_outer_array`と同時に使用することはできません。|
-| ignore_json_size  | いいえ       | HTTPリクエスト内のJSON本文のサイズを確認するかどうかを指定します。<br />**注意**<br />デフォルトでは、HTTPリクエスト内のJSON本文のサイズは100 MBを超えることができません。JSON本文が100 MBを超える場合、「The size of this batch exceed the max size [104857600] of json type data data [8617627793]. Set ignore_json_size to skip check, although it may lead huge memory consuming.」というエラーが報告されます。このエラーを防ぐには、HTTPリクエストヘッダーに`"ignore_json_size:true"`を追加して、システムがJSON本文のサイズを確認しないように指示できます。|
-| compression, Content-Encoding | いいえ | 送信中にデータに適用されるエンコードアルゴリズムです。サポートされているアルゴリズムには、GZIP、BZIP2、LZ4_FRAME、ZSTDが含まれます。例：`curl --location-trusted -u root:  -v '<table_url>' \-X PUT  -H "expect:100-continue" \-H 'format: json' -H 'compression: lz4_frame'   -T ./b.json.lz4`。|
+| ----------------- | ---- | ----------------------------------------------------- |
+| jsonpaths         | いいえ | JSON データファイルからロードしたいキーの名前。マッチモードを使用して JSON データをロードする場合にのみ、このパラメータを指定する必要があります。このパラメータの値は JSON 形式です。[Configure column mapping for JSON data loading](#configure-column-mapping-for-json-data-loading) を参照してください。           |
+| strip_outer_array | いいえ | 最外部の配列構造を削除するかどうかを指定します。有効な値: `true` および `false`。デフォルト値: `false`。<br/>実際のビジネスシナリオでは、JSON データには `[]` で示される最外部の配列構造がある場合があります。この場合、このパラメータを `true` に設定することをお勧めします。これにより、StarRocks は最外部の `[]` を削除し、各内部配列を別々のデータレコードとしてロードします。このパラメータを `false` に設定すると、StarRocks は JSON データファイル全体を 1 つの配列として解析し、その配列を単一のデータレコードとしてロードします。<br/>たとえば、JSON データが `[ {"category" : 1, "author" : 2}, {"category" : 3, "author" : 4} ]` の場合、このパラメータを `true` に設定すると、`{"category" : 1, "author" : 2}` と `{"category" : 3, "author" : 4}` が別々のデータレコードとして解析され、StarRocks テーブルの別々の行にロードされます。 |
+| json_root         | いいえ | JSON データファイルからロードしたい JSON データのルート要素。マッチモードを使用して JSON データをロードする場合にのみ、このパラメータを指定する必要があります。このパラメータの値は有効な JsonPath 文字列です。デフォルトでは、このパラメータの値は空であり、JSON データファイルのすべてのデータがロードされることを示します。詳細については、このトピックの「[Load JSON data using matched mode with root element specified](#load-json-data-using-matched-mode-with-root-element-specified)」セクションを参照してください。 |
+| ignore_json_size  | いいえ | HTTP リクエスト内の JSON 本体のサイズをチェックするかどうかを指定します。<br/>**注意**<br/>デフォルトでは、HTTP リクエスト内の JSON 本体のサイズは 100 MB を超えることはできません。JSON 本体が 100 MB を超える場合、エラー "The size of this batch exceed the max size [104857600] of json type data data [8617627793]. Set ignore_json_size to skip check, although it may lead huge memory consuming." が報告されます。このエラーを防ぐために、HTTP リクエストヘッダーに `"ignore_json_size:true"` を追加して、StarRocks に JSON 本体のサイズをチェックしないように指示できます。 |
+| compression, Content-Encoding | いいえ | データ転送中に適用されるエンコーディングアルゴリズム。サポートされているアルゴリズムには、GZIP、BZIP2、LZ4_FRAME、および ZSTD が含まれます。例: `curl --location-trusted -u root:  -v '<table_url>' \-X PUT  -H "expect:100-continue" \-H 'format: json' -H 'compression: lz4_frame'   -T ./b.json.lz4`。 |
 
 JSONデータを読み込む際、1つのJSONオブジェクトのサイズが4 GBを超えることはできません。JSONデータファイル内の個々のJSONオブジェクトが4 GBを超える場合、「This parser can't support a document that big.」というエラーが報告されます。
 
@@ -198,12 +196,12 @@ Merge Commit最適化は、単一テーブルに対して**同時** Stream Load�
 
 | パラメータ        | 必須 | 説明                                                  |
 | ---------------- | -------- | ------------------------------------------------------------ |
-| label            | いいえ       | ロードジョブのラベルです。このパラメータを指定しない場合、システムは自動的にロードジョブのラベルを生成します。<br />システムでは、1つのラベルを使用してデータバッチを複数回読み込むことはできません。これにより、同じデータが繰り返し読み込まれることを防ぎます。ラベルの命名規則については、[システム制限](../../System_limit.md)を参照してください。<br />デフォルトでは、システムは最近3日間に正常に完了したロードジョブのラベルを保持します。[FEパラメータ](../../../administration/configuration/FE_parameters/FE_parameters.md) `label_keep_max_second`を使用してラベルの保持期間を変更できます。|
+| label            | いいえ       | ロードジョブのラベルです。このパラメータを指定しない場合、システムは自動的にロードジョブのラベルを生成します。<br />システムでは、1つのラベルを使用してデータバッチを複数回読み込むことはできません。これにより、同じデータが繰り返し読み込まれることを防ぎます。ラベルの命名規則については、[システム制限](../../System_limit.md)を参照してください。<br />デフォルトでは、システムは最近3日間に正常に完了したロードジョブのラベルを保持します。[FEパラメータ](../../../administration/management/FE_configuration.md) `label_keep_max_second`を使用してラベルの保持期間を変更できます。|
 | where            | いいえ       | システムが前処理済みデータをフィルタリングする条件です。システムはWHERE句で指定されたフィルタ条件を満たす前処理済みデータのみを読み込みます。|
 | max_filter_ratio | いいえ       | ロードジョブの最大エラー許容度です。エラー許容度は、ロードジョブが要求するすべてのデータレコードのうち、データ品質の不足によりフィルタリングされるデータレコードの最大割合です。有効な値：`0`から`1`。デフォルト値：`0`。<br />デフォルト値 `0` を保持することをお勧めします。こうすることで、不適格なデータレコードが検出された場合にロードジョブが失敗し、データの正確性が保証されます。<br />不適格なデータレコードを無視したい場合は、このパラメータを `0` より大きい値に設定できます。こうすることで、データファイルに不適格なデータレコードが含まれていても、ロードジョブを成功させることができます。<br />**注意**<br />不適格なデータレコードには、WHERE句によってフィルタリングされたデータレコードは含まれません。 |
 | log_rejected_record_num | いいえ           | ログに記録できる不適格なデータ行の最大数を指定します。このパラメータはv3.1以降でサポートされています。有効な値: `0`、`-1`、および任意のゼロ以外の正の整数。デフォルト値: `0`。<ul><li>値 `0` は、フィルタリングされたデータ行がログに記録されないことを指定します。</li><li>値 `-1` は、フィルタリングされたすべてのデータ行がログに記録されることを指定します。</li><li>`n` などのゼロ以外の正の整数は、各BEまたはCNでフィルタリングされたデータ行を最大 `n` 行までログに記録できることを指定します。</li></ul> |
-| timeout          | いいえ       | ロードジョブのタイムアウト期間。有効な値: `1` ～ `259200`。単位: 秒。デフォルト値: `600`。<br />**注意**`timeout` パラメータに加えて、[FEパラメータ](../../../administration/configuration/FE_parameters/FE_parameters.md) `stream_load_default_timeout_second` を使用して、クラスター内のすべてのStream Loadジョブのタイムアウト期間を一元管理することもできます。`timeout` パラメータを指定した場合、`timeout` パラメータで指定されたタイムアウト期間が優先されます。`timeout` パラメータを指定しない場合、`stream_load_default_timeout_second` パラメータで指定されたタイムアウト期間が優先されます。 |
-| strict_mode      | いいえ       | [ストリクトモード](../../../loading/strict_mode.md)を有効にするかどうかを指定します。有効な値: `true` および `false`。デフォルト値: `false`。値 `true` はストリクトモードを有効にすることを指定し、値 `false` はストリクトモードを無効にすることを指定します。 |
+| timeout          | いいえ       | ロードジョブのタイムアウト期間。有効な値: `1` ～ `259200`。単位: 秒。デフォルト値: `600`。<br />**注意**`timeout` パラメータに加えて、[FEパラメータ](../../../administration/management/FE_configuration.md) `stream_load_default_timeout_second` を使用して、クラスター内のすべてのStream Loadジョブのタイムアウト期間を一元管理することもできます。`timeout` パラメータを指定した場合、`timeout` パラメータで指定されたタイムアウト期間が優先されます。`timeout` パラメータを指定しない場合、`stream_load_default_timeout_second` パラメータで指定されたタイムアウト期間が優先されます。 |
+| strict_mode      | いいえ       | [ストリクトモード](../../../loading/load_concept/strict_mode.md)を有効にするかどうかを指定します。有効な値: `true` および `false`。デフォルト値: `false`。値 `true` はストリクトモードを有効にすることを指定し、値 `false` はストリクトモードを無効にすることを指定します。 |
 | timezone         | いいえ       | ロードジョブで使用されるタイムゾーン。デフォルト値: `Asia/Shanghai`。このパラメータの値は、strftime、alignment_timestamp、from_unixtimeなどの関数が返す結果に影響します。このパラメータで指定されたタイムゾーンはセッションレベルのタイムゾーンです。詳細については、[タイムゾーンの設定](../../../administration/management/timezone.md)を参照してください。 |
 | load_mem_limit   | いいえ       | ロードジョブにプロビジョニングできるメモリの最大量。単位: バイト。デフォルトでは、ロードジョブの最大メモリサイズは2 GBです。このパラメータの値は、各BEまたはCNにプロビジョニングできるメモリの最大量を超えることはできません。 |
 | partial_update | いいえ | 部分更新を使用するかどうか。有効な値: `TRUE` および `FALSE`。デフォルト値: `FALSE`（この機能を無効にすることを示します）。 |

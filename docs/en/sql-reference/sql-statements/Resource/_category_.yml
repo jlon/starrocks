@@ -3,5 +3,4 @@ label: 'Resource'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: Resource
+  type: generated-index

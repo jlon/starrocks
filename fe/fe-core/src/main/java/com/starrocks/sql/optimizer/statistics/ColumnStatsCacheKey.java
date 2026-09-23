@@ -43,11 +43,6 @@ class ColumnStatsCacheKey {
     }
 
     @Override
-    public String toString() {
-        return "tableId: %s, column: %s".formatted(tableId, column);
-    }
-
-    @Override
     public int hashCode() {
         return Objects.hash(tableId, column);
     }

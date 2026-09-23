@@ -31,7 +31,6 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.UserIdentity;
-import com.starrocks.catalog.VirtualColumnRegistry;
 import com.starrocks.common.Config;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
@@ -64,12 +63,12 @@ import com.starrocks.type.DateType;
 import com.starrocks.type.HLLType;
 import com.starrocks.type.IntegerType;
 import com.starrocks.type.ScalarType;
+import com.starrocks.type.StructField;
 import com.starrocks.type.StructType;
 import com.starrocks.type.Type;
 import com.starrocks.type.TypeFactory;
 import com.starrocks.warehouse.Warehouse;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.iceberg.PartitionField;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -141,8 +140,7 @@ public class StatisticUtils {
         context.getSessionVariable().setEnablePlanSerializeConcurrently(false);
         // set the max task num of connector io tasks per scan operator to collectStatsIoTasksPerConnectorOperator,
         // default value is 4, avoid generate too many chunk source for collect stats in BE
-        context.getSessionVariable()
-                .setConnectorIoTasksPerScanOperator(Config.collect_stats_io_tasks_per_connector_operator);
+        context.getSessionVariable().setConnectorIoTasksPerScanOperator(Config.collect_stats_io_tasks_per_connector_operator);
         context.getSessionVariable().setEnableSPMRewrite(false);
         context.getSessionVariable().setSingleNodeExecPlan(false);
         context.getSessionVariable().setEnablePredicateColLateMaterialize(false);
@@ -203,8 +201,7 @@ public class StatisticUtils {
 
         for (String dbName : COLLECT_DATABASES_BLACKLIST) {
             Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
-            if (null != db &&
-                    null != GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getId(), tableId)) {
+            if (null != db && null != GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getId(), tableId)) {
                 return true;
             }
         }
@@ -245,7 +242,7 @@ public class StatisticUtils {
             for (Partition partition : table.getPartitions()) {
                 if (partition.getDefaultPhysicalPartition().getLatestBaseIndex().getTablets().stream()
                         .anyMatch(t -> ((LocalTablet) t).getNormalReplicaBackendIds().isEmpty())) {
-                    LOG.warn("Statistics table {} partition {} has tablets without normal replicas",
+                    LOG.warn("Statistics table {} partition {} has tablets without normal replicas", 
                             tableName, partition.getName());
                     return false;
                 }
@@ -257,7 +254,7 @@ public class StatisticUtils {
     public static LocalDateTime getTableLastUpdateTime(Table table) {
         if (table.isNativeTableOrMaterializedView()) {
             long maxTime = table.getPartitions().stream().flatMap(p -> p.getSubPartitions().stream()).map(
-                    PhysicalPartition::getVisibleVersionTime).max(Long::compareTo).orElse(0L);
+                        PhysicalPartition::getVisibleVersionTime).max(Long::compareTo).orElse(0L);
             return LocalDateTime.ofInstant(Instant.ofEpochMilli(maxTime), Clock.systemDefaultZone().getZone());
         } else {
             try {
@@ -340,41 +337,6 @@ public class StatisticUtils {
             return false;
         }
         return table.getPartitions().stream().noneMatch(Partition::hasData);
-    }
-
-    // True when a partition's name/value directly and losslessly encodes `columnName`'s raw value for
-    // every row in that partition. For such a column, scanning every partition (not just a sampled
-    // subset) gives an exact NDV via the normal HLL merge - see
-    // ExternalSampleStatisticsCollectJob#buildCollectSQLList, which routes exactly these columns through
-    // every partition instead of the sampled ones, and StatisticExecutor, which then records the column's
-    // AnalyzeType as FULL so read-side estimation does not apply sample extrapolation to it.
-    //
-    // - Hive/Hudi/Delta: every partition column qualifies unconditionally - these formats only support
-    //   explicit-value partitioning, there's no transform concept to worry about.
-    // - Iceberg: only a column used as an IDENTITY-transform partition field qualifies. A composite spec
-    //   (e.g. identity(region), identity(dt)) is fine - every row in a partition still shares the same
-    //   value for each individual identity field, we just parse out the specific field for this column
-    //   rather than requiring the whole spec to be exactly one field. Non-identity transforms
-    //   (year/month/day/hour/bucket/truncate) do NOT qualify: the partition value is a function of the
-    //   raw value, not the raw value itself, so many distinct raw values can share one partition value.
-    //   Spec-evolved tables are excluded: partitions written under a different historical spec may not
-    //   carry this column as an identity field at all.
-    static boolean isDirectValuePartitionColumn(Table table, String columnName) {
-        if (table == null) {
-            return false;
-        }
-        if (table.isHiveTable() || table.isHudiTable() || table.isDeltalakeTable()) {
-            return table.getPartitionColumnNames().contains(columnName);
-        }
-        if (!(table instanceof IcebergTable)) {
-            return false;
-        }
-        IcebergTable icebergTable = (IcebergTable) table;
-        if (icebergTable.isUnPartitioned() || icebergTable.hasPartitionTransformedEvolution()) {
-            return false;
-        }
-        PartitionField field = icebergTable.getPartitionField(columnName);
-        return field != null && field.transform().isIdentity();
     }
 
     public static List<ColumnDef> buildStatsColumnDef(String tableName) {
@@ -471,7 +433,7 @@ public class StatisticUtils {
                     new ColumnDef("db_id", new TypeDef(IntegerType.BIGINT)),
                     new ColumnDef("table_name", new TypeDef(tableNameType)),
                     new ColumnDef("column_names", new TypeDef(columnNameType)),
-                    new ColumnDef("ndv", new TypeDef(IntegerType.BIGINT)),
+                    new ColumnDef("ndv",  new TypeDef(IntegerType.BIGINT)),
                     new ColumnDef("update_time", new TypeDef(DateType.DATETIME))
             );
         } else {
@@ -540,10 +502,6 @@ public class StatisticUtils {
             if (column.isHidden()) {
                 continue;
             }
-            // skip virtual columns (e.g. _tablet_id_), they are not real stored columns
-            if (VirtualColumnRegistry.isVirtualColumn(column.getName())) {
-                continue;
-            }
             // generated column doesn't support cross DB use
             if (column.isGeneratedColumn() && column.generatedColumnExprToString() != null) {
                 String expr = column.generatedColumnExprToString().toLowerCase();
@@ -558,10 +516,6 @@ public class StatisticUtils {
             }
         }
         return columns;
-    }
-
-    public static boolean isUnsupportedHistogramColumnType(Type type) {
-        return type.isComplexType() || type.isJsonType() || type.isOnlyMetricType() || type.isBinaryType();
     }
 
     public static double multiplyRowCount(double left, double right) {
@@ -708,51 +662,26 @@ public class StatisticUtils {
     }
 
     public static Type getQueryStatisticsColumnType(Table table, String column) {
-        // Try the full column name first so that columns with dots in their
-        // names (e.g. "customer.is_verified_email") resolve correctly.
-        Column directMatch = table.getColumn(column);
-        if (directMatch != null) {
-            return directMatch.getType();
+        String[] parts = column.split("\\.");
+        Preconditions.checkState(parts.length >= 1);
+        Column base = table.getColumn(parts[0]);
+        if (base == null) {
+            ErrorReport.reportSemanticException(ErrorCode.ERR_BAD_FIELD_ERROR, column, table.getName());
         }
 
-        // Otherwise the name must be a base column followed by struct subfields.
-        // A base column name may itself contain dots, so we try the candidate
-        // base-column prefixes from the longest to the shortest. A prefix is only
-        // accepted when the remaining suffix fully resolves through struct fields,
-        // which both prefers the most specific base column when several prefixes
-        // exist (e.g. "customer" vs "customer.profile") and avoids returning a
-        // wrong type or NPE-ing when a subfield does not exist.
-        for (int end = column.lastIndexOf('.'); end > 0; end = column.lastIndexOf('.', end - 1)) {
-            String prefix = column.substring(0, end);
-            Column base = table.getColumn(prefix);
-            if (base == null) {
-                continue;
-            }
-            Type resolved = resolveStructFields(base.getType(), column.substring(end + 1));
-            if (resolved != null) {
-                return resolved;
+        Type baseColumnType = base.getType();
+        for (int i = 1; i < parts.length; i++) {
+            if (baseColumnType.isStructType()) {
+                StructType baseStructType = (StructType) baseColumnType;
+                StructField field = baseStructType.getField(parts[i]);
+                if (field.getType().isStructType()) {
+                    baseColumnType = field.getType();
+                } else {
+                    return field.getType();
+                }
             }
         }
-
-        ErrorReport.reportSemanticException(ErrorCode.ERR_BAD_FIELD_ERROR, column, table.getName());
-        return null;
-    }
-
-    // Walk a dotted subfield path (e.g. "address.zip") through a struct type.
-    // Returns the resolved leaf type, or null if any segment is not a struct
-    // field, so callers can fall back to trying a different base column.
-    private static Type resolveStructFields(Type type, String fieldPath) {
-        for (String fieldName : fieldPath.split("\\.")) {
-            if (!type.isStructType()) {
-                return null;
-            }
-            StructType structType = (StructType) type;
-            if (!structType.containsField(fieldName)) {
-                return null;
-            }
-            type = structType.getField(fieldName).getType();
-        }
-        return type;
+        return baseColumnType;
     }
 
     // Use murmur3_128 hash function to break up the partitionName as randomly and scattered as possible,

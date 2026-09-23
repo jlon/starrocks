@@ -16,7 +16,7 @@
 
 #include "column/column_helper.h"
 #include "formats/csv/converter.h"
-#include "types/type_descriptor.h"
+#include "runtime/types.h"
 
 namespace starrocks::csv {
 

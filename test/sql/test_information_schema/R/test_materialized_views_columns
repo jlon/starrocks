@@ -49,9 +49,6 @@ where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
 OK
 -- !result
 [UC]t1=select LAST_FRESHNESS_CONFIRMED_AT from information_schema.materialized_views where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
--- result:
-2026-06-10 00:00:00
--- !result
 select sleep(2);
 -- result:
 1
@@ -63,16 +60,9 @@ where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
 -- result:
 OK
 -- !result
-select get_json_string(BASE_TABLE_REFRESH_VERSION_TIMES, '$."default_catalog.db_${uuid0}.ss"')
-       regexp '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$'
-from information_schema.materialized_views
-where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
--- result:
-1
--- !result
 show materialized views where name = 'mv_manual';
 -- result:
-[REGEX]^\d+\tdb_\w+\tmv_manual\tASYNC\ttrue\t[\s\S]*\t\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\t\{"default_catalog\.db_\w+\.ss":"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"\}$
+[REGEX]^\d+\tdb_\w+\tmv_manual\tASYNC\ttrue\t[\s\S]*\t\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$
 -- !result
 set enable_evaluate_schema_scan_rule=true;
 -- result:
@@ -124,6 +114,74 @@ as select event_day, sum(pv) as sum_pv from ss group by event_day;
 select if(RESOURCE_GROUP = 'rg_${uuid0}', 'OK', concat('FAILED: ', RESOURCE_GROUP))
 from information_schema.materialized_views
 where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_rg';
+-- result:
+OK
+-- !result
+[UC]lfca_b2=select LAST_FRESHNESS_CONFIRMED_AT from information_schema.materialized_views where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
+[UC]lrt_b2=select LAST_REFRESH_TIME from information_schema.materialized_views where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
+insert into ss values ('2020-01-16', 3);
+-- result:
+-- !result
+select sleep(2);
+-- result:
+1
+-- !result
+refresh materialized view mv_manual with sync mode;
+select if(LAST_FRESHNESS_CONFIRMED_AT > '${lfca_b2}', 'OK', 'FAILED')
+from information_schema.materialized_views
+where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
+-- result:
+OK
+-- !result
+select if(LAST_REFRESH_TIME > '${lrt_b2}', 'OK', 'FAILED')
+from information_schema.materialized_views
+where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
+-- result:
+OK
+-- !result
+[UC]lfca_skip=select LAST_FRESHNESS_CONFIRMED_AT from information_schema.materialized_views where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
+[UC]lrt_skip=select LAST_REFRESH_TIME from information_schema.materialized_views where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
+select sleep(2);
+-- result:
+1
+-- !result
+refresh materialized view mv_manual with sync mode;
+select if(LAST_FRESHNESS_CONFIRMED_AT > '${lfca_skip}', 'OK', 'FAILED')
+from information_schema.materialized_views
+where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
+-- result:
+OK
+-- !result
+select if(LAST_REFRESH_TIME = '${lrt_skip}', 'OK', 'FAILED')
+from information_schema.materialized_views
+where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
+-- result:
+OK
+-- !result
+[UC]lfca_force=select LAST_FRESHNESS_CONFIRMED_AT from information_schema.materialized_views where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
+select sleep(2);
+-- result:
+1
+-- !result
+refresh materialized view mv_manual force with sync mode;
+select if(LAST_FRESHNESS_CONFIRMED_AT > '${lfca_force}', 'OK', 'FAILED')
+from information_schema.materialized_views
+where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_manual';
+-- result:
+OK
+-- !result
+alter materialized view mv_part set ('partition_refresh_number' = '1');
+-- result:
+-- !result
+[UC]lfca_mb=select LAST_FRESHNESS_CONFIRMED_AT from information_schema.materialized_views where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_part';
+select sleep(2);
+-- result:
+1
+-- !result
+refresh materialized view mv_part force with sync mode;
+select if(LAST_FRESHNESS_CONFIRMED_AT > '${lfca_mb}', 'OK', 'FAILED')
+from information_schema.materialized_views
+where TABLE_SCHEMA = 'db_${uuid0}' and TABLE_NAME = 'mv_part';
 -- result:
 OK
 -- !result

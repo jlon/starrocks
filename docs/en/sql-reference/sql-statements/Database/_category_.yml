@@ -3,5 +3,4 @@ label: 'Database'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: Database
+  type: generated-index

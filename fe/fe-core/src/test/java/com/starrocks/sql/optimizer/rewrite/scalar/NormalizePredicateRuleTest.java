@@ -121,6 +121,8 @@ public class NormalizePredicateRuleTest {
 
     @Test
     public void testCompound1() {
+        NormalizePredicateRule rule = new NormalizePredicateRule();
+        ScalarOperatorRewriteContext context = new ScalarOperatorRewriteContext();
 
         InPredicateOperator inOp = new InPredicateOperator(
                 true,
@@ -137,7 +139,8 @@ public class NormalizePredicateRuleTest {
                 );
 
         ScalarOperatorRewriter operatorRewriter = new ScalarOperatorRewriter();
-        operatorRewriter.rewrite(compoundPredicateOperator, Lists.newArrayList(new NormalizePredicateRule()));
+        ScalarOperator res =
+                operatorRewriter.rewrite(compoundPredicateOperator, Lists.newArrayList(new NormalizePredicateRule()));
     }
 
     @Test
@@ -152,6 +155,7 @@ public class NormalizePredicateRuleTest {
         );
 
         ScalarOperatorRewriter operatorRewriter = new ScalarOperatorRewriter();
-        operatorRewriter.rewrite(inOp, Lists.newArrayList(new NormalizePredicateRule()));
+        ScalarOperator res =
+                operatorRewriter.rewrite(inOp, Lists.newArrayList(new NormalizePredicateRule()));
     }
 }

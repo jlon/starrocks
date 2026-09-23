@@ -37,6 +37,7 @@ package com.starrocks.common.util;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.starrocks.catalog.BrokerMgr;
+import com.starrocks.catalog.FsBroker;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.rpc.ThriftConnectionPool;
@@ -85,14 +86,14 @@ public class BrokerUtilTest {
 
         path = "/path/to/dir/k1/xxx.csv";
         try {
-            BrokerUtil.parseColumnsFromPath(path, Collections.singletonList("k1"));
+            List<String> columns = BrokerUtil.parseColumnsFromPath(path, Collections.singletonList("k1"));
             fail();
         } catch (StarRocksException ignored) {
         }
 
         path = "/path/to/dir/k1=v1/xxx.csv";
         try {
-            BrokerUtil.parseColumnsFromPath(path, Collections.singletonList("k2"));
+            List<String> columns = BrokerUtil.parseColumnsFromPath(path, Collections.singletonList("k2"));
             fail();
         } catch (StarRocksException ignored) {
         }
@@ -117,14 +118,14 @@ public class BrokerUtilTest {
 
         path = "/path/to/dir/k2=v2/a/k1=v1/xxx.csv";
         try {
-            BrokerUtil.parseColumnsFromPath(path, Lists.newArrayList("k1", "k2"));
+            List<String> columns = BrokerUtil.parseColumnsFromPath(path, Lists.newArrayList("k1", "k2"));
             fail();
         } catch (StarRocksException ignored) {
         }
 
         path = "/path/to/dir/k2=v2/k1=v1/xxx.csv";
         try {
-            BrokerUtil.parseColumnsFromPath(path, Lists.newArrayList("k1", "k2", "k3"));
+            List<String> columns = BrokerUtil.parseColumnsFromPath(path, Lists.newArrayList("k1", "k2", "k3"));
             fail();
         } catch (StarRocksException ignored) {
         }
@@ -149,14 +150,14 @@ public class BrokerUtilTest {
 
         path = "/path/to/dir/k2==v2=//k1=v1/";
         try {
-            BrokerUtil.parseColumnsFromPath(path, Lists.newArrayList("k1", "k2"));
+            List<String> columns = BrokerUtil.parseColumnsFromPath(path, Lists.newArrayList("k1", "k2"));
             fail();
         } catch (StarRocksException ignored) {
         }
 
         path = "/path/to/dir/k1=2/a/xxx.csv";
         try {
-            BrokerUtil.parseColumnsFromPath(path, Collections.singletonList("k1"));
+            List<String> columns = BrokerUtil.parseColumnsFromPath(path, Collections.singletonList("k1"));
             fail();
         } catch (StarRocksException ignored) {
             ignored.printStackTrace();
@@ -189,6 +190,7 @@ public class BrokerUtilTest {
         readResponse.opStatus = status;
         readResponse.setData(dppResultStr.getBytes(StandardCharsets.UTF_8));
 
+        FsBroker fsBroker = new FsBroker("127.0.0.1", 99999);
 
         new MockUp<ThriftConnectionPool<TFileBrokerService.Client>>() {
             @Mock
@@ -235,6 +237,7 @@ public class BrokerUtilTest {
         status.statusCode = TBrokerOperationStatusCode.OK;
         openWriterResponse.opStatus = status;
         openWriterResponse.fd = new TBrokerFD(1, 2);
+        FsBroker fsBroker = new FsBroker("127.0.0.1", 99999);
 
         new MockUp<ThriftConnectionPool<TFileBrokerService.Client>>() {
             @Mock
@@ -276,6 +279,7 @@ public class BrokerUtilTest {
         // delete response
         TBrokerOperationStatus status = new TBrokerOperationStatus();
         status.statusCode = TBrokerOperationStatusCode.OK;
+        FsBroker fsBroker = new FsBroker("127.0.0.1", 99999);
 
         new MockUp<ThriftConnectionPool<TFileBrokerService.Client>>() {
             @Mock
@@ -301,7 +305,8 @@ public class BrokerUtilTest {
                     .thenReturn(status);
 
             BrokerDesc brokerDesc = new BrokerDesc("broker0", Maps.newHashMap());
-            "{'label': 'label0'}".getBytes(StandardCharsets.UTF_8);
+            byte[] configs = "{'label': 'label0'}".getBytes(StandardCharsets.UTF_8);
+            String destFilePath = "hdfs://127.0.0.1:10000/starrocks/jobs/1/label6/9/configs/jobconfig.json";
             try {
                 BrokerUtil.deletePath("hdfs://127.0.0.1:10000/starrocks/jobs/1/label6/9", brokerDesc);
             } catch (Exception e) {

@@ -15,15 +15,18 @@
 package com.starrocks.service;
 
 import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 import com.starrocks.authentication.AuthenticationException;
 import com.starrocks.authentication.AuthenticationHandler;
 import com.starrocks.authorization.AccessDeniedException;
 import com.starrocks.authorization.PrivilegeType;
 import com.starrocks.catalog.Database;
+import com.starrocks.catalog.DistributionInfo;
 import com.starrocks.catalog.ExpressionRangePartitionInfo;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
+import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Tablet;
@@ -56,10 +59,13 @@ import com.starrocks.rpc.ThriftRPCRequestExecutor;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.NodeMgr;
 import com.starrocks.sql.analyzer.Authorizer;
+import com.starrocks.sql.ast.AddPartitionClause;
 import com.starrocks.sql.ast.DropTableStmt;
+import com.starrocks.sql.ast.ListPartitionDesc;
+import com.starrocks.sql.ast.PartitionDesc;
+import com.starrocks.sql.ast.SingleItemListPartitionDesc;
 import com.starrocks.system.Frontend;
 import com.starrocks.thrift.FrontendService;
-import com.starrocks.thrift.MVTaskType;
 import com.starrocks.thrift.TAuthInfo;
 import com.starrocks.thrift.TAuthenticateParams;
 import com.starrocks.thrift.TBatchGetTableSchemaRequest;
@@ -77,8 +83,6 @@ import com.starrocks.thrift.TGetDictQueryParamRequest;
 import com.starrocks.thrift.TGetDictQueryParamResponse;
 import com.starrocks.thrift.TGetLoadTxnStatusRequest;
 import com.starrocks.thrift.TGetLoadTxnStatusResult;
-import com.starrocks.thrift.TGetPartitionAccessTimesRequest;
-import com.starrocks.thrift.TGetPartitionAccessTimesResponse;
 import com.starrocks.thrift.TGetProfileRequest;
 import com.starrocks.thrift.TGetProfileResponse;
 import com.starrocks.thrift.TGetTableSchemaRequest;
@@ -102,13 +106,10 @@ import com.starrocks.thrift.TLoadTxnCommitResult;
 import com.starrocks.thrift.TLoadTxnRollbackRequest;
 import com.starrocks.thrift.TLoadTxnRollbackResult;
 import com.starrocks.thrift.TLoadType;
-import com.starrocks.thrift.TMVMaintenanceTasks;
-import com.starrocks.thrift.TMVReportEpochResponse;
 import com.starrocks.thrift.TManualLoadTxnCommitAttachment;
 import com.starrocks.thrift.TMergeCommitRequest;
 import com.starrocks.thrift.TMergeCommitResult;
 import com.starrocks.thrift.TNetworkAddress;
-import com.starrocks.thrift.TPartitionAccessTimeTableRef;
 import com.starrocks.thrift.TPartitionMeta;
 import com.starrocks.thrift.TPartitionMetaRequest;
 import com.starrocks.thrift.TPartitionMetaResponse;
@@ -118,6 +119,7 @@ import com.starrocks.thrift.TRefreshConnectionsRequest;
 import com.starrocks.thrift.TRefreshConnectionsResponse;
 import com.starrocks.thrift.TResourceUsage;
 import com.starrocks.thrift.TSetConfigRequest;
+import com.starrocks.thrift.TSetConfigResponse;
 import com.starrocks.thrift.TStatus;
 import com.starrocks.thrift.TStatusCode;
 import com.starrocks.thrift.TStreamLoadPutRequest;
@@ -149,6 +151,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
+import org.mockito.internal.util.collections.Sets;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -206,16 +209,6 @@ public class FrontendServiceImplTest {
         TImmutablePartitionRequest request = new TImmutablePartitionRequest();
         TImmutablePartitionResult partition = impl.updateImmutablePartition(request);
         Assertions.assertEquals(partition.getStatus().getStatus_code(), TStatusCode.RUNTIME_ERROR);
-    }
-
-    @Test
-    public void testMvReportIsCompatibilityNoOp() throws TException {
-        FrontendServiceImpl impl = new FrontendServiceImpl(exeEnv);
-        TMVMaintenanceTasks request = new TMVMaintenanceTasks();
-        request.setTask_type(MVTaskType.START_MAINTENANCE);
-
-        TMVReportEpochResponse response = impl.mvReport(request);
-        Assertions.assertNotNull(response);
     }
 
     @Test
@@ -863,53 +856,6 @@ public class FrontendServiceImplTest {
     }
 
     @Test
-    public void testLoadTxnRequestsRejectLeaderDemoting() throws Exception {
-        new MockUp<GlobalStateMgr>() {
-            @Mock
-            public boolean isLeader() {
-                return true;
-            }
-
-            @Mock
-            public boolean isLeaderWorkAdmissionOpen() {
-                return false;
-            }
-
-            @Mock
-            public boolean isLeaderDemoting() {
-                return true;
-            }
-        };
-
-        FrontendServiceImpl impl = new FrontendServiceImpl(exeEnv);
-        TLoadTxnBeginRequest beginRequest = new TLoadTxnBeginRequest();
-        beginRequest.setLabel(UUID.randomUUID().toString());
-        beginRequest.setDb("test");
-        beginRequest.setTbl("site_access_auto");
-        beginRequest.setUser("root");
-        beginRequest.setPasswd("");
-        assertLeaderDemotionRejected(impl.loadTxnBegin(beginRequest).getStatus());
-
-        TLoadTxnCommitRequest commitRequest = new TLoadTxnCommitRequest();
-        commitRequest.setDb("test");
-        commitRequest.setTbl("site_access_auto");
-        commitRequest.setTxnId(1001L);
-        assertLeaderDemotionRejected(impl.loadTxnCommit(commitRequest).getStatus());
-        assertLeaderDemotionRejected(impl.loadTxnPrepare(commitRequest).getStatus());
-
-        TLoadTxnRollbackRequest rollbackRequest = new TLoadTxnRollbackRequest();
-        rollbackRequest.setDb("test");
-        rollbackRequest.setTbl("site_access_auto");
-        rollbackRequest.setTxnId(1001L);
-        assertLeaderDemotionRejected(impl.loadTxnRollback(rollbackRequest).getStatus());
-    }
-
-    private static void assertLeaderDemotionRejected(TStatus status) {
-        Assertions.assertEquals(TStatusCode.INTERNAL_ERROR, status.getStatus_code());
-        Assertions.assertTrue(status.getError_msgs().get(0).contains("leader is demoting"));
-    }
-
-    @Test
     public void testCreatePartitionApiSlice() throws TException {
         new MockUp<GlobalTransactionMgr>() {
             @Mock
@@ -1116,79 +1062,6 @@ public class FrontendServiceImplTest {
         Assertions.assertTrue(partition.getStatus().getError_msgs().get(0).contains("max_partitions_in_one_batch"));
 
         Config.max_partitions_in_one_batch = 4096;
-    }
-
-    @Test
-    public void testAutomaticPartitionFirstBatchOverLimitIsRejected() throws TException {
-        // A brand-new transaction has not cached any partition yet, so the per-batch limit must be
-        // evaluated against the partitions this request wants to create, not against the empty cache.
-        TransactionState state = new TransactionState();
-        new MockUp<GlobalTransactionMgr>() {
-            @Mock
-            public TransactionState getTransactionState(long dbId, long transactionId) {
-                return state;
-            }
-        };
-
-        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test");
-        Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), "site_access_month");
-        List<List<String>> partitionValues = Lists.newArrayList();
-        partitionValues.add(Lists.newArrayList("2035-07-01"));
-        partitionValues.add(Lists.newArrayList("2035-08-01"));
-
-        FrontendServiceImpl impl = new FrontendServiceImpl(exeEnv);
-        TCreatePartitionRequest request = new TCreatePartitionRequest();
-        request.setDb_id(db.getId());
-        request.setTable_id(table.getId());
-        request.setPartition_values(partitionValues);
-
-        int partitionNumBefore = ((OlapTable) table).getNumberOfPartitions();
-        long originalLimit = Config.max_partitions_in_one_batch;
-        try {
-            Config.max_partitions_in_one_batch = 1;
-            TCreatePartitionResult result = impl.createPartition(request);
-            Assertions.assertEquals(TStatusCode.RUNTIME_ERROR, result.getStatus().getStatus_code());
-            Assertions.assertTrue(result.getStatus().getError_msgs().get(0).contains("max_partitions_in_one_batch"));
-        } finally {
-            Config.max_partitions_in_one_batch = originalLimit;
-        }
-        // nothing must have been created before the limit kicked in
-        Assertions.assertEquals(partitionNumBefore, ((OlapTable) table).getNumberOfPartitions());
-    }
-
-    @Test
-    public void testAutomaticPartitionReRequestOfCachedPartitionsIsNotDoubleCounted() throws TException {
-        // Re-asking for partitions the same transaction already created must not be counted twice,
-        // otherwise a retrying sink would be rejected once the cache alone reaches the limit.
-        TransactionState state = new TransactionState();
-        new MockUp<GlobalTransactionMgr>() {
-            @Mock
-            public TransactionState getTransactionState(long dbId, long transactionId) {
-                return state;
-            }
-        };
-
-        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test");
-        Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), "site_access_month");
-        List<List<String>> partitionValues = Lists.newArrayList();
-        partitionValues.add(Lists.newArrayList("2036-07-01"));
-        partitionValues.add(Lists.newArrayList("2036-08-01"));
-
-        FrontendServiceImpl impl = new FrontendServiceImpl(exeEnv);
-        TCreatePartitionRequest request = new TCreatePartitionRequest();
-        request.setDb_id(db.getId());
-        request.setTable_id(table.getId());
-        request.setPartition_values(partitionValues);
-
-        long originalLimit = Config.max_partitions_in_one_batch;
-        try {
-            Config.max_partitions_in_one_batch = 2;
-            Assertions.assertEquals(TStatusCode.OK, impl.createPartition(request).getStatus().getStatus_code());
-            // second call asks for exactly the two partitions already cached by this transaction
-            Assertions.assertEquals(TStatusCode.OK, impl.createPartition(request).getStatus().getStatus_code());
-        } finally {
-            Config.max_partitions_in_one_batch = originalLimit;
-        }
     }
 
     private TGetTablesParams buildListTableStatusParam() {
@@ -1677,7 +1550,7 @@ public class FrontendServiceImplTest {
         request.keys = Lists.newArrayList("mysql_server_version");
         request.values = Lists.newArrayList("5.1.1");
 
-        impl.setConfig(request);
+        TSetConfigResponse result = impl.setConfig(request);
         Assertions.assertEquals("5.1.1", GlobalVariable.version);
 
         request.keys = Lists.newArrayList("adaptive_choose_instances_threshold");
@@ -1931,47 +1804,8 @@ public class FrontendServiceImplTest {
         loadRequest.setAuth_code(100);
         loadRequest.setUser("user1");
         loadRequest.setUser_ip("127.0.0.1");
-        impl.streamLoadPut(loadRequest);
-        impl.streamLoadPut(loadRequest);
-    }
-
-    @Test
-    public void testStreamLoadPutPipeline() throws Exception {
-        // Cover the pipeline stream load path (Config.enable_pipeline_stream_load + backend_id):
-        // FrontendServiceImpl pipeline branch -> LoadPlanner (syncStreamLoad) -> StreamLoadScanNode
-        // pinned-BE branch -> DefaultCoordinator.buildLocalStreamLoadParams. The mock cluster has
-        // backend 10001, so the scan is pinned to it and a BE-local params blob is materialized.
-        boolean savedFlag = Config.enable_pipeline_stream_load;
-        Config.enable_pipeline_stream_load = true;
-        try {
-            FrontendServiceImpl impl = new FrontendServiceImpl(exeEnv);
-            TLoadTxnBeginRequest beginRequest = new TLoadTxnBeginRequest();
-            beginRequest.setLabel("test_pipeline_label");
-            beginRequest.setDb("test");
-            beginRequest.setTbl("site_access_empty");
-            beginRequest.setUser("root");
-            beginRequest.setPasswd("");
-            TLoadTxnBeginResult beginResult = impl.loadTxnBegin(beginRequest);
-            Assertions.assertEquals(TStatusCode.OK, beginResult.getStatus().getStatus_code());
-
-            TStreamLoadPutRequest loadRequest = new TStreamLoadPutRequest();
-            loadRequest.setDb("test");
-            loadRequest.setTbl("site_access_empty");
-            loadRequest.setTxnId(beginResult.getTxnId());
-            loadRequest.setLoadId(new TUniqueId(4, 5));
-            loadRequest.setFileType(TFileType.FILE_STREAM);
-            loadRequest.setUser("root");
-            loadRequest.setColumnSeparator(",");
-            // Pin the scan to the mock backend that "owns the pipe".
-            loadRequest.setBackend_id(10001);
-
-            TStreamLoadPutResult result = impl.streamLoadPut(loadRequest);
-            Assertions.assertEquals(TStatusCode.OK, result.getStatus().getStatus_code());
-            Assertions.assertNotNull(result.getParams());
-            Assertions.assertTrue(result.getParams().is_pipeline);
-        } finally {
-            Config.enable_pipeline_stream_load = savedFlag;
-        }
+        TStreamLoadPutResult loadResult1 = impl.streamLoadPut(loadRequest);
+        TStreamLoadPutResult loadResult2 = impl.streamLoadPut(loadRequest);
     }
 
     @Test
@@ -1987,40 +1821,6 @@ public class FrontendServiceImplTest {
         doThrow(new LockTimeoutException("get database read lock timeout")).when(impl).streamLoadPutImpl(any(), any());
         TStreamLoadPutResult result = impl.streamLoadPut(request);
         Assertions.assertEquals(TStatusCode.TIMEOUT, result.status.status_code);
-    }
-
-    @Test
-    public void testIsAuthorizedByInternalToken() {
-        // Direct unit test for the bypass helper -- standalone so each
-        // fall-through branch is pinned without spinning up the full
-        // requestMergeCommit RPC flow.
-        FrontendServiceImpl impl = new FrontendServiceImpl(exeEnv);
-
-        // null / empty token -> always reject, regardless of table.
-        Assertions.assertFalse(impl.isAuthorizedByInternalToken(null, "_statistics_", "rejected_records"));
-        Assertions.assertFalse(impl.isAuthorizedByInternalToken("", "_statistics_", "rejected_records"));
-
-        // Non-empty token + wrong database -> reject (line 1158: a leaked
-        // token cannot be reused on a non-system table).
-        Assertions.assertFalse(impl.isAuthorizedByInternalToken("some-token", "user_db", "rejected_records"));
-
-        // Non-empty token + wrong table in the system database -> reject.
-        Assertions.assertFalse(impl.isAuthorizedByInternalToken("some-token", "_statistics_", "query_history"));
-
-        // Token mismatch on the right table -> reject. NodeMgr.getToken()
-        // in the test fixture returns a real cluster token; we ensure ours
-        // does not equal it.
-        String realToken = GlobalStateMgr.getCurrentState().getNodeMgr().getToken();
-        Assertions.assertNotEquals("attacker-supplied-token", realToken);
-        Assertions.assertFalse(
-                impl.isAuthorizedByInternalToken("attacker-supplied-token", "_statistics_", "rejected_records"));
-
-        // Matching token + matching db/tbl -> accept. This is the only
-        // input combination that should ever return true.
-        if (realToken != null && !realToken.isEmpty()) {
-            Assertions.assertTrue(
-                    impl.isAuthorizedByInternalToken(realToken, "_statistics_", "rejected_records"));
-        }
     }
 
     @Test
@@ -2101,6 +1901,55 @@ public class FrontendServiceImplTest {
         request.tbl = "mv";
         e = Assertions.assertThrows(StarRocksException.class, () -> impl.streamLoadPutImpl(context, request));
         Assertions.assertTrue(e.getMessage().contains("is a materialized view"));
+    }
+
+    @Test
+    public void testAddListPartitionConcurrency() throws StarRocksException, TException {
+        new MockUp<GlobalTransactionMgr>() {
+            @Mock
+            public TransactionState getTransactionState(long dbId, long transactionId) {
+                return new TransactionState();
+            }
+        };
+
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test");
+        Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), "site_access_list");
+        List<List<String>> partitionValues = Lists.newArrayList();
+        List<String> values = Lists.newArrayList();
+        values.add("1990-04-24");
+        partitionValues.add(values);
+        List<String> values2 = Lists.newArrayList();
+        values2.add("1990-04-25");
+        partitionValues.add(values2);
+        FrontendServiceImpl impl = new FrontendServiceImpl(exeEnv);
+        TCreatePartitionRequest request = new TCreatePartitionRequest();
+        request.setDb_id(db.getId());
+        request.setTable_id(table.getId());
+        request.setPartition_values(partitionValues);
+        TCreatePartitionResult partition = impl.createPartition(request);
+
+        GlobalStateMgr currentState = GlobalStateMgr.getCurrentState();
+        Database testDb = currentState.getLocalMetastore().getDb("test");
+        OlapTable olapTable = (OlapTable) GlobalStateMgr.getCurrentState().getLocalMetastore()
+                    .getTable(testDb.getFullName(), "site_access_list");
+        PartitionInfo partitionInfo = olapTable.getPartitionInfo();
+        DistributionInfo defaultDistributionInfo = olapTable.getDefaultDistributionInfo();
+        List<PartitionDesc> partitionDescs = Lists.newArrayList();
+        Partition p19910425 = olapTable.getPartition("p19900425");
+
+        partitionDescs.add(new ListPartitionDesc(Lists.newArrayList("p19900425"),
+                    Lists.newArrayList(new SingleItemListPartitionDesc(true, "p19900425",
+                                Lists.newArrayList("1990-04-25"), Maps.newHashMap()))));
+
+        AddPartitionClause addPartitionClause = new AddPartitionClause(partitionDescs.get(0),
+                    defaultDistributionInfo.toDistributionDesc(table.getIdToColumn()), Maps.newHashMap(), false);
+
+        List<Partition> partitionList = Lists.newArrayList();
+        partitionList.add(p19910425);
+
+        currentState.getLocalMetastore().addListPartitionLog(testDb, olapTable, partitionDescs,
+                    addPartitionClause.isTempPartition(), partitionInfo, partitionList, Sets.newSet("p19900425"));
+
     }
 
     @Test
@@ -2535,52 +2384,4 @@ public class FrontendServiceImplTest {
         // partitions should be empty since the created partition was "dropped" by TTL
         Assertions.assertTrue(result.getPartitions() == null || result.getPartitions().isEmpty());
     }
-
-    @Test
-    public void testGetPartitionAccessTimes() throws Exception {
-        boolean saved = Config.enable_collect_partition_access_time;
-        Config.enable_collect_partition_access_time = true;
-        try {
-            Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test");
-            OlapTable table = (OlapTable) GlobalStateMgr.getCurrentState().getLocalMetastore()
-                    .getTable(db.getFullName(), "site_access_auto");
-
-            // Record a query access on every (logical) partition of the table on this (local) FE.
-            List<Long> partitionIds = table.getPartitions().stream()
-                    .map(Partition::getId).collect(Collectors.toList());
-            GlobalStateMgr.getCurrentState().getPartitionAccessTimeMgr()
-                    .recordAccess(db.getId(), table.getId(), partitionIds);
-
-            FrontendServiceImpl impl = new FrontendServiceImpl(exeEnv);
-
-            // Batch request carrying this table; the handler is lock-free and returns logicalPartitionId -> ms.
-            TGetPartitionAccessTimesRequest request = new TGetPartitionAccessTimesRequest();
-            TPartitionAccessTimeTableRef ref = new TPartitionAccessTimeTableRef();
-            ref.setDb_id(db.getId());
-            ref.setTable_id(table.getId());
-            request.setTables(Lists.newArrayList(ref));
-
-            TGetPartitionAccessTimesResponse response = impl.getPartitionAccessTimes(request);
-            Assertions.assertEquals(TStatusCode.OK, response.getStatus().getStatus_code());
-            Map<Long, Long> accessTimes = response.getPartition_id_to_access_time_ms();
-            Assertions.assertNotNull(accessTimes);
-            Assertions.assertEquals(partitionIds.size(), accessTimes.size());
-            for (Long pid : partitionIds) {
-                Assertions.assertTrue(accessTimes.getOrDefault(pid, 0L) > 0);
-            }
-
-            // A table absent on this FE (bogus id) must not fail: the lock-free snapshot returns empty.
-            TGetPartitionAccessTimesRequest missingReq = new TGetPartitionAccessTimesRequest();
-            TPartitionAccessTimeTableRef missingRef = new TPartitionAccessTimeTableRef();
-            missingRef.setDb_id(db.getId());
-            missingRef.setTable_id(-1L);
-            missingReq.setTables(Lists.newArrayList(missingRef));
-            TGetPartitionAccessTimesResponse missingResp = impl.getPartitionAccessTimes(missingReq);
-            Assertions.assertEquals(TStatusCode.OK, missingResp.getStatus().getStatus_code());
-            Assertions.assertTrue(missingResp.getPartition_id_to_access_time_ms().isEmpty());
-        } finally {
-            Config.enable_collect_partition_access_time = saved;
-        }
-    }
-
 }

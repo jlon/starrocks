@@ -232,11 +232,6 @@ public class AlterHandlerEditLogTest {
         }
 
         @Override
-        protected void resetTransientState() {
-            // Mock: nothing transient to reset.
-        }
-
-        @Override
         protected void runPendingJob() throws AlterCancelException {
             // Mock implementation
         }
@@ -279,11 +274,6 @@ public class AlterHandlerEditLogTest {
         @Override
         public void write(java.io.DataOutput out) throws java.io.IOException {
             // Mock implementation
-        }
-
-        @Override
-        public AlterJobV2 copyForPersist() {
-            return new MockAlterJobV2(getJobId(), getType(), getDbId(), getTableId(), getTableName(), getTimeoutMs());
         }
     }
 }

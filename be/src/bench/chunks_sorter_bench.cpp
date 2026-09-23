@@ -12,30 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <base/testutil/assert.h>
 #include <benchmark/benchmark.h>
 #include <gtest/gtest.h>
+#include <testutil/assert.h>
 
 #include <memory>
 #include <random>
 
 #include "column/chunk.h"
 #include "column/column_helper.h"
-#include "column/sorting/sort_permute.h"
-#include "column/sorting/sorting.h"
 #include "column/vectorized_fwd.h"
-#include "common/config_exec_fwd.h"
-#include "common/runtime_profile.h"
-#include "compute_env/sorting/merge.h"
-#include "compute_env/sorting/sorted_chunks_merger.h"
+#include "common/config.h"
 #include "exec/chunks_sorter.h"
 #include "exec/chunks_sorter_full_sort.h"
 #include "exec/chunks_sorter_heap_sort.h"
 #include "exec/chunks_sorter_topn.h"
+#include "exec/sorting/merge.h"
+#include "exec/sorting/sort_permute.h"
+#include "exec/sorting/sorting.h"
 #include "exprs/column_ref.h"
+#include "runtime/chunk_cursor.h"
 #include "runtime/runtime_state.h"
+#include "runtime/sorted_chunks_merger.h"
+#include "runtime/types.h"
 #include "types/logical_type.h"
-#include "types/type_descriptor.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks {
 
@@ -74,9 +75,7 @@ public:
         for (int32_t x : elements) {
             column->append_datum(Datum((int32_t)x));
         }
-        if (nullable) {
-            down_cast<NullableColumn*>(column.get())->update_has_null();
-        }
+        down_cast<NullableColumn*>(column.get())->update_has_null();
 
         return {std::move(column), std::move(expr)};
     }
@@ -421,8 +420,7 @@ static void do_merge_columnwise(benchmark::State& state, int num_runs, bool null
         null_first.push_back(true);
         map[i] = i;
     }
-    // Chunk only takes its columns by rvalue, so the first chunk needs its own copy of the vector.
-    ChunkPtr chunk1 = std::make_shared<Chunk>(Columns(columns), map);
+    ChunkPtr chunk1 = std::make_shared<Chunk>(columns, map);
     ChunkPtr chunk2 = std::make_shared<Chunk>(std::move(columns), map);
 
     int64_t num_rows = 0;

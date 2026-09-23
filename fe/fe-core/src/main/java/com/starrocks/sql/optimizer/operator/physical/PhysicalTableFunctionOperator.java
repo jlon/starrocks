@@ -20,7 +20,6 @@ import com.starrocks.catalog.TableFunction;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptExpressionVisitor;
 import com.starrocks.sql.optimizer.RowOutputInfo;
-import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.ColumnOutputInfo;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.OperatorVisitor;
@@ -80,13 +79,6 @@ public class PhysicalTableFunctionOperator extends PhysicalOperator {
         outputCols.addAll(outerColRefs);
         outputCols.addAll(fnResultColRefs);
         return outputCols;
-    }
-
-    @Override
-    public ColumnRefSet getUsedColumns() {
-        ColumnRefSet refs = super.getUsedColumns();
-        refs.union(fnParamColumnRefs);
-        return refs;
     }
 
     @Override

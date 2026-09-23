@@ -39,7 +39,7 @@ public:
     S3ZeroCopyIOStream(S3ZeroCopyIOStream&&) = delete;
     void operator=(S3ZeroCopyIOStream&&) = delete;
 
-    ~S3ZeroCopyIOStream() override {
+    ~S3ZeroCopyIOStream() {
         // corresponding new in constructor
         delete rdbuf();
     }

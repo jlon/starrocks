@@ -57,20 +57,13 @@ public class ReplayMetadataMgr extends MetadataMgr {
             new RemoteFileInfo(null, ImmutableList.of(), null));
     private Map<String, Map<String, Map<String, HiveTableInfo>>> replayTableMap;
     private long idGen = 0;
-    // Metadata manager to fall back to for catalogs this legacy resource-mapping replay does not own -- set
-    // to whatever manager was installed before (e.g. the MockedMetadataMgr the modern external-catalog replay
-    // path installed), so a dump that mixes legacy resource-mapping hive tables with modern external-catalog
-    // tables can still resolve the modern ones instead of NPE-ing here.
-    private final MetadataMgr delegate;
 
     public ReplayMetadataMgr(LocalMetastore localMetastore,
                              ConnectorMgr connectorMgr,
                              ResourceMgr resourceMgr,
                              Map<String, Map<String, Map<String, HiveMetaStoreTableDumpInfo>>> externalTableInfoMap,
-                             Map<String, Map<String, ColumnStatistic>> identifyToColumnStats,
-                             MetadataMgr delegate) {
+                             Map<String, Map<String, ColumnStatistic>> identifyToColumnStats) {
         super(localMetastore, new TemporaryTableMgr(), connectorMgr, new ConnectorTblMetaInfoMgr());
-        this.delegate = delegate;
         init(resourceMgr, externalTableInfoMap, identifyToColumnStats);
     }
 
@@ -151,11 +144,7 @@ public class ReplayMetadataMgr extends MetadataMgr {
     @Override
     public List<String> listPartitionNames(String catalogName, String dbName, String tableName,
                                            ConnectorMetadataRequestContext requestContext) {
-        Map<String, Map<String, HiveTableInfo>> dbMap = replayTableMap.get(catalogName);
-        if (dbMap == null && delegate != null) {
-            return delegate.listPartitionNames(catalogName, dbName, tableName, requestContext);
-        }
-        return dbMap.get(dbName).get(tableName).partitionNames;
+        return replayTableMap.get(catalogName).get(dbName).get(tableName).partitionNames;
     }
 
     @Override
@@ -172,22 +161,11 @@ public class ReplayMetadataMgr extends MetadataMgr {
             return super.getTable(context, catalogName, dbName, tblName);
         }
 
-        String originalCatalog = catalogName;
         if (!CatalogMgr.ResourceMappingCatalog.isResourceMappingCatalog(catalogName)) {
             catalogName = CatalogMgr.ResourceMappingCatalog.getResourceMappingCatalogName(catalogName, "hive");
         }
 
-        Map<String, Map<String, HiveTableInfo>> dbMap = replayTableMap.get(catalogName);
-        if (dbMap == null) {
-            // Not a legacy resource-mapping table this mgr owns (e.g. a modern external-catalog table served
-            // by the MockedMetadataMgr the modern replay path installed). Delegate on the original name.
-            if (delegate != null) {
-                return delegate.getTable(context, originalCatalog, dbName, tblName);
-            }
-            return super.getTable(context, InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME, dbName, tblName);
-        }
-        Map<String, HiveTableInfo> tblMap = dbMap.get(dbName);
-        HiveTableInfo tableInfo = tblMap == null ? null : tblMap.get(tblName);
+        HiveTableInfo tableInfo = replayTableMap.get(catalogName).get(dbName).get(tblName);
         if (tableInfo != null) {
             return tableInfo.table;
         }
@@ -202,16 +180,11 @@ public class ReplayMetadataMgr extends MetadataMgr {
                                          Map<ColumnRefOperator, Column> columns,
                                          List<PartitionKey> partitionKeys,
                                          ScalarOperator predicate) {
-        String dbName = (table).getCatalogDBName();
-        String tblName = (table).getCatalogTableName();
-        Map<String, Map<String, HiveTableInfo>> dbMap = replayTableMap.get(catalogName);
-        if (dbMap == null && delegate != null) {
-            // A modern external-catalog table this mgr does not own; defer to the delegate manager.
-            return delegate.getTableStatistics(session, catalogName, table, columns, partitionKeys, predicate);
-        }
         Statistics.Builder resStatistics = Statistics.builder();
         Map<ColumnRefOperator, ColumnStatistic> res = new HashMap<>();
-        Statistics statistics = dbMap.get(dbName).get(tblName).statistics;
+        String dbName = (table).getCatalogDBName();
+        String tblName = (table).getCatalogTableName();
+        Statistics statistics = replayTableMap.get(catalogName).get(dbName).get(tblName).statistics;
         Map<ColumnRefOperator, ColumnStatistic> columnStatisticMap = statistics.getColumnStatistics();
         for (Map.Entry<ColumnRefOperator, ColumnStatistic> entry : columnStatisticMap.entrySet()) {
             for (ColumnRefOperator columnRefOperator : columns.keySet()) {

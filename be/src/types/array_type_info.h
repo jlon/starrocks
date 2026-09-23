@@ -14,12 +14,11 @@
 
 #pragma once
 
-#include "types/type_info.h"
+#include "storage/types.h"
 
 namespace starrocks {
 
 TypeInfoPtr get_array_type_info(const TypeInfoPtr& item_type);
 
 const TypeInfoPtr& get_item_type_info(const TypeInfo* type_info);
-
 } // namespace starrocks

@@ -3,5 +3,4 @@ label: 'JSON Constructor'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: json-constructor-functions
+  type: generated-index

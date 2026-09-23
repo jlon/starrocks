@@ -289,6 +289,6 @@ public class BackendsProcDirTest {
         };
 
         BackendsProcDir dir = new BackendsProcDir(systemInfoService);
-        Assertions.assertDoesNotThrow(dir::fetchResult);
+        ProcResult result = dir.fetchResult();
     }
 }

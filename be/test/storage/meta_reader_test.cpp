@@ -18,19 +18,17 @@
 
 #include <memory>
 
-#include "base/testutil/assert.h"
-#include "base/utility/defer_op.h"
 #include "column/array_column.h"
 #include "column/chunk.h"
 #include "column/fixed_length_column.h"
 #include "column/json_column.h"
 #include "column/nullable_column.h"
-#include "fs/fs_factory.h"
 #include "fs/fs_util.h"
-#include "platform/key_cache.h"
+#include "fs/key_cache.h"
 #include "storage/rowset/column_iterator.h"
-#include "storage/rowset/column_reader.h"
 #include "storage/rowset/segment_writer.h"
+#include "testutil/assert.h"
+#include "util/defer_op.h"
 
 namespace starrocks {
 using fs::delete_file;
@@ -47,7 +45,7 @@ public:
         _tablet_schema = TabletSchema::create(schema_pb);
 
         _segment_name = "segment_meta_collector_test.dat";
-        ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString(_segment_name));
+        ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(_segment_name));
         auto encryption_pair = KeyCache::instance().create_plain_random_encryption_meta_pair().value();
         WritableFileOptions options{.mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE,
                                     .encryption_info = encryption_pair.info};
@@ -159,7 +157,7 @@ TEST_F(SegmentMetaCollecterTest, test_init_with_dcg_options) {
     EXPECT_OK(collecter2.init(&params, non_pk_options));
 }
 
-TEST_F(SegmentMetaCollecterTest, test_collect_flat_json_meta_fields) {
+TEST_F(SegmentMetaCollecterTest, test_collect_dict_json_column_success) {
     // Create a proper JSON segment with actual data
     TabletSchemaPB json_schema_pb;
     auto json_col = json_schema_pb.add_column();
@@ -172,7 +170,7 @@ TEST_F(SegmentMetaCollecterTest, test_collect_flat_json_meta_fields) {
     // Create JSON segment with dictionary-encoded string data
     std::string json_segment_name = "json_meta_collector_test.dat";
     DeferOp defer_op([&] { delete_file(json_segment_name); });
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString(json_segment_name));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(json_segment_name));
     auto encryption_pair = KeyCache::instance().create_plain_random_encryption_meta_pair().value();
     WritableFileOptions file_options{.mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE,
                                      .encryption_info = encryption_pair.info};
@@ -208,25 +206,14 @@ TEST_F(SegmentMetaCollecterTest, test_collect_flat_json_meta_fields) {
     // Open the JSON segment
     FileInfo json_file_info{.path = json_segment_name, .encryption_meta = encryption_pair.encryption_meta};
     ASSIGN_OR_ABORT(auto json_segment, Segment::open(fs, json_file_info, 0, json_tablet_schema));
-    const auto* root_reader = json_segment->column(0);
-    ASSERT_NE(nullptr, root_reader);
-    ASSERT_TRUE(root_reader->is_flat_json());
-    ASSERT_NE(nullptr, root_reader->sub_readers());
 
-    uint64_t child_mem_footprint = 0;
-    for (const auto& child : *root_reader->sub_readers()) {
-        child_mem_footprint += child->total_mem_footprint();
-    }
-    ASSERT_GT(child_mem_footprint, 0);
-    ASSERT_EQ(child_mem_footprint, root_reader->total_mem_footprint());
-
-    // Test metadata collection from a Flat JSON column.
+    // Test dictionary collection from JSON column
     SegmentMetaCollecter json_collecter(json_segment);
     SegmentMetaCollecterParams params;
-    params.fields = {META_DICT_MERGE, META_COLUMN_SIZE};
-    params.field_type = {LogicalType::TYPE_ARRAY, LogicalType::TYPE_BIGINT};
-    params.cids = {0, 0};
-    params.read_page = {true, false};
+    params.fields.emplace_back("dict_merge");
+    params.field_type.emplace_back(LogicalType::TYPE_ARRAY);
+    params.cids.emplace_back(0);
+    params.read_page.emplace_back(true); // Need to read page for JSON
     params.tablet_schema = json_tablet_schema;
     params.low_cardinality_threshold = 1000;
     SegmentMetaCollectOptions options;
@@ -234,13 +221,13 @@ TEST_F(SegmentMetaCollecterTest, test_collect_flat_json_meta_fields) {
     EXPECT_OK(json_collecter.open());
 
     auto array_col = create_array_column();
-    auto column_size_col = Int64Column::create();
-    std::vector<Column*> columns{array_col.get(), column_size_col.get()};
-    ASSERT_OK(json_collecter.collect(&columns));
+
+    // Test successful dictionary collection for JSON column
+    Status status = json_collecter._collect_dict(0, array_col.get(), LogicalType::TYPE_ARRAY);
+
+    ASSERT_OK(status);
     EXPECT_GT(array_col->size(), 0);
     EXPECT_EQ("[['Beijing','Shanghai'], ['Alice','Bob']]", array_col->debug_string());
-    ASSERT_EQ(1, column_size_col->size());
-    EXPECT_EQ(static_cast<int64_t>(root_reader->total_mem_footprint()), column_size_col->get(0).get_int64());
 }
 
 TEST_F(SegmentMetaCollecterTest, test_collect_multiple_meta_fields) {
@@ -265,7 +252,7 @@ TEST_F(SegmentMetaCollecterTest, test_collect_multiple_meta_fields) {
 
     std::string segment_name = "test_multiple_meta_fields.dat";
     DeferOp defer_op([&] { delete_file(segment_name); });
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString(segment_name));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(segment_name));
     auto encryption_pair = KeyCache::instance().create_plain_random_encryption_meta_pair().value();
     WritableFileOptions file_options{.mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE,
                                      .encryption_info = encryption_pair.info};
@@ -488,7 +475,7 @@ TEST_F(SegmentMetaCollecterTest, test_collect_drop_rename_reorder_column_by_uid)
 
     std::string segment_name = "test_schema_change_uid_meta.dat";
     DeferOp defer_op([&] { delete_file(segment_name); });
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString(segment_name));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(segment_name));
     auto encryption_pair = KeyCache::instance().create_plain_random_encryption_meta_pair().value();
     WritableFileOptions file_options{.mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE,
                                      .encryption_info = encryption_pair.info};
@@ -573,7 +560,7 @@ TEST_F(SegmentMetaCollecterTest, test_collect_added_column_default_values) {
 
     std::string segment_name = "test_add_column_default_meta.dat";
     DeferOp defer_op([&] { delete_file(segment_name); });
-    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString(segment_name));
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(segment_name));
     auto encryption_pair = KeyCache::instance().create_plain_random_encryption_meta_pair().value();
     WritableFileOptions file_options{.mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE,
                                      .encryption_info = encryption_pair.info};

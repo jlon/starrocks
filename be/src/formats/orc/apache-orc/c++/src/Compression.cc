@@ -35,7 +35,9 @@
 
 #include "Compression.hh"
 
+#ifdef __x86_64__
 #include <libdeflate.h>
+#endif
 
 #include <algorithm>
 #include <iomanip>
@@ -44,7 +46,7 @@
 #include "Adaptor.hh"
 #include "LzoDecompressor.hh"
 #include "Utils.hh"
-#include "common/config_scan_io_fwd.h"
+#include "common/config.h"
 #include "lz4.h"
 #include "orc/Exceptions.hh"
 #include "wrap/snappy-wrapper.h"
@@ -726,6 +728,7 @@ void BlockDecompressionStream::NextDecompress(const void** data, int* size, size
     outputBufferLength = 0;
 }
 
+#ifdef __x86_64__
 class LibDeflateDecompressionStream : public BlockDecompressionStream {
 public:
     LibDeflateDecompressionStream(std::unique_ptr<SeekableInputStream> inStream, size_t blockSize, MemoryPool& _pool,
@@ -758,6 +761,7 @@ protected:
 private:
     libdeflate_decompressor* decompressor;
 };
+#endif
 
 class SnappyDecompressionStream : public BlockDecompressionStream {
 public:
@@ -1151,6 +1155,7 @@ std::unique_ptr<SeekableInputStream> createDecompressor(CompressionKind kind,
     case CompressionKind_NONE:
         return REDUNDANT_MOVE(input);
     case CompressionKind_ZLIB:
+#ifdef __x86_64__
         if (starrocks::config::enable_orc_libdeflate_decompression) {
             return std::unique_ptr<SeekableInputStream>(
                     new LibDeflateDecompressionStream(std::move(input), blockSize, pool, metrics));
@@ -1158,6 +1163,10 @@ std::unique_ptr<SeekableInputStream> createDecompressor(CompressionKind kind,
             return std::unique_ptr<SeekableInputStream>(
                     new ZlibDecompressionStream(std::move(input), blockSize, pool, metrics));
         }
+#else
+        return std::unique_ptr<SeekableInputStream>(
+                new ZlibDecompressionStream(std::move(input), blockSize, pool, metrics));
+#endif
     case CompressionKind_SNAPPY:
         return std::unique_ptr<SeekableInputStream>(
                 new SnappyDecompressionStream(std::move(input), blockSize, pool, metrics));

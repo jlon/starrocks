@@ -289,7 +289,7 @@ public class Load {
                                    Map<String, Pair<String, List<String>>> columnToHadoopFunction)
             throws StarRocksException {
         initColumns(tbl, columnExprs, columnToHadoopFunction, null, null,
-                null, null, null, false, false, Lists.newArrayList(), false);
+                null, null, null, false, false, Lists.newArrayList());
     }
 
     /*
@@ -307,10 +307,10 @@ public class Load {
                                    Map<String, Expr> exprsByName, DescriptorTable descriptorTable, TupleDescriptor srcTupleDesc,
                                    Map<String, SlotDescriptor> slotDescByName, TBrokerScanRangeParams params,
                                    boolean needInitSlotAndAnalyzeExprs, boolean useVectorizedLoad,
-                                   List<String> columnsFromPath, boolean isLoadJson) throws StarRocksException {
+                                   List<String> columnsFromPath) throws StarRocksException {
         initColumns(tbl, columnExprs, columnToHadoopFunction, exprsByName, descriptorTable,
                 srcTupleDesc, slotDescByName, params, needInitSlotAndAnalyzeExprs, useVectorizedLoad,
-                columnsFromPath, isLoadJson, false, null, null);
+                columnsFromPath, false, false);
     }
 
     public static void initColumns(Table tbl, List<ImportColumnDesc> columnExprs,
@@ -318,11 +318,23 @@ public class Load {
                                    Map<String, Expr> exprsByName, DescriptorTable descriptorTable, TupleDescriptor srcTupleDesc,
                                    Map<String, SlotDescriptor> slotDescByName, TBrokerScanRangeParams params,
                                    boolean needInitSlotAndAnalyzeExprs, boolean useVectorizedLoad,
-                                   List<String> columnsFromPath, boolean isLoadJson,
+                                   List<String> columnsFromPath, boolean isStreamLoadJson,
+                                   boolean partialUpdate) throws StarRocksException {
+        initColumns(tbl, columnExprs, columnToHadoopFunction, exprsByName, descriptorTable,
+                srcTupleDesc, slotDescByName, params, needInitSlotAndAnalyzeExprs, useVectorizedLoad,
+                columnsFromPath, isStreamLoadJson, partialUpdate, null, null);
+    }
+
+    public static void initColumns(Table tbl, List<ImportColumnDesc> columnExprs,
+                                   Map<String, Pair<String, List<String>>> columnToHadoopFunction,
+                                   Map<String, Expr> exprsByName, DescriptorTable descriptorTable, TupleDescriptor srcTupleDesc,
+                                   Map<String, SlotDescriptor> slotDescByName, TBrokerScanRangeParams params,
+                                   boolean needInitSlotAndAnalyzeExprs, boolean useVectorizedLoad,
+                                   List<String> columnsFromPath, boolean isStreamLoadJson,
                                    boolean partialUpdate, String routineLoadSourceType) throws StarRocksException {
         initColumns(tbl, columnExprs, columnToHadoopFunction, exprsByName, descriptorTable,
                 srcTupleDesc, slotDescByName, params, needInitSlotAndAnalyzeExprs, useVectorizedLoad,
-                columnsFromPath, isLoadJson, partialUpdate, routineLoadSourceType, null);
+                columnsFromPath, isStreamLoadJson, partialUpdate, routineLoadSourceType, null);
     }
 
     // `metadata` carries the routine-load INCLUDE METADATA clause; each alias is appended as a hidden
@@ -332,7 +344,7 @@ public class Load {
                                    Map<String, Expr> exprsByName, DescriptorTable descriptorTable, TupleDescriptor srcTupleDesc,
                                    Map<String, SlotDescriptor> slotDescByName, TBrokerScanRangeParams params,
                                    boolean needInitSlotAndAnalyzeExprs, boolean useVectorizedLoad,
-                                   List<String> columnsFromPath, boolean isLoadJson,
+                                   List<String> columnsFromPath, boolean isStreamLoadJson,
                                    boolean partialUpdate, String routineLoadSourceType,
                                    ImportMetadataStmt metadata) throws StarRocksException {
         // check mapping column exist in schema
@@ -435,11 +447,11 @@ public class Load {
                 }
             }
             if (!found) {
-                // stream load and broker load will automatically check __op field in json object if:
-                // 1. stream load and broker load using json
+                // stream load json will automatically check __op field in json object iff:
+                // 1. streamload using json
                 // 2. __op is not specified
                 copiedColumnExprs.add(new ImportColumnDesc(Load.LOAD_OP_COLUMN,
-                        isLoadJson ? null : new IntLiteral(TOpType.UPSERT.getValue())));
+                        isStreamLoadJson ? null : new IntLiteral(TOpType.UPSERT.getValue())));
             }
         }
 
@@ -1244,8 +1256,6 @@ public class Load {
                 return TFileFormatType.FORMAT_JSON;
             } else if (fileFormat.toLowerCase().equals("avro")) {
                 return TFileFormatType.FORMAT_AVRO;
-            } else if (fileFormat.toLowerCase().equals("arrow")) {
-                return TFileFormatType.FORMAT_ARROW;
             }
             // Attention: The compression type of csv format is from the suffix of filename.
         }
@@ -1255,8 +1265,6 @@ public class Load {
             return TFileFormatType.FORMAT_PARQUET;
         } else if (lowerCasePath.endsWith(".orc")) {
             return TFileFormatType.FORMAT_ORC;
-        } else if (lowerCasePath.endsWith(".arrow") || lowerCasePath.endsWith(".ipc")) {
-            return TFileFormatType.FORMAT_ARROW;
         } else if (lowerCasePath.endsWith(".gz")) {
             return TFileFormatType.FORMAT_CSV_GZ;
         } else if (lowerCasePath.endsWith(".bz2")) {

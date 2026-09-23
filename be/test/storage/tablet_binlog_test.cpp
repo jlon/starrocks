@@ -14,8 +14,6 @@
 
 #include <gtest/gtest.h>
 
-#include "column/chunk_factory.h"
-#include "gutil/walltime.h"
 #include "storage/binlog_test_base.h"
 #include "storage/chunk_helper.h"
 #include "storage/rowset/rowset_factory.h"
@@ -80,7 +78,7 @@ public:
         std::unique_ptr<RowsetWriter> writer;
         ASSERT_TRUE(RowsetFactory::create_rowset_writer(writer_context, &writer).ok());
         auto schema = ChunkHelper::convert_schema(tablet->tablet_schema());
-        auto chunk = ChunkFactory::new_chunk(schema, 10);
+        auto chunk = ChunkHelper::new_chunk(schema, 10);
         for (int32_t i = 0, total_rows = 0; i < num_rows_per_segment.size(); i++) {
             int32_t num_rows = num_rows_per_segment[i];
             chunk->reset();

@@ -15,21 +15,16 @@
 package com.starrocks.analysis;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
 import com.starrocks.alter.AlterJobMgr;
 import com.starrocks.alter.AlterMVJobExecutor;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.HashDistributionInfo;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
-import com.starrocks.common.MaterializedViewExceptions;
-import com.starrocks.common.util.PropertyAnalyzer;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.qe.ShowMaterializedViewStatus;
 import com.starrocks.scheduler.Constants;
@@ -43,15 +38,12 @@ import com.starrocks.sql.analyzer.AnalyzeTestUtil;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.AddMVColumnClause;
 import com.starrocks.sql.ast.AlterMaterializedViewStmt;
-import com.starrocks.sql.ast.AlterTableClause;
 import com.starrocks.sql.ast.ColumnDef;
 import com.starrocks.sql.ast.InsertStmt;
 import com.starrocks.sql.ast.RefreshSchemeClause;
-import com.starrocks.sql.ast.ReorderColumnsClause;
 import com.starrocks.sql.ast.SyncRefreshSchemeDesc;
 import com.starrocks.sql.ast.expression.IntLiteral;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.MVTestBase;
-import com.starrocks.sql.parser.SqlParser;
 import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.utframe.UtFrameUtils;
 import mockit.Mock;
@@ -109,47 +101,6 @@ public class AlterMaterializedViewTest extends MVTestBase  {
         starRocksAssert.ddl("alter materialized view mv2 rename mv1;");
         mv1 = starRocksAssert.getMv("test", "mv1");
         Assertions.assertEquals(taskDefinition, mv1.getTaskDefinition());
-    }
-
-    @Test
-    public void testZstdCompressionColumnsRoundTripThroughMvDdl() throws Exception {
-        // ALTER TABLE <mv> SET ("zstd_compression_columns" = ...) is accepted on a view and rewrites
-        // its tablets, so the view's DDL has to carry the property AND the CREATE path has to consume
-        // it -- an emitted DDL that CREATE MATERIALIZED VIEW rejects as an unknown property is worse
-        // than not emitting it. A JSON column cannot be a key, so it is a value column (the only kind
-        // this property accepts) without depending on how the view derives its key columns.
-        starRocksAssert.withMaterializedView("CREATE MATERIALIZED VIEW mv_zstd\n" +
-                "                DISTRIBUTED BY HASH(tc) BUCKETS 1\n" +
-                "                PROPERTIES(\"replication_num\" = \"1\",\n" +
-                "                           \"" + PropertyAnalyzer.PROPERTIES_ZSTD_COMPRESSION_COLUMNS
-                + "\" = \"j:256k\")\n" +
-                "                as select tc, parse_json(ta) as j from tall;\n");
-        try {
-            MaterializedView mv = starRocksAssert.getMv("test", "mv_zstd");
-            Column column = mv.getColumn("j");
-            Assertions.assertNotNull(column);
-            Assertions.assertFalse(column.isKey(), "j must be a value column for this test");
-            Assertions.assertEquals(Sets.newHashSet("j"), mv.getZstdCompressionColumnNames());
-            Assertions.assertEquals(ImmutableMap.of(column.getColumnId(), 262144),
-                    mv.getZstdCompressionPageSizes());
-
-            String ddl = mv.getMaterializedViewDdlStmt(false);
-            Assertions.assertTrue(ddl.contains("\"" + PropertyAnalyzer.PROPERTIES_ZSTD_COMPRESSION_COLUMNS
-                    + "\" = \"j:262144\""), ddl);
-
-            // And that emitted DDL runs again, which is the whole point of echoing it.
-            starRocksAssert.withMaterializedView(ddl.replace("mv_zstd", "mv_zstd_replay"));
-            try {
-                MaterializedView replayed = starRocksAssert.getMv("test", "mv_zstd_replay");
-                Assertions.assertEquals(Sets.newHashSet("j"), replayed.getZstdCompressionColumnNames());
-                Assertions.assertEquals(ImmutableMap.of(replayed.getColumn("j").getColumnId(), 262144),
-                        replayed.getZstdCompressionPageSizes());
-            } finally {
-                starRocksAssert.dropMaterializedView("mv_zstd_replay");
-            }
-        } finally {
-            starRocksAssert.dropMaterializedView("mv_zstd");
-        }
     }
 
     @Test
@@ -245,19 +196,6 @@ public class AlterMaterializedViewTest extends MVTestBase  {
         Assertions.assertTrue(defaultValueDef.expr.isConstant());
         IntLiteral intLiteral = (IntLiteral) defaultValueDef.expr;
         Assertions.assertEquals(10, intLiteral.getValue());
-    }
-
-    @Test
-    public void testAlterMvOrderByParses() throws Exception {
-        String alterMvSql = "alter materialized view mv1 order by (k2, k1)";
-        // Parse-only (no analysis): this asserts the grammar/AST wiring produces a ReorderColumnsClause.
-        // The analyze path (which requires a shared-data range-distributed MV) is covered end-to-end by
-        // AlterMvOrderByAnalyzerTest; analyzing mv1 here would be correctly rejected by that gate.
-        AlterMaterializedViewStmt stmt = (AlterMaterializedViewStmt)
-                SqlParser.parse(alterMvSql, connectContext.getSessionVariable().getSqlMode()).get(0);
-        AlterTableClause clause = stmt.getAlterTableClause();
-        Assertions.assertTrue(clause instanceof ReorderColumnsClause);
-        Assertions.assertEquals(List.of("k2", "k1"), ((ReorderColumnsClause) clause).getColumnsByPos());
     }
 
     // TODO: consider to support alterjob for mv
@@ -680,98 +618,6 @@ public class AlterMaterializedViewTest extends MVTestBase  {
     }
 
     @Test
-    public void testAlterBaseTableWithOptimizeBucketOnly() throws Exception {
-        starRocksAssert.withTable("CREATE TABLE base_t_bucket (\n" +
-                "  k1 int,\n" +
-                "  k2 date,\n" +
-                "  k3 string\n" +
-                "  )\n" +
-                "  DUPLICATE KEY(k1)\n" +
-                "  PARTITION BY RANGE(k2) (\n" +
-                "    PARTITION p1 VALUES [('2020-06-01'), ('2020-07-01')),\n" +
-                "    PARTITION p2 VALUES [('2020-07-01'), ('2020-08-01'))\n" +
-                "  )\n" +
-                "  DISTRIBUTED BY HASH(k1) BUCKETS 3\n" +
-                "  PROPERTIES(\"replication_num\" = \"1\");");
-        starRocksAssert.withMaterializedView("CREATE MATERIALIZED VIEW test_mv_bucket \n" +
-                " REFRESH MANUAL\n" +
-                " AS select sum(k1), k2 from base_t_bucket group by k2;");
-        MaterializedView mv = (MaterializedView) starRocksAssert.getTable(connectContext.getDatabase(), "test_mv_bucket");
-        Assertions.assertTrue(mv.isActive());
-
-        starRocksAssert.ddl("alter table base_t_bucket PARTITION(p1) DISTRIBUTED BY HASH(k1) BUCKETS 1;");
-
-        mv = (MaterializedView) starRocksAssert.getTable(connectContext.getDatabase(), "test_mv_bucket");
-        Assertions.assertTrue(mv.isActive());
-    }
-
-    @Test
-    public void testAlterBaseTableWithOptimizeBucketOnlyUsesTargetPartitionBuckets() throws Exception {
-        starRocksAssert.withTable("CREATE TABLE base_t_bucket_target_partition (\n" +
-                "  k1 int,\n" +
-                "  k2 date,\n" +
-                "  k3 string\n" +
-                "  )\n" +
-                "  DUPLICATE KEY(k1)\n" +
-                "  PARTITION BY RANGE(k2) (\n" +
-                "    PARTITION p1 VALUES [('2020-06-01'), ('2020-07-01')),\n" +
-                "    PARTITION p2 VALUES [('2020-07-01'), ('2020-08-01'))\n" +
-                "  )\n" +
-                "  DISTRIBUTED BY HASH(k1) BUCKETS 3\n" +
-                "  PROPERTIES(\"replication_num\" = \"1\");");
-        starRocksAssert.withMaterializedView("CREATE MATERIALIZED VIEW test_mv_bucket_target_partition \n" +
-                " REFRESH MANUAL\n" +
-                " AS select sum(k1), k2 from base_t_bucket_target_partition group by k2;");
-        MaterializedView mv = (MaterializedView) starRocksAssert.getTable(
-                connectContext.getDatabase(), "test_mv_bucket_target_partition");
-        Assertions.assertTrue(mv.isActive());
-
-        OlapTable table = (OlapTable) starRocksAssert.getTable(
-                connectContext.getDatabase(), "base_t_bucket_target_partition");
-        Column k1 = table.getColumn("k1");
-        table.getPartition("p1").setDistributionInfo(new HashDistributionInfo(1, Lists.newArrayList(k1)));
-        Assertions.assertEquals(3, table.getDefaultDistributionInfo().getBucketNum());
-        Assertions.assertEquals(1, table.getPartition("p1").getDistributionInfo().getBucketNum());
-
-        starRocksAssert.ddl("alter table base_t_bucket_target_partition PARTITION(p1) " +
-                "DISTRIBUTED BY HASH(k1) BUCKETS 3;");
-
-        mv = (MaterializedView) starRocksAssert.getTable(
-                connectContext.getDatabase(), "test_mv_bucket_target_partition");
-        Assertions.assertTrue(mv.isActive());
-    }
-
-    @Test
-    public void testAlterBaseTableWithOptimizeBucketAndSortKey() throws Exception {
-        starRocksAssert.withTable("CREATE TABLE base_t_bucket_sort (\n" +
-                "  k1 int,\n" +
-                "  k2 date,\n" +
-                "  k3 string\n" +
-                "  )\n" +
-                "  DUPLICATE KEY(k1)\n" +
-                "  PARTITION BY RANGE(k2) (\n" +
-                "    PARTITION p1 VALUES [('2020-06-01'), ('2020-07-01')),\n" +
-                "    PARTITION p2 VALUES [('2020-07-01'), ('2020-08-01'))\n" +
-                "  )\n" +
-                "  DISTRIBUTED BY HASH(k1) BUCKETS 3\n" +
-                "  PROPERTIES(\"replication_num\" = \"1\");");
-        starRocksAssert.withMaterializedView("CREATE MATERIALIZED VIEW test_mv_bucket_sort \n" +
-                " REFRESH MANUAL\n" +
-                " AS select sum(k1), k2 from base_t_bucket_sort group by k2;");
-        MaterializedView mv = (MaterializedView) starRocksAssert.getTable(
-                connectContext.getDatabase(), "test_mv_bucket_sort");
-        Assertions.assertTrue(mv.isActive());
-
-        // Changing sort key along with bucket count is NOT a bucket-only optimize, MV should be inactivated.
-        starRocksAssert.ddl("alter table base_t_bucket_sort ORDER BY (k2, k1) " +
-                "DISTRIBUTED BY HASH(k1) BUCKETS 1;");
-
-        mv = (MaterializedView) starRocksAssert.getTable(connectContext.getDatabase(), "test_mv_bucket_sort");
-        Assertions.assertFalse(mv.isActive());
-        Assertions.assertTrue(mv.getInactiveReason().contains("base-table optimized:"));
-    }
-
-    @Test
     public void testMaterializedViewRename() throws Exception {
         starRocksAssert.withTable("CREATE TABLE base_t1 (\n" +
                 "  k1 int,\n" +
@@ -940,43 +786,5 @@ public class AlterMaterializedViewTest extends MVTestBase  {
         Assertions.assertNotEquals(Constants.TaskState.PAUSE, task.getState());
         Assertions.assertTrue(mv.isActive());
         Config.max_task_consecutive_fail_count = 10;
-    }
-
-    @Test
-    public void testMvInactivatedOnIncrementalBreaking() throws Exception {
-        starRocksAssert.withTable("CREATE TABLE base_brk_t1 (\n" +
-                "   k1 int,\n" +
-                "   k2 date,\n" +
-                "   k3 string\n" +
-                ")\n" +
-                "DUPLICATE KEY(k1);");
-        starRocksAssert.withMaterializedView("CREATE MATERIALIZED VIEW test_brk_mv1\n" +
-                "REFRESH MANUAL\n" +
-                "AS select sum(k1), k2, k3 from base_brk_t1 group by k2, k3;");
-        executeInsertSql("insert into base_brk_t1 values(1, '2020-06-02','BJ'),(3,'2020-06-02','SZ');");
-        MaterializedView mv = getMv("test_brk_mv1");
-
-        // Breaking failure must inactivate the MV yet leave the running refresh (and its error) intact.
-        new MockUp<MVTaskRunProcessor>() {
-            @Mock
-            public void executePlan(ExecPlan execPlan, InsertStmt insertStmt) throws Exception {
-                throw new RuntimeException("INCREMENTAL materialized views "
-                        + MaterializedViewExceptions.FE_NON_APPEND_ONLY_MARKER);
-            }
-        };
-        Exception thrown = null;
-        try {
-            refreshMV("test", mv);
-        } catch (Exception e) {
-            thrown = e;
-        }
-
-        Assertions.assertNotNull(thrown, "the breaking error must propagate, not be swallowed");
-        Task task = GlobalStateMgr.getCurrentState().getTaskManager().getTask(mv);
-        Assertions.assertEquals(1, task.getConsecutiveFailCount());
-        Assertions.assertNotEquals(Constants.TaskState.PAUSE, task.getState());
-        Assertions.assertFalse(mv.isActive());
-        Assertions.assertTrue(mv.getInactiveReason().contains("incremental refresh broken"),
-                "inactive reason: " + mv.getInactiveReason());
     }
 }

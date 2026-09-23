@@ -73,8 +73,7 @@ public class SubfieldExpressionCollector extends ScalarOperatorVisitor<Void, Voi
 
     @Override
     public Void visitVariableReference(ColumnRefOperator variable, Void context) {
-        if (variable.getType().isComplexType() || variable.getType().isJsonType()
-                || variable.getType().isVariantType()) {
+        if (variable.getType().isComplexType() || variable.getType().isJsonType()) {
             complexExpressions.add(variable);
         }
         return null;
@@ -124,14 +123,6 @@ public class SubfieldExpressionCollector extends ScalarOperatorVisitor<Void, Voi
             }
             Type[] args = call.getFunction().getArgs();
             if (args.length <= 1 || !args[0].isJsonType() || !args[1].isStringType()) {
-                return visit(call, context);
-            }
-        }
-
-        // Variant function has multi-version, support use path version
-        if (PruneSubfieldRule.SUPPORT_VARIANT_FUNCTIONS.contains(call.getFnName())) {
-            Type[] args = call.getFunction().getArgs();
-            if (args.length <= 1 || !args[0].isVariantType() || !args[1].isStringType()) {
                 return visit(call, context);
             }
         }

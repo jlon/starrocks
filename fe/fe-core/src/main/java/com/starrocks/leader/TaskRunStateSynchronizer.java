@@ -16,7 +16,7 @@
 package com.starrocks.leader;
 
 import com.starrocks.common.FeConstants;
-import com.starrocks.common.util.LeaderDaemon;
+import com.starrocks.common.util.FrontendDaemon;
 import com.starrocks.scheduler.TaskRun;
 import com.starrocks.scheduler.TaskRunManager;
 import com.starrocks.scheduler.TaskRunScheduler;
@@ -29,7 +29,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
-public class TaskRunStateSynchronizer extends LeaderDaemon {
+public class TaskRunStateSynchronizer extends FrontendDaemon {
     public static final Logger LOG = LogManager.getLogger(TaskRunStateSynchronizer.class);
     // taskId -> progress
     private Map<Long, Integer> runningTaskRunProgressMap;
@@ -49,15 +49,7 @@ public class TaskRunStateSynchronizer extends LeaderDaemon {
     }
 
     @Override
-    protected void onStopped() {
-        // runningTaskRunProgressMap is leader-session bookkeeping used to detect progress
-        // deltas worth journalling. The next leader rebuilds it from TaskRunScheduler on
-        // activation; leaving stale entries would suppress the first progress edit log.
-        runningTaskRunProgressMap.clear();
-    }
-
-    @Override
-    protected void runAfterLeaseValid() {
+    protected void runAfterCatalogReady() {
         Set<TaskRun> runningTaskRuns = taskRunScheduler.getCopiedRunningTaskRuns();
         Map<Long, Integer> jobProgressMap = new HashMap<>();
         for (TaskRun taskRun : runningTaskRuns) {

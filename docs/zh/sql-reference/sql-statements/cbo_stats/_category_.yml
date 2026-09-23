@@ -3,5 +3,4 @@ label: 'CBO 统计信息'
 collapsible: true
 collapsed: true
 link:
-  type: doc
-  id: cbo_stats
+  type: generated-index

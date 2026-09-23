@@ -17,17 +17,13 @@
 #include <filesystem>
 #include <memory>
 
-#include "base/testutil/assert.h"
-#include "base/utility/defer_op.h"
-#include "column/chunk_factory.h"
-#include "common/config_compaction_fwd.h"
-#include "common/config_storage_fwd.h"
+#include "common/config.h"
 #include "fs/fs_util.h"
 #include "gen_cpp/AgentService_types.h"
+#include "http/action/compaction_action.h"
 #include "runtime/mem_tracker.h"
 #include "storage/chunk_helper.h"
 #include "storage/compaction.h"
-#include "storage/manual_compaction.h"
 #include "storage/olap_common.h"
 #include "storage/rowset/rowset_factory.h"
 #include "storage/rowset/rowset_writer.h"
@@ -35,6 +31,8 @@
 #include "storage/storage_engine.h"
 #include "storage/tablet.h"
 #include "storage/tablet_manager.h"
+#include "testutil/assert.h"
+#include "util/defer_op.h"
 
 namespace starrocks {
 
@@ -97,7 +95,7 @@ public:
         CHECK_OK(RowsetFactory::create_rowset_writer(writer_context, &writer));
 
         auto schema = ChunkHelper::convert_schema(tablet->thread_safe_get_tablet_schema());
-        auto chunk = ChunkFactory::new_chunk(schema, 128);
+        auto chunk = ChunkHelper::new_chunk(schema, 128);
         auto cols = chunk->columns();
         for (int64_t i = 0; i < 128; ++i) {
             cols[0]->as_mutable_ptr()->append_datum(Datum(static_cast<int64_t>(version * 1000 + i)));
@@ -223,7 +221,8 @@ TEST_F(StorageEngineCompactionTest, test_run_manual_cumulative_compaction) {
     ASSERT_GE(tablet->calc_cumulative_compaction_score(), 2);
 
     int64_t versions_before = tablet->version_count();
-    ASSERT_OK(run_manual_compaction(tablet->tablet_id(), to_string(CompactionType::CUMULATIVE_COMPACTION), ""));
+    const std::string compaction_type = to_string(CompactionType::CUMULATIVE_COMPACTION);
+    ASSERT_OK(CompactionAction::do_compaction(tablet->tablet_id(), compaction_type, ""));
     ASSERT_LT(tablet->version_count(), versions_before);
 }
 
@@ -243,7 +242,7 @@ TEST_F(StorageEngineCompactionTest, test_run_manual_base_compaction) {
     ASSERT_GE(tablet->calc_base_compaction_score(), 2);
 
     int64_t versions_before = tablet->version_count();
-    ASSERT_OK(run_manual_compaction(tablet->tablet_id(), to_string(CompactionType::BASE_COMPACTION), ""));
+    ASSERT_OK(CompactionAction::do_compaction(tablet->tablet_id(), to_string(CompactionType::BASE_COMPACTION), ""));
     ASSERT_LT(tablet->version_count(), versions_before);
 }
 

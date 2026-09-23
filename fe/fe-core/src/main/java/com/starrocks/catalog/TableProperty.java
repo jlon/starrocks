@@ -69,13 +69,10 @@ import org.apache.logging.log4j.Logger;
 import org.threeten.extra.PeriodDuration;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -254,9 +251,6 @@ public class TableProperty implements Writable, GsonPostProcessable {
     // Only meaningful when enablePersistentIndex = true.
     TPersistentIndexType persistentIndexType;
 
-    @SerializedName(value = "lightWeightTabletCreation")
-    private boolean lightWeightTabletCreation = false;
-
     private int primaryIndexCacheExpireSec = 0;
 
     /*
@@ -312,13 +306,6 @@ public class TableProperty implements Writable, GsonPostProcessable {
     private boolean hasDelete = false;
     @SerializedName(value = "hasForbitGlobalDict")
     private boolean hasForbiddenGlobalDict = false;
-
-    // Column-level global-dictionary forbid list: names of low-cardinality string columns whose global
-    // dictionary should not be collected (e.g. "rolling low-cardinality" columns whose dictionary keeps
-    // getting invalidated). Persisted so the decision survives FE restart / leader failover. This is a
-    // pure optimization hint: forbidding a column only skips dict encoding, never affects correctness.
-    @SerializedName(value = "noDictColumns")
-    private Set<String> noDictColumns = new HashSet<>();
 
     @SerializedName(value = "storageInfo")
     private StorageInfo storageInfo;
@@ -403,7 +390,6 @@ public class TableProperty implements Writable, GsonPostProcessable {
         this.mvTransparentRewriteMode = other.mvTransparentRewriteMode;
         this.enablePersistentIndex = other.enablePersistentIndex;
         this.persistentIndexType = other.persistentIndexType;
-        this.lightWeightTabletCreation = other.lightWeightTabletCreation;
         this.primaryIndexCacheExpireSec = other.primaryIndexCacheExpireSec;
         this.storageVolume = other.storageVolume;
         this.storageCoolDownTTL = other.storageCoolDownTTL;
@@ -420,7 +406,6 @@ public class TableProperty implements Writable, GsonPostProcessable {
         this.baseCompactionForbiddenTimeRanges = other.baseCompactionForbiddenTimeRanges;
         this.hasDelete = other.hasDelete;
         this.hasForbiddenGlobalDict = other.hasForbiddenGlobalDict;
-        this.noDictColumns = other.noDictColumns == null ? new HashSet<>() : new HashSet<>(other.noDictColumns);
         if (other.storageInfo != null) {
             this.storageInfo = new StorageInfo(other.storageInfo.getFilePathInfo(), other.storageInfo.getCacheInfo());
         }
@@ -526,9 +511,7 @@ public class TableProperty implements Writable, GsonPostProcessable {
                 buildEnableStatisticCollectOnFirstLoad();
                 buildCloudNativeFastSchemaEvolutionV2();
                 buildLakeCompactionMaxParallel();
-                buildLightWeightTabletCreation();
                 buildTableQueryTimeout();
-                buildDataCacheEnable();
                 buildLoadInitialOpenPartitionNumber();
                 break;
             case OperationType.OP_MODIFY_TABLE_CONSTRAINT_PROPERTY:
@@ -938,12 +921,6 @@ public class TableProperty implements Writable, GsonPostProcessable {
         return this;
     }
 
-    public TableProperty buildLightWeightTabletCreation() {
-        lightWeightTabletCreation = Boolean.parseBoolean(
-                properties.getOrDefault(PropertyAnalyzer.PROPERTIES_LIGHT_WEIGHT_TABLET_CREATION, "false"));
-        return this;
-    }
-
     public TableProperty buildPrimaryIndexCacheExpireSec() {
         primaryIndexCacheExpireSec = Integer.parseInt(properties.getOrDefault(
                 PropertyAnalyzer.PROPERTIES_PRIMARY_INDEX_CACHE_EXPIRE_SEC, "0"));
@@ -1012,19 +989,6 @@ public class TableProperty implements Writable, GsonPostProcessable {
         if (properties.containsKey(PropertyAnalyzer.PROPERTIES_FILE_BUNDLING)) {
             fileBundling = Boolean.parseBoolean(
                     properties.getOrDefault(PropertyAnalyzer.PROPERTIES_FILE_BUNDLING, "false"));
-        }
-        return this;
-    }
-
-    public TableProperty buildDataCacheEnable() {
-        if (properties.containsKey(PropertyAnalyzer.PROPERTIES_DATACACHE_ENABLE)) {
-            boolean dataCacheEnable = Boolean.parseBoolean(
-                    properties.getOrDefault(PropertyAnalyzer.PROPERTIES_DATACACHE_ENABLE, "false"));
-            if (this.storageInfo != null) {
-                this.storageInfo.setDataCacheEnable(dataCacheEnable);
-            } else {
-                LOG.warn("Setting datacache.enable to {} while storage info is null", dataCacheEnable);
-            }
         }
         return this;
     }
@@ -1274,10 +1238,6 @@ public class TableProperty implements Writable, GsonPostProcessable {
         return enablePersistentIndex;
     }
 
-    public boolean lightWeightTabletCreation() {
-        return lightWeightTabletCreation;
-    }
-
     public boolean isFileBundling() {
         return fileBundling;
     }
@@ -1379,18 +1339,6 @@ public class TableProperty implements Writable, GsonPostProcessable {
 
     public void setHasForbiddenGlobalDict(boolean hasForbiddenGlobalDict) {
         this.hasForbiddenGlobalDict = hasForbiddenGlobalDict;
-    }
-
-    public Set<String> getNoDictColumns() {
-        return noDictColumns == null ? Collections.emptySet() : noDictColumns;
-    }
-
-    public boolean isNoDictColumn(String columnName) {
-        return noDictColumns != null && noDictColumns.contains(columnName);
-    }
-
-    public void setNoDictColumns(Set<String> noDictColumns) {
-        this.noDictColumns = noDictColumns == null ? new HashSet<>() : new HashSet<>(noDictColumns);
     }
 
     public void setStorageInfo(StorageInfo storageInfo) {

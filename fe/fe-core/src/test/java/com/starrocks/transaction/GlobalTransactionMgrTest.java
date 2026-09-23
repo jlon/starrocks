@@ -57,7 +57,6 @@ import com.starrocks.common.StarRocksException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.common.util.UUIDUtil;
 import com.starrocks.common.util.concurrent.lock.LockTimeoutException;
-import com.starrocks.ha.FrontendNodeType;
 import com.starrocks.load.loadv2.ManualLoadTxnCommitAttachment;
 import com.starrocks.load.routineload.KafkaProgress;
 import com.starrocks.load.routineload.KafkaRoutineLoadJob;
@@ -91,8 +90,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Mockito;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -110,7 +107,6 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.spy;
@@ -138,7 +134,6 @@ public class GlobalTransactionMgrTest {
         fakeGlobalStateMgr = new FakeGlobalStateMgr();
         fakeTransactionIDGenerator = new FakeTransactionIDGenerator();
         masterGlobalStateMgr = GlobalStateMgrTestUtil.createTestState();
-        masterGlobalStateMgr.setFrontendNodeType(FrontendNodeType.LEADER);
         slaveGlobalStateMgr = GlobalStateMgrTestUtil.createTestState();
         masterTransMgr = masterGlobalStateMgr.getGlobalTransactionMgr();
         slaveTransMgr = slaveGlobalStateMgr.getGlobalTransactionMgr();
@@ -168,47 +163,6 @@ public class GlobalTransactionMgrTest {
         assertEquals(TransactionStatus.PREPARE, transactionState.getTransactionStatus());
         assertEquals(GlobalStateMgrTestUtil.testDbId1, transactionState.getDbId());
         assertEquals(transactionSource.toString(), transactionState.getCoordinator().toString());
-    }
-
-    @Test
-    public void testBeginTransactionEditLogAndReplay() throws Exception {
-        FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
-        String label = UUIDUtil.genUUID().toString();
-        long transactionId = masterTransMgr
-                .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
-                        label, transactionSource, LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-
-        TransactionState transactionState = fakeEditLog.getTransaction(transactionId);
-        assertNotNull(transactionState);
-        assertEquals(TransactionStatus.PREPARE, transactionState.getTransactionStatus());
-
-        FakeGlobalStateMgr.setGlobalStateMgr(slaveGlobalStateMgr);
-        slaveTransMgr.replayUpsertTransactionState(transactionState);
-        assertTrue(GlobalStateMgrTestUtil.compareState(masterGlobalStateMgr, slaveGlobalStateMgr));
-    }
-
-    @Test
-    public void testBeginTransactionEditLogException() throws Exception {
-        FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
-        EditLog spyEditLog = spy(masterGlobalStateMgr.getEditLog());
-        doThrow(new RuntimeException("EditLog write failed"))
-                .when(spyEditLog).logInsertTransactionState(any(TransactionState.class), any());
-        EditLog originalEditLog = replaceDatabaseTransactionMgrEditLog(spyEditLog);
-
-        String label = UUIDUtil.genUUID().toString();
-        try {
-            RuntimeException exception = Assertions.assertThrows(RuntimeException.class,
-                    () -> masterTransMgr.beginTransaction(GlobalStateMgrTestUtil.testDbId1,
-                            Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
-                            label, transactionSource, LoadJobSourceType.FRONTEND,
-                            Config.stream_load_default_timeout_second));
-            assertEditLogWriteFailed(exception);
-            assertEquals(0, masterTransMgr.getTransactionNum());
-            assertEquals(TransactionStatus.UNKNOWN,
-                    masterTransMgr.getLabelStatus(GlobalStateMgrTestUtil.testDbId1, label).getStatus());
-        } finally {
-            replaceDatabaseTransactionMgrEditLog(originalEditLog);
-        }
     }
 
     @Test
@@ -243,50 +197,6 @@ public class GlobalTransactionMgrTest {
                             LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
         } catch (Exception e) {
             // TODO: handle exception
-        }
-    }
-
-    @Test
-    public void testAbortTransactionEditLogAndReplay() throws Exception {
-        FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
-        String label = UUIDUtil.genUUID().toString();
-        long transactionId = masterTransMgr
-                .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
-                        label, transactionSource, LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-
-        masterTransMgr.abortTransaction(GlobalStateMgrTestUtil.testDbId1, transactionId, "artificial failure");
-
-        TransactionState transactionState = fakeEditLog.getTransaction(transactionId);
-        assertNotNull(transactionState);
-        assertEquals(TransactionStatus.ABORTED, transactionState.getTransactionStatus());
-        assertEquals("artificial failure", transactionState.getReason());
-
-        FakeGlobalStateMgr.setGlobalStateMgr(slaveGlobalStateMgr);
-        slaveTransMgr.replayUpsertTransactionState(transactionState);
-        assertTrue(GlobalStateMgrTestUtil.compareState(masterGlobalStateMgr, slaveGlobalStateMgr));
-    }
-
-    @Test
-    public void testAbortTransactionEditLogException() throws Exception {
-        FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
-        String label = UUIDUtil.genUUID().toString();
-        long transactionId = masterTransMgr
-                .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
-                        label, transactionSource, LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-
-        EditLog spyEditLog = spy(masterGlobalStateMgr.getEditLog());
-        doThrow(new RuntimeException("EditLog write failed"))
-                .when(spyEditLog).logInsertTransactionState(any(TransactionState.class), any());
-        EditLog originalEditLog = replaceDatabaseTransactionMgrEditLog(spyEditLog);
-        try {
-            RuntimeException exception = Assertions.assertThrows(RuntimeException.class,
-                    () -> masterTransMgr.abortTransaction(GlobalStateMgrTestUtil.testDbId1,
-                            transactionId, "artificial failure"));
-            assertEditLogWriteFailed(exception);
-            assertEquals(TransactionStatus.PREPARE, masterTransMgr
-                    .getTransactionState(GlobalStateMgrTestUtil.testDbId1, transactionId).getTransactionStatus());
-        } finally {
-            replaceDatabaseTransactionMgrEditLog(originalEditLog);
         }
     }
 
@@ -551,12 +461,7 @@ public class GlobalTransactionMgrTest {
         // todo(ml): change to assert queue
         // Assert.assertEquals(1, routineLoadManager.getNeedScheduleTasksQueue().size());
         // Assert.assertNotEquals("label", routineLoadManager.getNeedScheduleTasksQueue().peek().getId());
-        TransactionState originalState = masterTransMgr.getTransactionState(1L, 1L);
-        TransactionStatus originalStatus = originalState.getTransactionStatus();
-        transactionState = masterTransMgr.finishTransactionNew(originalState, Sets.newHashSet());
-        Assertions.assertNotSame(originalState, transactionState);
-        assertEquals(TransactionStatus.VISIBLE, transactionState.getTransactionStatus());
-        assertEquals(originalStatus, originalState.getTransactionStatus());
+        masterTransMgr.finishTransactionNew(transactionState, Sets.newHashSet());
         TableMetricsEntity entity = TableMetricsRegistry.getInstance().getMetricsEntity(loadTableId);
         assertEquals(100, entity.counterRoutineLoadRowsTotal.getValue().intValue());
         assertEquals(10000, entity.counterRoutineLoadBytesTotal.getValue().intValue());
@@ -683,10 +588,8 @@ public class GlobalTransactionMgrTest {
         assertEquals(TransactionStatus.COMMITTED, transactionState.getTransactionStatus());
         Set<Long> errorReplicaIds = Sets.newHashSet();
         errorReplicaIds.add(GlobalStateMgrTestUtil.testReplicaId1);
-        TransactionState originalState = masterTransMgr.getTransactionState(GlobalStateMgrTestUtil.testDbId1, transactionId);
-        transactionState = masterTransMgr.finishTransaction(GlobalStateMgrTestUtil.testDbId1, transactionId, errorReplicaIds);
-        Assertions.assertNotSame(originalState, transactionState);
-        assertEquals(TransactionStatus.COMMITTED, originalState.getTransactionStatus());
+        masterTransMgr.finishTransaction(GlobalStateMgrTestUtil.testDbId1, transactionId, errorReplicaIds);
+        transactionState = fakeEditLog.getTransaction(transactionId);
         assertEquals(TransactionStatus.VISIBLE, transactionState.getTransactionStatus());
         // check replica version
         Partition testPartition = masterGlobalStateMgr.getLocalMetastore()
@@ -769,8 +672,7 @@ public class GlobalTransactionMgrTest {
         errorReplicaIds = Sets.newHashSet();
         assertEquals(masterTransMgr.canTxnFinished(transactionState, errorReplicaIds, Sets.newHashSet()), true);
         masterTransMgr.finishTransaction(GlobalStateMgrTestUtil.testDbId1, transactionId, errorReplicaIds);
-        assertEquals(TransactionStatus.VISIBLE, masterTransMgr
-                .getTransactionState(GlobalStateMgrTestUtil.testDbId1, transactionId).getTransactionStatus());
+        assertEquals(TransactionStatus.VISIBLE, transactionState.getTransactionStatus());
         assertEquals(GlobalStateMgrTestUtil.testStartVersion + 1, replcia1.getVersion());
         assertEquals(GlobalStateMgrTestUtil.testStartVersion + 1, replcia2.getVersion());
         assertEquals(GlobalStateMgrTestUtil.testStartVersion, replcia3.getVersion());
@@ -841,8 +743,7 @@ public class GlobalTransactionMgrTest {
         errorReplicaIds = Sets.newHashSet();
         FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
         masterTransMgr.finishTransaction(GlobalStateMgrTestUtil.testDbId1, transactionId2, errorReplicaIds);
-        assertEquals(TransactionStatus.VISIBLE, masterTransMgr
-                .getTransactionState(GlobalStateMgrTestUtil.testDbId1, transactionId2).getTransactionStatus());
+        assertEquals(TransactionStatus.VISIBLE, transactionState.getTransactionStatus());
         assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, replcia1.getVersion());
         assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, replcia2.getVersion());
         assertEquals(GlobalStateMgrTestUtil.testStartVersion, replcia3.getVersion());
@@ -1004,95 +905,8 @@ public class GlobalTransactionMgrTest {
     }
 
     @Test
-    public void testPrepareTransactionEditLogException() throws Exception {
-        FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
-        long transactionId = masterTransMgr
-                .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
-                        UUIDUtil.genUUID().toString(), transactionSource,
-                        LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-
-        EditLog spyEditLog = spy(masterGlobalStateMgr.getEditLog());
-        doThrow(new RuntimeException("EditLog write failed"))
-                .when(spyEditLog).logInsertTransactionState(any(TransactionState.class), any());
-        EditLog originalEditLog = replaceDatabaseTransactionMgrEditLog(spyEditLog);
-        try {
-            RuntimeException exception = Assertions.assertThrows(RuntimeException.class,
-                    () -> masterTransMgr.prepareTransaction(GlobalStateMgrTestUtil.testDbId1, transactionId, -1,
-                            buildTabletCommitInfos(), Lists.newArrayList(), null));
-            assertEditLogWriteFailed(exception);
-            TransactionState transactionState =
-                    masterTransMgr.getTransactionState(GlobalStateMgrTestUtil.testDbId1, transactionId);
-            assertEquals(TransactionStatus.PREPARE, transactionState.getTransactionStatus());
-            assertTrue(transactionState.getIdToTableCommitInfos().isEmpty());
-        } finally {
-            replaceDatabaseTransactionMgrEditLog(originalEditLog);
-        }
-    }
-
-    @Test
-    public void testCommitPreparedTransactionEditLogException() throws Exception {
-        FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
-        long transactionId = masterTransMgr
-                .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
-                        UUIDUtil.genUUID().toString(), transactionSource,
-                        LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-        masterTransMgr.prepareTransaction(GlobalStateMgrTestUtil.testDbId1, transactionId, -1,
-                buildTabletCommitInfos(), Lists.newArrayList(), null);
-        assertEquals(TransactionStatus.PREPARED,
-                masterTransMgr.getTransactionState(GlobalStateMgrTestUtil.testDbId1, transactionId).getTransactionStatus());
-
-        EditLog spyEditLog = spy(masterGlobalStateMgr.getEditLog());
-        doThrow(new RuntimeException("EditLog write failed"))
-                .when(spyEditLog).logInsertTransactionState(any(TransactionState.class), any());
-        EditLog originalEditLog = replaceDatabaseTransactionMgrEditLog(spyEditLog);
-        try {
-            RuntimeException exception = Assertions.assertThrows(RuntimeException.class,
-                    () -> masterTransMgr.commitPreparedTransaction(
-                            masterGlobalStateMgr.getLocalMetastore().getDb(GlobalStateMgrTestUtil.testDbId1),
-                            transactionId, 1000L));
-            assertEditLogWriteFailed(exception);
-            assertEquals(TransactionStatus.PREPARED, masterTransMgr
-                    .getTransactionState(GlobalStateMgrTestUtil.testDbId1, transactionId).getTransactionStatus());
-        } finally {
-            replaceDatabaseTransactionMgrEditLog(originalEditLog);
-        }
-    }
-
-    @Test
-    public void testFinishTransactionEditLogException() throws Exception {
-        FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
-        long transactionId = masterTransMgr
-                .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
-                        UUIDUtil.genUUID().toString(), transactionSource,
-                        LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
-        masterTransMgr.commitTransaction(GlobalStateMgrTestUtil.testDbId1, transactionId, buildTabletCommitInfos(),
-                Lists.newArrayList(), null);
-
-        Partition testPartition = masterGlobalStateMgr.getLocalMetastore()
-                .getTable(GlobalStateMgrTestUtil.testDbId1, GlobalStateMgrTestUtil.testTableId1)
-                .getPartition(GlobalStateMgrTestUtil.testPartition1);
-        long visibleVersionBefore = testPartition.getDefaultPhysicalPartition().getVisibleVersion();
-
-        EditLog spyEditLog = spy(masterGlobalStateMgr.getEditLog());
-        doThrow(new RuntimeException("EditLog write failed"))
-                .when(spyEditLog).logInsertTransactionState(any(TransactionState.class), any());
-        EditLog originalEditLog = replaceDatabaseTransactionMgrEditLog(spyEditLog);
-        try {
-            RuntimeException exception = Assertions.assertThrows(RuntimeException.class,
-                    () -> masterTransMgr.finishTransaction(GlobalStateMgrTestUtil.testDbId1,
-                            transactionId, Sets.newHashSet()));
-            assertEditLogWriteFailed(exception);
-            assertEquals(TransactionStatus.COMMITTED, masterTransMgr
-                    .getTransactionState(GlobalStateMgrTestUtil.testDbId1, transactionId).getTransactionStatus());
-            assertEquals(visibleVersionBefore, testPartition.getDefaultPhysicalPartition().getVisibleVersion());
-        } finally {
-            replaceDatabaseTransactionMgrEditLog(originalEditLog);
-        }
-    }
-
-    @Test
     public void testSaveLoadJsonFormatImage() throws Exception {
-        masterTransMgr
+        long transactionId = masterTransMgr
                 .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
                         GlobalStateMgrTestUtil.testTxnLable1,
                         transactionSource,
@@ -1130,70 +944,6 @@ public class GlobalTransactionMgrTest {
     }
 
     @Test
-    public void testRetryCommitPreparedOnRateLimitExceeded() throws StarRocksException {
-        Database db = new Database(10, "db0");
-        GlobalTransactionMgr globalTransactionMgr = spy(new GlobalTransactionMgr(GlobalStateMgr.getCurrentState()));
-        DatabaseTransactionMgr dbTransactionMgr = spy(new DatabaseTransactionMgr(10L, GlobalStateMgr.getCurrentState()));
-        TransactionState transactionState = new TransactionState();
-        VisibleStateWaiter waiter = new VisibleStateWaiter(new TransactionState());
-
-        doReturn(transactionState).when(globalTransactionMgr).getTransactionState(db.getId(), 1001L);
-        doReturn(dbTransactionMgr).when(globalTransactionMgr).getDatabaseTransactionMgr(db.getId());
-        doThrow(new CommitRateExceededException(1001, System.currentTimeMillis()))
-                .doReturn(waiter)
-                .when(dbTransactionMgr)
-                .commitPreparedTransaction(1001L);
-
-        Assertions.assertSame(waiter,
-                globalTransactionMgr.retryCommitPreparedOnRateLimitExceeded(db, 1001L, 1000L));
-
-        Mockito.verify(dbTransactionMgr, Mockito.times(2)).commitPreparedTransaction(1001L);
-    }
-
-    @Test
-    public void testRetryCommitPreparedUsesRemainingLockTimeout() throws StarRocksException {
-        Database db = new Database(10, "db0");
-        GlobalTransactionMgr globalTransactionMgr = spy(new GlobalTransactionMgr(GlobalStateMgr.getCurrentState()));
-        VisibleStateWaiter waiter = new VisibleStateWaiter(new TransactionState());
-        long timeoutMs = 1000L;
-
-        doThrow(new CommitRateExceededException(1001L, System.currentTimeMillis() + 50L))
-                .doReturn(waiter)
-                .when(globalTransactionMgr)
-                .commitPreparedTransactionUnderIntensiveDbLock(
-                        Mockito.eq(db), Mockito.eq(1001L), Mockito.anyLong());
-
-        Assertions.assertSame(waiter,
-                globalTransactionMgr.retryCommitPreparedOnRateLimitExceeded(db, 1001L, timeoutMs));
-
-        ArgumentCaptor<Long> lockTimeoutCaptor = ArgumentCaptor.forClass(Long.class);
-        Mockito.verify(globalTransactionMgr, Mockito.times(2))
-                .commitPreparedTransactionUnderIntensiveDbLock(
-                        Mockito.eq(db), Mockito.eq(1001L), lockTimeoutCaptor.capture());
-        List<Long> lockTimeouts = lockTimeoutCaptor.getAllValues();
-        Assertions.assertEquals(timeoutMs, lockTimeouts.get(0));
-        Assertions.assertTrue(lockTimeouts.get(1) > 0L);
-        Assertions.assertTrue(lockTimeouts.get(1) < timeoutMs);
-    }
-
-    @Test
-    public void testRetryCommitPreparedOnRateLimitExceededTimeout() throws StarRocksException {
-        Database db = new Database(10, "db0");
-        GlobalTransactionMgr globalTransactionMgr = spy(new GlobalTransactionMgr(GlobalStateMgr.getCurrentState()));
-        DatabaseTransactionMgr dbTransactionMgr = spy(new DatabaseTransactionMgr(10L, GlobalStateMgr.getCurrentState()));
-        TransactionState transactionState = new TransactionState();
-
-        doReturn(transactionState).when(globalTransactionMgr).getTransactionState(db.getId(), 1001L);
-        doReturn(dbTransactionMgr).when(globalTransactionMgr).getDatabaseTransactionMgr(db.getId());
-        doThrow(new CommitRateExceededException(1001, System.currentTimeMillis() + 60_000L))
-                .when(dbTransactionMgr)
-                .commitPreparedTransaction(1001L);
-
-        Assertions.assertThrows(CommitRateExceededException.class,
-                () -> globalTransactionMgr.retryCommitPreparedOnRateLimitExceeded(db, 1001L, 10L));
-    }
-
-    @Test
     public void testPublishVersionTimeout()
             throws StarRocksException, LockTimeoutException {
         Database db = new Database(10, "db0");
@@ -1201,6 +951,7 @@ public class GlobalTransactionMgrTest {
         DatabaseTransactionMgr dbTransactionMgr = spy(new DatabaseTransactionMgr(10L, GlobalStateMgr.getCurrentState()));
         TransactionState transactionState = spy(new TransactionState());
 
+        long now = System.currentTimeMillis();
         doReturn(dbTransactionMgr).when(globalTransactionMgr).getDatabaseTransactionMgr(db.getId());
         doReturn(transactionState).when(globalTransactionMgr).getTransactionState(db.getId(), 1001);
         doReturn(new VisibleStateWaiter(new TransactionState()))
@@ -1208,31 +959,6 @@ public class GlobalTransactionMgrTest {
                 .commitTransaction(1001L, Collections.emptyList(), Collections.emptyList(), null);
         Assertions.assertFalse(globalTransactionMgr.commitAndPublishTransaction(db, 1001,
                 Collections.emptyList(), Collections.emptyList(), 2, null));
-    }
-
-    @Test
-    public void testPublishWaitStopsAfterCommitWhenLeaderDemotes()
-            throws Exception {
-        Database db = new Database(10, "db0");
-        GlobalStateMgr globalStateMgr = spy(GlobalStateMgrTestUtil.createTestState());
-        GlobalTransactionMgr globalTransactionMgr = spy(new GlobalTransactionMgr(globalStateMgr));
-        DatabaseTransactionMgr dbTransactionMgr = spy(new DatabaseTransactionMgr(10L, globalStateMgr));
-        TransactionState transactionState = spy(new TransactionState());
-
-        doReturn(true).when(globalStateMgr).isLeader();
-        doReturn(false).when(globalStateMgr).isLeaderWorkAdmissionOpen();
-        doReturn(false).when(globalStateMgr).isLeaderDemoting();
-        doReturn(dbTransactionMgr).when(globalTransactionMgr).getDatabaseTransactionMgr(db.getId());
-        doReturn(transactionState).when(globalTransactionMgr).getTransactionState(db.getId(), 1001);
-        doReturn(new VisibleStateWaiter(new TransactionState()))
-                .when(dbTransactionMgr)
-                .commitTransaction(1001L, Collections.emptyList(), Collections.emptyList(), null);
-
-        long startMs = System.currentTimeMillis();
-        Assertions.assertFalse(globalTransactionMgr.commitAndPublishTransaction(db, 1001,
-                Collections.emptyList(), Collections.emptyList(), 1500, null));
-        long elapsedMs = System.currentTimeMillis() - startMs;
-        Assertions.assertTrue(elapsedMs < 1000, "publish wait should stop quickly after leader demotion");
     }
 
     @Test
@@ -1248,20 +974,6 @@ public class GlobalTransactionMgrTest {
                 .commitTransaction(1001L, Collections.emptyList(), Collections.emptyList(), null);
         Assertions.assertThrows(StarRocksException.class, () -> globalTransactionMgr.commitAndPublishTransaction(db, 1001,
                 Collections.emptyList(), Collections.emptyList(), 10, null));
-    }
-
-    @Test
-    public void testRetryCommitMissingTransactionDoesNotThrowNpe()
-            throws StarRocksException {
-        Database db = new Database(10, "db0");
-        GlobalTransactionMgr globalTransactionMgr = spy(new GlobalTransactionMgr(GlobalStateMgr.getCurrentState()));
-
-        doReturn(null).when(globalTransactionMgr).getTransactionState(db.getId(), 1001);
-        StarRocksException exception = Assertions.assertThrows(StarRocksException.class,
-                () -> globalTransactionMgr.commitAndPublishTransaction(db, 1001,
-                        Collections.emptyList(), Collections.emptyList(), 10, null));
-        Assertions.assertTrue(exception.getMessage().contains("transaction not found: 1001"));
-        Assertions.assertFalse(exception.getMessage().contains("Cannot invoke"));
     }
 
     @Test
@@ -1544,69 +1256,6 @@ public class GlobalTransactionMgrTest {
                     "error must mention shared-data/lake requirement, got: " + ex.getMessage());
         } finally {
             Config.enable_admin_skip_committed_txn = original;
-        }
-    }
-
-    @Test
-    public void testExistCommittedTxnsReturnsFalseForAbsentDb() {
-        // existCommittedTxns is invoked lock-free by the online optimize visibility gate. When the database
-        // was dropped concurrently its DatabaseTransactionMgr is absent; the method must short-circuit to
-        // "no committed txns" (return false) instead of NPEing on the missing manager.
-        long absentDbId = 987654321L;
-        Assertions.assertFalse(masterTransMgr.existCommittedTxns(absentDbId, 1L, 1L),
-                "existCommittedTxns must return false (not NPE) for an absent DatabaseTransactionMgr");
-    }
-
-    @Test
-    public void testExistCommittedTxnsTrueForPopulatedPartitionCommitInfo() {
-        // A registered db whose committed txn lists the table and has a populated TableCommitInfo with the
-        // queried PartitionCommitInfo must report an existing committed txn.
-        long dbId = 222333444L;
-        long tableId = 555L;
-        long partitionId = 666L;
-
-        TableCommitInfo tableCommitInfo = Mockito.mock(TableCommitInfo.class);
-        Mockito.when(tableCommitInfo.getPartitionCommitInfo(partitionId))
-                .thenReturn(Mockito.mock(PartitionCommitInfo.class));
-        TransactionState txnState = Mockito.mock(TransactionState.class);
-        Mockito.when(txnState.getTableIdList()).thenReturn(List.of(tableId));
-        Mockito.when(txnState.getTableCommitInfo(tableId)).thenReturn(tableCommitInfo);
-        DatabaseTransactionMgr dbTransactionMgr = Mockito.mock(DatabaseTransactionMgr.class);
-        Mockito.when(dbTransactionMgr.getCommittedTxnList()).thenReturn(List.of(txnState));
-
-        Map<Long, DatabaseTransactionMgr> dbMgrs = masterTransMgr.getAllDatabaseTransactionMgrs();
-        dbMgrs.put(dbId, dbTransactionMgr);
-        try {
-            Assertions.assertTrue(masterTransMgr.existCommittedTxns(dbId, tableId, partitionId),
-                    "existCommittedTxns must report the committed txn whose TableCommitInfo is populated");
-        } finally {
-            dbMgrs.remove(dbId);
-        }
-    }
-
-    @Test
-    public void testExistCommittedTxnsFalseWhenTableCommitInfoNull() {
-        // A committed txn can list the table in its tableIdList before its TableCommitInfo is populated.
-        // With a non-null partitionId, the `tableCommitInfo != null` guard must short-circuit and the method
-        // must fall through to return false rather than NPE (it is called lock-free by the optimize gate).
-        long dbId = 222333445L;
-        long tableId = 777L;
-        long partitionId = 888L;
-
-        TransactionState txnState = Mockito.mock(TransactionState.class);
-        Mockito.when(txnState.getTableIdList()).thenReturn(List.of(tableId));
-        Mockito.when(txnState.getTableCommitInfo(tableId)).thenReturn(null);
-        DatabaseTransactionMgr dbTransactionMgr = Mockito.mock(DatabaseTransactionMgr.class);
-        Mockito.when(dbTransactionMgr.getCommittedTxnList()).thenReturn(List.of(txnState));
-
-        Map<Long, DatabaseTransactionMgr> dbMgrs = masterTransMgr.getAllDatabaseTransactionMgrs();
-        dbMgrs.put(dbId, dbTransactionMgr);
-        try {
-            Assertions.assertFalse(masterTransMgr.existCommittedTxns(dbId, tableId, partitionId),
-                    "existCommittedTxns must return false (not NPE) when the committed txn's TableCommitInfo "
-                            + "is not yet populated");
-        } finally {
-            dbMgrs.remove(dbId);
         }
     }
 }

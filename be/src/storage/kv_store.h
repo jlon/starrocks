@@ -118,7 +118,7 @@ private:
 
 private:
     std::string _root_path;
-    rocksdb::DB* _db{nullptr};
+    rocksdb::DB* _db;
     std::vector<rocksdb::ColumnFamilyHandle*> _handles;
 };
 

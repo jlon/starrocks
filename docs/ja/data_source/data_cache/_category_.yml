@@ -1,7 +1,0 @@
-position: 20
-label: 'Data cache'
-collapsible: true
-collapsed: true
-link:
-  id: data_cache
-  type: doc

@@ -15,11 +15,10 @@
 #pragma once
 
 #include <string>
-#include <utility>
 
 #include "common/status.h"
-#include "common/storage_define.h"
 #include "gutil/macros.h"
+#include "storage/olap_define.h"
 
 namespace google::protobuf {
 class Message;
@@ -34,8 +33,7 @@ class ProtobufFile {
 public:
     explicit ProtobufFile(std::string path) : _path(std::move(path)) {}
 
-    explicit ProtobufFile(std::string path, std::shared_ptr<FileSystem> fs)
-            : _path(std::move(path)), _fs(std::move(fs)) {}
+    explicit ProtobufFile(std::string path, std::shared_ptr<FileSystem> fs) : _path(std::move(path)), _fs(fs) {}
 
     DISALLOW_COPY_AND_MOVE(ProtobufFile);
 

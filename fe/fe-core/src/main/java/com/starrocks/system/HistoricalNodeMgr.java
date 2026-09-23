@@ -102,6 +102,7 @@ public class HistoricalNodeMgr {
     }
 
     public void save(ImageWriter imageWriter) throws IOException, SRMetaBlockException {
+        WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
         Map<String, HistoricalNodeSet> serializedHistoricalNodes = computeResourceToNodeSet.entrySet().stream()
                 .filter(entry -> isResourceAvailable(entry.getKey()))
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));

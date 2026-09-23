@@ -1,12 +1,10 @@
 ---
-sidebar_position: 70
 displayed_sidebar: docs
 toc_max_heading_level: 4
 description: "StarRocks supports JDBC catalogs from v3.0 onwards."
 ---
 
 import Beta from '../../_assets/commonMarkdown/_beta.mdx'
-import JoinPushdown from '../../_assets/commonMarkdown/join_pushdown.mdx'
 
 # JDBC catalog
 
@@ -159,18 +157,6 @@ PROPERTIES
     "driver_url"="https://repo1.maven.org/maven2/com/clickhouse/clickhouse-jdbc/0.4.6/clickhouse-jdbc-0.4.6.jar",
     "driver_class"="com.clickhouse.jdbc.ClickHouseDriver"
 );
--- Using schema_resolver for non-standard driver
-CREATE EXTERNAL CATALOG jdbc5
-PROPERTIES
-(
-    "type"="jdbc",
-    "user"="postgres",
-    "password"="changeme",
-    "jdbc_uri"="jdbc:postgresql://127.0.0.1:5432/mydb",
-    "driver_url"="file:///path/to/custom-postgresql-driver.jar",
-    "driver_class"="com.custom.PostgresDriver",
-    "schema_resolver"="postgresql"
-);
 ```
 
 ## View JDBC catalogs
@@ -228,16 +214,6 @@ DROP Catalog jdbc0;
    ```SQL
    SELECT * FROM <table_name>;
    ```
-
-<JoinPushdown />
-
-## Query JDBC data with native SQL
-
-From v4.1 onwards, StarRocks supports querying JDBC data with database-native `SELECT` statements by using the [`native_query`](../../sql-reference/sql-functions/table-functions/native_query.md) table function.
-
-`native_query` is useful when the source database must run SQL that cannot be expressed as a single external table query, such as source-side joins, pre-filtered subqueries, or vendor-specific SQL syntax. StarRocks exposes the pass-through query result as a normal relation, so you can continue to apply StarRocks-side filters, joins, aggregations, and projections.
-
-For syntax, limitations, and examples, see [`native_query`](../../sql-reference/sql-functions/table-functions/native_query.md).
 
 ## FAQ
 

@@ -228,7 +228,7 @@ public class CatalogRecycleBinEditLogTest {
     @Test
     public void testPickTablesToEraseNormalCase() throws Exception {
         // 1. Create and recycle a table
-        createDatabase(DB_ID, DB_NAME);
+        Database db = createDatabase(DB_ID, DB_NAME);
         OlapTable table = createOlapTable(TABLE_ID, TABLE_NAME);
         recycleBin.recycleTable(DB_ID, table, true);
         
@@ -314,7 +314,6 @@ public class CatalogRecycleBinEditLogTest {
 
         // 5. Verify master state - partition should be removed
         Assertions.assertNull(recycleBin.getPartition(PARTITION_ID));
-        Assertions.assertNull(recycleBin.getPhysicalPartition(PHYSICAL_PARTITION_ID));
         Assertions.assertFalse(recycleBin.isContainedInidToRecycleTime(PARTITION_ID));
 
         // 6. Test follower replay
@@ -342,7 +341,6 @@ public class CatalogRecycleBinEditLogTest {
 
         // 7. Verify follower state
         Assertions.assertNull(followerRecycleBin.getPartition(PARTITION_ID));
-        Assertions.assertNull(followerRecycleBin.getPhysicalPartition(PHYSICAL_PARTITION_ID));
         Assertions.assertFalse(followerRecycleBin.isContainedInidToRecycleTime(PARTITION_ID));
     }
 
@@ -512,7 +510,6 @@ public class CatalogRecycleBinEditLogTest {
 
         // 3. Verify master state
         Assertions.assertNull(recycleBin.getPartition(PARTITION_ID));
-        Assertions.assertNull(recycleBin.getPhysicalPartition(PHYSICAL_PARTITION_ID));
         Partition recoveredPartition = table.getPartition(PARTITION_NAME);
         Assertions.assertNotNull(recoveredPartition);
         Assertions.assertEquals(PARTITION_NAME, recoveredPartition.getName());
@@ -557,7 +554,6 @@ public class CatalogRecycleBinEditLogTest {
 
         // 5. Verify follower state
         Assertions.assertNull(followerRecycleBin.getPartition(PARTITION_ID));
-        Assertions.assertNull(followerRecycleBin.getPhysicalPartition(PHYSICAL_PARTITION_ID));
         Partition followerRecoveredPartition = followerTable.getPartition(PARTITION_NAME);
         Assertions.assertNotNull(followerRecoveredPartition);
         Assertions.assertEquals(PARTITION_NAME, followerRecoveredPartition.getName());
@@ -607,7 +603,6 @@ public class CatalogRecycleBinEditLogTest {
 
         // 4. Verify partition is still in recycle bin after exception
         Assertions.assertNotNull(recycleBin.getPartition(PARTITION_ID));
-        Assertions.assertNotNull(recycleBin.getPhysicalPartition(PHYSICAL_PARTITION_ID));
         Assertions.assertNull(table.getPartition(PARTITION_NAME));
     }
 
@@ -632,3 +627,4 @@ public class CatalogRecycleBinEditLogTest {
         }
     }
 }
+

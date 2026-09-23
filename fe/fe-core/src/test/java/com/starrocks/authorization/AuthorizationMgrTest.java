@@ -761,6 +761,7 @@ public class AuthorizationMgrTest {
                 ctx, null, DB_NAME, PrivilegeType.CREATE_TABLE));
 
         // on all users
+        AuthorizationMgr authorizationManager = ctx.getGlobalStateMgr().getAuthorizationMgr();
         Assertions.assertThrows(AccessDeniedException.class,
                 () -> Authorizer.checkUserAction(ctx, UserIdentity.ROOT, PrivilegeType.IMPERSONATE));
 
@@ -1446,6 +1447,7 @@ public class AuthorizationMgrTest {
 
     @Test
     public void testBuiltinRoles() throws Exception {
+        AuthorizationMgr manager = ctx.getGlobalStateMgr().getAuthorizationMgr();
         setCurrentUserAndRoles(ctx, UserIdentity.ROOT);
         // create user
         DDLStmtExecutor.execute(UtFrameUtils.parseStmtWithNewParser(
@@ -1794,10 +1796,13 @@ public class AuthorizationMgrTest {
             Assertions.assertTrue(e.getMessage().contains("There is no such grant defined on TABLE db.tbl1"));
         }
 
-        UtFrameUtils.parseStmtWithNewParser("revoke select on table db.* from test_user", ctx);
+        StatementBase statementBase =
+                UtFrameUtils.parseStmtWithNewParser("revoke select on table db.* from test_user", ctx);
 
-        UtFrameUtils.parseStmtWithNewParser("revoke insert on table db.* from test_user", ctx);
-        UtFrameUtils.parseStmtWithNewParser("revoke select on table db.tbl0 from test_user", ctx);
+        statementBase =
+                UtFrameUtils.parseStmtWithNewParser("revoke insert on table db.* from test_user", ctx);
+        statementBase =
+                UtFrameUtils.parseStmtWithNewParser("revoke select on table db.tbl0 from test_user", ctx);
     }
 
     @Test
@@ -1880,7 +1885,7 @@ public class AuthorizationMgrTest {
 
         sql = "show grants for user_for_system";
         ShowGrantsStmt showStreamLoadStmt = (ShowGrantsStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
-        ShowExecutor.execute(showStreamLoadStmt, ctx);
+        ShowResultSet resultSet = ShowExecutor.execute(showStreamLoadStmt, ctx);
     }
 
     @Test

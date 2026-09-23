@@ -193,10 +193,5 @@ public class MockJournal implements Journal {
         public void removeUnstableNode(String nodeName, int currentFollowerCnt) {
 
         }
-
-        @Override
-        public String transferToLeader(String nodeName, int timeoutMs, boolean force) {
-            return nodeName;
-        }
     }
 }

@@ -14,7 +14,7 @@
 
 #include <benchmark/benchmark.h>
 
-#include "base/simd/delta_decode.h"
+#include "simd/delta_decode.h"
 
 namespace starrocks {
 

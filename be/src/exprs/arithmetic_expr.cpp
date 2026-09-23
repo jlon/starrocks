@@ -19,7 +19,7 @@
 #include "column/column_helper.h"
 #include "column/const_column.h"
 #include "column/nullable_column.h"
-#include "column/runtime_type_traits.h"
+#include "column/type_traits.h"
 #include "common/object_pool.h"
 #include "common/status.h"
 #include "common/statusor.h"
@@ -30,15 +30,14 @@
 #include "exprs/overflow.h"
 #include "exprs/unary_function.h"
 #include "gutil/casts.h"
+#include "runtime/decimalv2_value.h"
 #include "runtime/runtime_state.h"
-#include "types/decimalv2_value.h"
 #include "types/logical_type.h"
 
 #ifdef STARROCKS_JIT_ENABLE
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Value.h>
 
-#include "exprs/jit/expr_jit_codegen.h"
 #include "exprs/jit/ir_helper.h"
 #endif
 
@@ -103,13 +102,7 @@ bool divisor_contains_zero(const ColumnPtr& dividend, const ColumnPtr& divisor) 
 }
 
 template <LogicalType Type, typename OP>
-#ifdef STARROCKS_JIT_ENABLE
-class VectorizedArithmeticExpr final : public Expr,
-                                       public JITCodegenNode
-#else
-class VectorizedArithmeticExpr final : public Expr
-#endif
-{
+class VectorizedArithmeticExpr final : public Expr {
 public:
     DEFINE_CLASS_CONSTRUCTOR(VectorizedArithmeticExpr);
 
@@ -179,15 +172,14 @@ public:
     }
 
     std::string jit_func_name_impl(RuntimeState* state) const override {
-        return "{" + ExprJITCodegen::func_name(_children[0], state) + get_op_name<OP>() +
-               ExprJITCodegen::func_name(_children[1], state) + "}" + (is_constant() ? "c:" : "") +
-               (is_nullable() ? "n:" : "") + type().debug_string();
+        return "{" + _children[0]->jit_func_name(state) + get_op_name<OP>() + _children[1]->jit_func_name(state) + "}" +
+               (is_constant() ? "c:" : "") + (is_nullable() ? "n:" : "") + type().debug_string();
     }
 
     StatusOr<LLVMDatum> generate_ir_impl(ExprContext* context, JITContext* jit_ctx) override {
         std::vector<LLVMDatum> datums(2);
-        ASSIGN_OR_RETURN(datums[0], ExprJITCodegen::generate_ir(context, _children[0], jit_ctx))
-        ASSIGN_OR_RETURN(datums[1], ExprJITCodegen::generate_ir(context, _children[1], jit_ctx))
+        ASSIGN_OR_RETURN(datums[0], _children[0]->generate_ir(context, jit_ctx))
+        ASSIGN_OR_RETURN(datums[1], _children[1]->generate_ir(context, jit_ctx))
 
         if constexpr (lt_is_decimal<Type>) {
             // TODO(yueyang): Implement decimal arithmetic in LLVM IR.
@@ -212,13 +204,7 @@ public:
 };
 
 template <LogicalType Type, typename Op>
-#ifdef STARROCKS_JIT_ENABLE
-class VectorizedDivArithmeticExpr final : public Expr,
-                                          public JITCodegenNode
-#else
-class VectorizedDivArithmeticExpr final : public Expr
-#endif
-{
+class VectorizedDivArithmeticExpr final : public Expr {
 public:
     DEFINE_CLASS_CONSTRUCTOR(VectorizedDivArithmeticExpr);
     StatusOr<ColumnPtr> evaluate_checked(ExprContext* context, Chunk* ptr) override {
@@ -280,15 +266,14 @@ public:
     }
 
     std::string jit_func_name_impl(RuntimeState* state) const override {
-        return "{" + ExprJITCodegen::func_name(_children[0], state) + "/" +
-               ExprJITCodegen::func_name(_children[1], state) + "}" + (is_constant() ? "c:" : "") +
-               (is_nullable() ? "n:" : "") + type().debug_string();
+        return "{" + _children[0]->jit_func_name(state) + "/" + _children[1]->jit_func_name(state) + "}" +
+               (is_constant() ? "c:" : "") + (is_nullable() ? "n:" : "") + type().debug_string();
     }
 
     StatusOr<LLVMDatum> generate_ir_impl(ExprContext* context, JITContext* jit_ctx) override {
         std::vector<LLVMDatum> datums(2);
-        ASSIGN_OR_RETURN(datums[0], ExprJITCodegen::generate_ir(context, _children[0], jit_ctx))
-        ASSIGN_OR_RETURN(datums[1], ExprJITCodegen::generate_ir(context, _children[1], jit_ctx))
+        ASSIGN_OR_RETURN(datums[0], _children[0]->generate_ir(context, jit_ctx))
+        ASSIGN_OR_RETURN(datums[1], _children[1]->generate_ir(context, jit_ctx))
 
         if constexpr (lt_is_decimal<Type>) {
             // TODO(yueyang): Implement decimal arithmetic in LLVM IR.
@@ -337,13 +322,7 @@ private:
 };
 
 template <LogicalType Type>
-#ifdef STARROCKS_JIT_ENABLE
-class VectorizedModArithmeticExpr final : public Expr,
-                                          public JITCodegenNode
-#else
-class VectorizedModArithmeticExpr final : public Expr
-#endif
-{
+class VectorizedModArithmeticExpr final : public Expr {
 public:
     DEFINE_CLASS_CONSTRUCTOR(VectorizedModArithmeticExpr);
     StatusOr<ColumnPtr> evaluate_checked(ExprContext* context, Chunk* ptr) override {
@@ -394,15 +373,14 @@ public:
     }
 
     std::string jit_func_name_impl(RuntimeState* state) const override {
-        return "{" + ExprJITCodegen::func_name(_children[0], state) + "%" +
-               ExprJITCodegen::func_name(_children[1], state) + "}" + (is_constant() ? "c:" : "") +
-               (is_nullable() ? "n:" : "") + type().debug_string();
+        return "{" + _children[0]->jit_func_name(state) + "%" + _children[1]->jit_func_name(state) + "}" +
+               (is_constant() ? "c:" : "") + (is_nullable() ? "n:" : "") + type().debug_string();
     }
 
     StatusOr<LLVMDatum> generate_ir_impl(ExprContext* context, JITContext* jit_ctx) override {
         std::vector<LLVMDatum> datums(2);
-        ASSIGN_OR_RETURN(datums[0], ExprJITCodegen::generate_ir(context, _children[0], jit_ctx))
-        ASSIGN_OR_RETURN(datums[1], ExprJITCodegen::generate_ir(context, _children[1], jit_ctx))
+        ASSIGN_OR_RETURN(datums[0], _children[0]->generate_ir(context, jit_ctx))
+        ASSIGN_OR_RETURN(datums[1], _children[1]->generate_ir(context, jit_ctx))
 
         if constexpr (lt_is_decimal<Type>) {
             // TODO(yueyang): Implement decimal arithmetic in LLVM IR.
@@ -427,13 +405,7 @@ public:
 };
 
 template <LogicalType Type>
-#ifdef STARROCKS_JIT_ENABLE
-class VectorizedBitNotArithmeticExpr final : public Expr,
-                                             public JITCodegenNode
-#else
-class VectorizedBitNotArithmeticExpr final : public Expr
-#endif
-{
+class VectorizedBitNotArithmeticExpr final : public Expr {
 public:
     DEFINE_CLASS_CONSTRUCTOR(VectorizedBitNotArithmeticExpr);
     StatusOr<ColumnPtr> evaluate_checked(ExprContext* context, Chunk* ptr) override {
@@ -463,12 +435,12 @@ public:
     }
 
     std::string jit_func_name_impl(RuntimeState* state) const override {
-        return "{!" + ExprJITCodegen::func_name(_children[0], state) + "}" + (is_constant() ? "c:" : "") +
+        return "{!" + _children[0]->jit_func_name(state) + "}" + (is_constant() ? "c:" : "") +
                (is_nullable() ? "n:" : "") + type().debug_string();
     }
 
     StatusOr<LLVMDatum> generate_ir_impl(ExprContext* context, JITContext* jit_ctx) override {
-        ASSIGN_OR_RETURN(auto datum, ExprJITCodegen::generate_ir(context, _children[0], jit_ctx))
+        ASSIGN_OR_RETURN(auto datum, _children[0]->generate_ir(context, jit_ctx))
         using ArithmeticBitNot = ArithmeticUnaryOperator<BitNotOp, Type>;
         datum.value = ArithmeticBitNot::generate_ir(jit_ctx->builder, datum.value);
         return datum;
@@ -486,18 +458,12 @@ public:
 };
 
 template <LogicalType Type, typename OP>
-#ifdef STARROCKS_JIT_ENABLE
-class VectorizedBitShiftArithmeticExpr final : public Expr,
-                                               public JITCodegenNode
-#else
-class VectorizedBitShiftArithmeticExpr final : public Expr
-#endif
-{
+class VectorizedBitShiftArithmeticExpr final : public Expr {
 public:
     DEFINE_CLASS_CONSTRUCTOR(VectorizedBitShiftArithmeticExpr);
     StatusOr<ColumnPtr> evaluate_checked(ExprContext* context, Chunk* ptr) override {
-        ASSIGN_OR_RETURN(auto l, _children[0]->evaluate_checked(context, ptr));
-        ASSIGN_OR_RETURN(auto r, _children[1]->evaluate_checked(context, ptr));
+        auto l = _children[0]->evaluate(context, ptr);
+        auto r = _children[1]->evaluate(context, ptr);
 
         using ArithmeticOp = ArithmeticBinaryOperator<OP, Type>;
         return VectorizedStrictBinaryFunction<ArithmeticOp>::template evaluate<Type, TYPE_BIGINT, Type>(l, r);
@@ -525,15 +491,14 @@ public:
     }
 
     std::string jit_func_name_impl(RuntimeState* state) const override {
-        return "{" + ExprJITCodegen::func_name(_children[0], state) + get_op_name<OP>() +
-               ExprJITCodegen::func_name(_children[1], state) + "}" + (is_constant() ? "c:" : "") +
-               (is_nullable() ? "n:" : "") + type().debug_string();
+        return "{" + _children[0]->jit_func_name(state) + get_op_name<OP>() + _children[1]->jit_func_name(state) + "}" +
+               (is_constant() ? "c:" : "") + (is_nullable() ? "n:" : "") + type().debug_string();
     }
 
     StatusOr<LLVMDatum> generate_ir_impl(ExprContext* context, JITContext* jit_ctx) override {
         std::vector<LLVMDatum> datums(2);
-        ASSIGN_OR_RETURN(datums[0], ExprJITCodegen::generate_ir(context, _children[0], jit_ctx))
-        ASSIGN_OR_RETURN(datums[1], ExprJITCodegen::generate_ir(context, _children[1], jit_ctx))
+        ASSIGN_OR_RETURN(datums[0], _children[0]->generate_ir(context, jit_ctx))
+        ASSIGN_OR_RETURN(datums[1], _children[1]->generate_ir(context, jit_ctx))
 
         using ArithmeticOp = ArithmeticBinaryOperator<OP, Type>;
         using CppType = RunTimeCppType<Type>;

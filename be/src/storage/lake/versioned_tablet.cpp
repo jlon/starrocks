@@ -14,13 +14,13 @@
 
 #include "storage/lake/versioned_tablet.h"
 
+#include "exec/schema_scanner/schema_be_tablets_scanner.h"
 #include "storage/lake/pk_tablet_writer.h"
 #include "storage/lake/rowset.h"
 #include "storage/lake/tablet_reader.h"
 #include "storage/lake/tablet_writer.h"
 #include "storage/lake/update_manager.h"
 #include "storage/tablet_schema_map.h"
-#include "storage_primitive/tablet_basic_info.h"
 
 namespace starrocks::lake {
 
@@ -76,7 +76,6 @@ StatusOr<std::unique_ptr<TabletReader>> VersionedTablet::new_reader(
     std::unique_ptr<TabletReader> res;
     if (!base_rowsets.empty()) {
         std::vector<std::shared_ptr<Rowset>> rowsets;
-        rowsets.reserve(base_rowsets.size());
         for (auto& rowset : base_rowsets) {
             rowsets.emplace_back(std::dynamic_pointer_cast<Rowset>(rowset));
         }

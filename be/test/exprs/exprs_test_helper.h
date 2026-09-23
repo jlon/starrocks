@@ -16,16 +16,13 @@
 
 #include <gtest/gtest.h>
 
-#include "base/testutil/assert.h"
 #include "column/chunk.h"
 #include "exprs/array_expr.h"
-#include "exprs/expr_executor.h"
-#ifdef STARROCKS_JIT_ENABLE
 #include "exprs/jit/jit_expr.h"
-#endif
 #include "gen_cpp/Descriptors_types.h"
 #include "runtime/descriptors.h"
 #include "runtime/runtime_state.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 class ExprsTestHelper {
@@ -54,10 +51,11 @@ public:
         slot_desc.slotType = type;
         slot_desc.columnPos = -1;
         slot_desc.byteOffset = 4;
+        slot_desc.nullIndicatorByte = 0;
+        slot_desc.nullIndicatorBit = 1;
         slot_desc.colName = col_name;
         slot_desc.slotIdx = 1;
         slot_desc.isMaterialized = true;
-        slot_desc.__set_isNullable(true);
         return slot_desc;
     }
 
@@ -160,12 +158,6 @@ public:
         // Verify the original result.
         test_func(ptr);
 
-#ifndef STARROCKS_JIT_ENABLE
-        (void)expr;
-        (void)runtime_state;
-        (void)need_jit;
-        return;
-#else
         if (!need_jit) {
             return;
         }
@@ -181,35 +173,18 @@ public:
         ExprContext exprContext(jit_expr);
         std::vector<ExprContext*> expr_ctxs = {&exprContext};
 
-        ASSERT_OK(ExprExecutor::prepare(expr_ctxs, runtime_state));
-        ASSERT_OK(ExprExecutor::open(expr_ctxs, runtime_state));
+        ASSERT_OK(Expr::prepare(expr_ctxs, runtime_state));
+        ASSERT_OK(Expr::open(expr_ctxs, runtime_state));
         ASSERT_TRUE(jit_expr->is_jit_compiled());
 
         ptr = jit_expr->evaluate(&exprContext, nullptr);
         // Verify the result after JIT.
         test_func(ptr);
 
-        ExprExecutor::close(expr_ctxs, runtime_state);
-#endif
-    }
-
-    static bool should_verify_with_jit(const Expr* expr, RuntimeState* runtime_state) {
-#ifndef STARROCKS_JIT_ENABLE
-        (void)expr;
-        (void)runtime_state;
-        return false;
-#else
-        return expr->is_compilable(runtime_state);
-#endif
+        Expr::close(expr_ctxs, runtime_state);
     }
 
     static void verify_result_with_jit(const ColumnPtr& ptr, Expr* expr, RuntimeState* runtime_state) {
-#ifndef STARROCKS_JIT_ENABLE
-        (void)ptr;
-        (void)expr;
-        (void)runtime_state;
-        return;
-#else
         auto jit_engine = JITEngine::get_instance();
         if (!jit_engine->support_jit()) {
             return;
@@ -222,8 +197,8 @@ public:
         ExprContext exprContext(jit_expr);
         std::vector<ExprContext*> expr_ctxs = {&exprContext};
 
-        ASSERT_OK(ExprExecutor::prepare(expr_ctxs, runtime_state));
-        ASSERT_OK(ExprExecutor::open(expr_ctxs, runtime_state));
+        ASSERT_OK(Expr::prepare(expr_ctxs, runtime_state));
+        ASSERT_OK(Expr::open(expr_ctxs, runtime_state));
         ASSERT_TRUE(jit_expr->is_jit_compiled());
 
         Chunk chunk;
@@ -239,8 +214,7 @@ public:
             ASSERT_TRUE(jit_ptr->equals(i, *ptr, i));
         }
 
-        ExprExecutor::close(expr_ctxs, runtime_state);
-#endif
+        Expr::close(expr_ctxs, runtime_state);
     }
 };
 

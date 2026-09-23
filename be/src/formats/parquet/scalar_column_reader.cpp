@@ -14,10 +14,6 @@
 
 #include "formats/parquet/scalar_column_reader.h"
 
-#include "base/simd/gather.h"
-#include "base/simd/simd.h"
-#include "cache/scan/shared_buffered_input_stream.h"
-#include "column/global_dict/dict_column.h"
 #include "common/compiler_util.h"
 #include "formats/parquet/column_reader.h"
 #include "formats/parquet/parquet_block_split_bloom_filter.h"
@@ -25,8 +21,12 @@
 #include "formats/parquet/stored_column_reader_with_index.h"
 #include "formats/parquet/utils.h"
 #include "gutil/casts.h"
+#include "io/shared_buffered_input_stream.h"
+#include "runtime/global_dict/dict_column.h"
+#include "runtime/types.h"
+#include "simd/gather.h"
+#include "simd/simd.h"
 #include "statistics_helper.h"
-#include "types/type_descriptor.h"
 
 namespace starrocks::parquet {
 
@@ -62,7 +62,7 @@ StatusOr<bool> FixedValueColumnReader::page_index_zone_map_filter(const std::vec
 
 // RawColumnReader
 
-void RawColumnReader::collect_column_io_range(std::vector<SharedBufferedInputStream::IORange>* ranges,
+void RawColumnReader::collect_column_io_range(std::vector<io::SharedBufferedInputStream::IORange>* ranges,
                                               int64_t* end_offset, ColumnIOTypeFlags types, bool active) {
     const auto& column = *get_chunk_metadata();
     if ((types & ColumnIOType::PAGES) != 0) {
@@ -70,7 +70,7 @@ void RawColumnReader::collect_column_io_range(std::vector<SharedBufferedInputStr
         if (_offset_index_ctx != nullptr && !_offset_index_ctx->page_selected.empty()) {
             // add dict page
             if (column_metadata.__isset.dictionary_page_offset) {
-                auto r = SharedBufferedInputStream::IORange(
+                auto r = io::SharedBufferedInputStream::IORange(
                         column_metadata.dictionary_page_offset,
                         column_metadata.data_page_offset - column_metadata.dictionary_page_offset, active);
                 ranges->emplace_back(r);
@@ -85,7 +85,7 @@ void RawColumnReader::collect_column_io_range(std::vector<SharedBufferedInputStr
                 offset = column_metadata.data_page_offset;
             }
             int64_t size = column_metadata.total_compressed_size;
-            auto r = SharedBufferedInputStream::IORange(offset, size, active);
+            auto r = io::SharedBufferedInputStream::IORange(offset, size, active);
             ranges->emplace_back(r);
             *end_offset = std::max(*end_offset, offset + size);
         }
@@ -93,12 +93,12 @@ void RawColumnReader::collect_column_io_range(std::vector<SharedBufferedInputStr
     if ((types & ColumnIOType::PAGE_INDEX) != 0) {
         // only active column need column index
         if (column.__isset.column_index_offset && active) {
-            auto r = SharedBufferedInputStream::IORange(column.column_index_offset, column.column_index_length);
+            auto r = io::SharedBufferedInputStream::IORange(column.column_index_offset, column.column_index_length);
             ranges->emplace_back(r);
         }
         // all column need offset index
         if (column.__isset.offset_index_offset) {
-            auto r = SharedBufferedInputStream::IORange(column.offset_index_offset, column.offset_index_length);
+            auto r = io::SharedBufferedInputStream::IORange(column.offset_index_offset, column.offset_index_length);
             ranges->emplace_back(r);
         }
     }
@@ -603,10 +603,6 @@ Status ScalarColumnReader::_fill_dst_column_impl(ColumnPtr& dst, ColumnPtr& src)
         } else {
             static_assert(!LAZY_CONVERT, "LAZY_DICT_DECODE && LAZY_CONVERT == true is not supported by now");
             if (_converter->need_convert) {
-                // Decode dict codes to physical values in an intermediate column (e.g. raw 16-byte
-                // UUID bytes), then apply the converter to produce the logical values in dst
-                // (e.g. canonical 36-char UUID strings).  Direct _dict_decode into dst would write
-                // unconverted physical bytes, producing wrong output for columns like UUID.
                 if (_tmp_intermediate_column == nullptr) {
                     _tmp_intermediate_column = _converter->create_src_column();
                 }
@@ -685,15 +681,15 @@ Status ScalarColumnReader::finalize_lazy_state(ColumnPtr& col) {
     return Status::OK();
 }
 
-void ScalarColumnReader::collect_column_io_range(std::vector<SharedBufferedInputStream::IORange>* ranges,
+void ScalarColumnReader::collect_column_io_range(std::vector<io::SharedBufferedInputStream::IORange>* ranges,
                                                  int64_t* end_offset, ColumnIOTypeFlags types, bool active) {
     RawColumnReader::collect_column_io_range(ranges, end_offset, types, active);
     const auto& column = *get_chunk_metadata();
     if ((types & ColumnIOType::BLOOM_FILTER) != 0) {
         if (column.meta_data.__isset.bloom_filter_offset && column.meta_data.__isset.bloom_filter_length && active) {
             if (check_type_can_apply_bloom_filter(*_col_type, *get_column_parquet_field())) {
-                auto r = SharedBufferedInputStream::IORange(column.meta_data.bloom_filter_offset,
-                                                            column.meta_data.bloom_filter_length);
+                auto r = io::SharedBufferedInputStream::IORange(column.meta_data.bloom_filter_offset,
+                                                                column.meta_data.bloom_filter_length);
                 ranges->emplace_back(r);
             }
         }
@@ -844,15 +840,15 @@ Status LowCardColumnReader::_check_current_dict() {
     return Status::OK();
 }
 
-void LowCardColumnReader::collect_column_io_range(std::vector<SharedBufferedInputStream::IORange>* ranges,
+void LowCardColumnReader::collect_column_io_range(std::vector<io::SharedBufferedInputStream::IORange>* ranges,
                                                   int64_t* end_offset, ColumnIOTypeFlags types, bool active) {
     RawColumnReader::collect_column_io_range(ranges, end_offset, types, active);
     const auto& column = *get_chunk_metadata();
     if ((types & ColumnIOType::BLOOM_FILTER) != 0) {
         if (column.meta_data.__isset.bloom_filter_offset && column.meta_data.__isset.bloom_filter_length && active) {
             if (check_type_can_apply_bloom_filter(TypeDescriptor(TYPE_VARCHAR), *get_column_parquet_field())) {
-                auto r = SharedBufferedInputStream::IORange(column.meta_data.bloom_filter_offset,
-                                                            column.meta_data.bloom_filter_length);
+                auto r = io::SharedBufferedInputStream::IORange(column.meta_data.bloom_filter_offset,
+                                                                column.meta_data.bloom_filter_length);
                 ranges->emplace_back(r);
             }
         }
@@ -930,15 +926,15 @@ Status LowRowsColumnReader::finalize_lazy_state(ColumnPtr& col) {
     return Status::OK();
 }
 
-void LowRowsColumnReader::collect_column_io_range(std::vector<SharedBufferedInputStream::IORange>* ranges,
+void LowRowsColumnReader::collect_column_io_range(std::vector<io::SharedBufferedInputStream::IORange>* ranges,
                                                   int64_t* end_offset, ColumnIOTypeFlags types, bool active) {
     RawColumnReader::collect_column_io_range(ranges, end_offset, types, active);
     const auto& column = *get_chunk_metadata();
     if ((types & ColumnIOType::BLOOM_FILTER) != 0) {
         if (column.meta_data.__isset.bloom_filter_offset && column.meta_data.__isset.bloom_filter_length && active) {
             if (check_type_can_apply_bloom_filter(TypeDescriptor(TYPE_VARCHAR), *get_column_parquet_field())) {
-                auto r = SharedBufferedInputStream::IORange(column.meta_data.bloom_filter_offset,
-                                                            column.meta_data.bloom_filter_length);
+                auto r = io::SharedBufferedInputStream::IORange(column.meta_data.bloom_filter_offset,
+                                                                column.meta_data.bloom_filter_length);
                 ranges->emplace_back(r);
             }
         }

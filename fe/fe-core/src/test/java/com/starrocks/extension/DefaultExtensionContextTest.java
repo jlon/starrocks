@@ -310,7 +310,7 @@ public class DefaultExtensionContextTest {
     public void testRegisterConstructorCachesMetadata() {
         context = new DefaultExtensionContext();
         // First call to registerConstructor
-        context.registerConstructor(SimpleService.class, SimpleService.class);
+        ConstructorMetadata metadata1 = context.registerConstructor(SimpleService.class, SimpleService.class);
         
         // Get should use cached metadata
         SimpleService service1 = context.get(SimpleService.class);

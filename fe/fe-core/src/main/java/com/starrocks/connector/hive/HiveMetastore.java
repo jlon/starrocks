@@ -246,13 +246,7 @@ public class HiveMetastore implements IHiveMetastore {
         List<String> dataColumns = table.getSd().getCols().stream()
                 .map(FieldSchema::getName)
                 .collect(toImmutableList());
-        List<ColumnStatisticsObj> statisticsObjs;
-        try {
-            statisticsObjs = client.getTableColumnStats(dbName, tblName, dataColumns);
-        } catch (Exception e) {
-            LOG.warn("Failed to get table column statistics on [{}.{}], degrade to empty statistics", dbName, tblName, e);
-            statisticsObjs = ImmutableList.of();
-        }
+        List<ColumnStatisticsObj> statisticsObjs = client.getTableColumnStats(dbName, tblName, dataColumns);
         if (statisticsObjs.isEmpty() && Config.enable_reuse_spark_column_statistics) {
             // Try to use spark unpartitioned table column stats
             try {
@@ -325,13 +319,8 @@ public class HiveMetastore implements IHiveMetastore {
                 .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().getRowNums()));
 
         ImmutableMap.Builder<String, HivePartitionStats> resultBuilder = ImmutableMap.builder();
-        Map<String, List<ColumnStatisticsObj>> partitionNameToColumnStatsObj;
-        try {
-            partitionNameToColumnStatsObj = client.getPartitionColumnStats(dbName, tblName, partitionNames, dataColumns);
-        } catch (Exception e) {
-            LOG.warn("Failed to get partition column statistics on [{}.{}], degrade to empty statistics", dbName, tblName, e);
-            partitionNameToColumnStatsObj = ImmutableMap.of();
-        }
+        Map<String, List<ColumnStatisticsObj>> partitionNameToColumnStatsObj =
+                client.getPartitionColumnStats(dbName, tblName, partitionNames, dataColumns);
 
         Map<String, Map<String, HiveColumnStats>> partitionColumnStats = HiveMetastoreApiConverter
                 .toPartitionColumnStatistics(partitionNameToColumnStatsObj, partitionRowNums);

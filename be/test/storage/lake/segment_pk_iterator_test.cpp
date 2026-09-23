@@ -17,16 +17,15 @@
 #include <memory>
 #include <vector>
 
-#include "base/utility/defer_op.h"
 #include "column/chunk.h"
-#include "column/chunk_factory.h"
 #include "column/field.h"
 #include "column/schema.h"
 #include "common/config_primary_key_fwd.h"
+#include "storage/chunk_iterator.h"
 #include "storage/lake/rowset_update_state.h"
 #include "storage/olap_common.h"
-#include "storage_primitive/chunk_iterator.h"
-#include "storage_primitive/primary_key_encoding_types.h"
+#include "storage/primary_key_encoding_types.h"
+#include "util/defer_op.h"
 
 namespace starrocks::lake {
 

@@ -16,12 +16,12 @@ package com.starrocks.authentication;
 
 import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.Config;
+import com.starrocks.persist.EditLog;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.CreateUserStmt;
 import com.starrocks.sql.ast.UserAuthOption;
 import com.starrocks.sql.ast.UserRef;
 import com.starrocks.sql.parser.NodePosition;
-import com.starrocks.utframe.UtFrameUtils;
 import mockit.Mock;
 import mockit.MockUp;
 import org.junit.jupiter.api.AfterAll;
@@ -35,14 +35,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyShort;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.spy;
 
 class LDAPAuthProviderTest {
-
-    @AfterAll
-    public static void tearDownPersistJournal() {
-        UtFrameUtils.tearDownForPersisTest();
-    }
-
 
     @BeforeAll
     public static void setUp() throws Exception {
@@ -58,7 +56,10 @@ class LDAPAuthProviderTest {
             }
         };
 
-        UtFrameUtils.setUpForPersistTest();
+        // Mock EditLog
+        EditLog editLog = spy(new EditLog(null));
+        doNothing().when(editLog).logEdit(anyShort(), any());
+        GlobalStateMgr.getCurrentState().setEditLog(editLog);
 
         AuthenticationMgr authenticationMgr = new AuthenticationMgr();
         GlobalStateMgr.getCurrentState().setAuthenticationMgr(authenticationMgr);
@@ -149,7 +150,7 @@ class LDAPAuthProviderTest {
     @Test
     void testAuthenticateWithCaseInsensitiveUsername() throws Exception {
         // Create a test provider instance
-        new LDAPAuthProvider(
+        LDAPAuthProvider provider = new LDAPAuthProvider(
                 "localhost", 389, false,
                 null, null,
                 "cn=admin,dc=starrocks,dc=com", "secret",

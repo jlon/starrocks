@@ -79,7 +79,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.StringJoiner;
 import java.util.stream.Collectors;
@@ -121,8 +120,7 @@ public class DesensitizedSQLBuilder {
                 || table.getType() == Table.TableType.BROKER || table.getType() == Table.TableType.HIVE
                 || table.getType() == Table.TableType.HUDI || table.getType() == Table.TableType.ICEBERG
                 || table.getType() == Table.TableType.JDBC
-                || table.getType() == Table.TableType.FILE
-                || table.getType() == Table.TableType.BENCHMARK) {
+                || table.getType() == Table.TableType.FILE) {
             tableDef = visitor.desensitizeExternalTableDef(pair.first, table);
         } else if (table instanceof OlapTable) {
             tableDef = visitor.desensitizeOlapTableDef(pair.first, (OlapTable) pair.second);
@@ -250,11 +248,6 @@ public class DesensitizedSQLBuilder {
                         .append(")");
             }
             sqlBuilder.append(" AS (").append(visit(relation.getCteQueryStatement())).append(") ");
-            if (relation.getMaterializationHint() == CTERelation.CTEMaterializationHint.MATERIALIZED) {
-                sqlBuilder.append("[materialized] ");
-            } else if (relation.getMaterializationHint() == CTERelation.CTEMaterializationHint.NOT_MATERIALIZED) {
-                sqlBuilder.append("[not_materialized] ");
-            }
             return sqlBuilder.toString();
         }
 
@@ -308,8 +301,7 @@ public class DesensitizedSQLBuilder {
             sqlBuilder.append(node.getFunctionName());
             sqlBuilder.append("(");
 
-            List<String> childSql = Optional.ofNullable(node.getChildExpressions())
-                    .orElse(node.getFunctionParams().exprs()).stream().map(this::visit).collect(toList());
+            List<String> childSql = node.getChildExpressions().stream().map(this::visit).collect(toList());
             sqlBuilder.append(Joiner.on(",").join(childSql));
 
             sqlBuilder.append(")");
@@ -336,9 +328,7 @@ public class DesensitizedSQLBuilder {
             sqlBuilder.append(tableFunction.getFunctionName());
             sqlBuilder.append("(");
             sqlBuilder.append(
-                    Optional.ofNullable(tableFunction.getChildExpressions())
-                            .orElse(tableFunction.getFunctionParams().exprs()).stream().map(this::visit)
-                            .collect(Collectors.joining(",")));
+                    tableFunction.getChildExpressions().stream().map(this::visit).collect(Collectors.joining(",")));
             sqlBuilder.append(")");
             sqlBuilder.append(")"); // TABLE(
 

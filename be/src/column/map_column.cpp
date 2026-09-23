@@ -14,46 +14,22 @@
 
 #include "column/map_column.h"
 
-#include <algorithm>
 #include <cstdint>
-#include <numeric>
 #include <set>
 
-#ifdef __AVX2__
-#include <immintrin.h>
-#elif defined(__ARM_NEON) && defined(__aarch64__)
-#include <arm_neon.h>
-#endif
-
-#include "base/simd/simd.h"
 #include "column/column_helper.h"
+#include "column/column_view/column_view.h"
+#include "column/datum.h"
 #include "column/fixed_length_column.h"
-#include "column/mysql_row_buffer.h"
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
+#include "exec/sorting/sorting.h"
 #include "gutil/bits.h"
 #include "gutil/casts.h"
 #include "gutil/strings/fastmem.h"
-#include "types/datum.h"
+#include "util/mysql_row_buffer.h"
 
 namespace starrocks {
-static std::vector<uint32_t> _build_sorted_key_indices(const Column* keys, size_t offset, size_t map_size) {
-    std::vector<std::pair<DatumKey, uint32_t>> keyed_indices;
-    keyed_indices.reserve(map_size);
-    for (uint32_t i = 0; i < map_size; ++i) {
-        keyed_indices.emplace_back(keys->get(offset + i).convert2DatumKey(), i);
-    }
-    std::sort(keyed_indices.begin(), keyed_indices.end(),
-              [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
-
-    std::vector<uint32_t> sorted_indices;
-    sorted_indices.reserve(map_size);
-    for (const auto& kv : keyed_indices) {
-        sorted_indices.emplace_back(kv.second);
-    }
-    return sorted_indices;
-}
-
 void MapColumn::check_or_die() const {
     const auto offsets = _offsets->immutable_data();
     CHECK_EQ(offsets.back(), _keys->size());
@@ -84,6 +60,16 @@ size_t MapColumn::capacity() const {
     return _offsets->capacity() - 1;
 }
 
+const uint8_t* MapColumn::raw_data() const {
+    DCHECK(false) << "Don't support map column raw_data";
+    return nullptr;
+}
+
+uint8_t* MapColumn::mutable_raw_data() {
+    DCHECK(false) << "Don't support map column mutable_raw_data";
+    return nullptr;
+}
+
 size_t MapColumn::byte_size(size_t from, size_t size) const {
     DCHECK_LE(from + size, this->size()) << "Range error";
     const auto offsets = _offsets->immutable_data();
@@ -109,27 +95,10 @@ void MapColumn::resize(size_t n) {
 }
 
 void MapColumn::assign(size_t n, size_t idx) {
-    DCHECK_LT(idx, this->size()) << "Range error when assign MapColumn.";
+    DCHECK_LE(idx, this->size()) << "Range error when assign MapColumn.";
     auto desc = this->clone_empty();
-
-    const auto& offsets_data = _offsets->immutable_data();
-    const uint32_t offset = offsets_data[idx];
-    const uint32_t map_size = offsets_data[idx + 1] - offset;
-    const auto sorted_indices = _build_sorted_key_indices(_keys.get(), offset, map_size);
-
-    auto* desc_map = down_cast<MapColumn*>(desc.get());
-    auto* desc_keys = desc_map->_keys.get();
-    auto* desc_values = desc_map->_values.get();
-    auto* desc_offsets = desc_map->_offsets.get();
-    for (size_t c = 0; c < n; ++c) {
-        for (uint32_t sorted_idx : sorted_indices) {
-            const uint32_t element_idx = offset + sorted_idx;
-            desc_keys->append(*_keys, element_idx, 1);
-            desc_values->append(*_values, element_idx, 1);
-        }
-        desc_offsets->append(desc_offsets->get_data().back() + map_size);
-    }
-
+    auto datum = get(idx); // just reference
+    desc->append_value_multiple_times(&datum, n);
     swap_column(*desc);
     desc->reset_column();
 }
@@ -165,7 +134,7 @@ void MapColumn::append(const Column& src, size_t offset, size_t count) {
 
 void MapColumn::append_selective(const Column& src, const uint32_t* indexes, uint32_t from, uint32_t size) {
     if (src.is_map_view()) {
-        src.append_selective_to(*this, indexes, from, size);
+        down_cast<const ColumnView*>(&src)->append_to(*this, indexes, from, size);
         return;
     }
     for (uint32_t i = 0; i < size; i++) {
@@ -285,14 +254,20 @@ uint32_t MapColumn::serialize(size_t idx, uint8_t* pos) const {
     strings::memcpy_inlined(pos, &map_size, sizeof(map_size));
     size_t ser_size = sizeof(map_size);
 
-    std::vector<uint32_t> perm(map_size);
-    std::iota(perm.begin(), perm.end(), 0);
-    std::stable_sort(perm.begin(), perm.end(), [this, offset](uint32_t lhs, uint32_t rhs) {
-        return _keys->compare_at(offset + lhs, offset + rhs, *_keys, -1) < 0;
-    });
+    // unstable sort keys, map keys must be unique
+    SmallPermutation perm(map_size);
+    {
+        for (uint32_t i = 0; i < map_size; i++) {
+            perm[i].index_in_chunk = offset + i;
+        }
+        Tie tie(map_size, 1);
+        std::pair<int, int> range{0, map_size};
+        auto st = sort_and_tie_column(false, _keys, SortDesc(true, true), perm, tie, range, false);
+        DCHECK(st.ok());
+    }
 
     for (size_t i = 0; i < map_size; ++i) {
-        uint32_t index = offset + perm[i];
+        uint32_t index = perm[i].index_in_chunk;
         ser_size += _keys->serialize(index, pos + ser_size);
         ser_size += _values->serialize(index, pos + ser_size);
     }
@@ -420,44 +395,6 @@ size_t MapColumn::filter_range(const Filter& filter, size_t from, size_t to) {
                 zero_count = Bits::CountTrailingZeros32(mask);
                 result_offset += 1;
                 i += (zero_count + 1);
-            }
-        }
-        check_offset += kBatchSize;
-    }
-#elif defined(__ARM_NEON) && defined(__aarch64__)
-    const uint8_t* f_data = filter.data();
-
-    constexpr size_t kBatchSize = /*width of NEON registers*/ 128 / 8;
-
-    while (check_offset + kBatchSize < to) {
-        uint8x16_t f = vld1q_u8(f_data + check_offset);
-        // nibble_mask holds 4 bits per row: 0xf where the row is kept, 0x0 otherwise.
-        uint64_t nibble_mask = SIMD::get_nibble_mask(vtstq_u8(f, f));
-
-        if (nibble_mask == 0) {
-            // all no hit, pass
-        } else if (nibble_mask == 0xffff'ffff'ffff'ffffull) {
-            // all hit, copy all
-            auto element_size = offsets[check_offset + kBatchSize] - offsets[check_offset];
-            memset(element_filter.data() + offsets[check_offset], 1, element_size);
-            if (result_offset != check_offset) {
-                DCHECK_LE(offsets[result_offset], offsets[check_offset]);
-                auto delta = offsets[check_offset] - offsets[result_offset];
-                memmove(offsets + result_offset + 1, offsets + check_offset + 1, kBatchSize * sizeof(offsets[0]));
-                for (size_t i = 0; i < kBatchSize; i++) {
-                    offsets[result_offset + i + 1] -= delta;
-                }
-            }
-            result_offset += kBatchSize;
-        } else {
-            // Keep only the high bit of each nibble, then walk the kept rows one set bit at a time.
-            nibble_mask &= 0x8888'8888'8888'8888ull;
-            for (; nibble_mask > 0; nibble_mask &= nibble_mask - 1) {
-                size_t i = __builtin_ctzll(nibble_mask) >> 2;
-                auto array_size = offsets[check_offset + i + 1] - offsets[check_offset + i];
-                memset(element_filter.data() + offsets[check_offset + i], 1, array_size);
-                offsets[result_offset + 1] = offsets[result_offset] + array_size;
-                result_offset += 1;
             }
         }
         check_offset += kBatchSize;

@@ -32,24 +32,17 @@ Status LakeDelvecLoader::load(const TabletSegmentId& tsid, int64_t version, DelV
             return Status::OK();
         }
     }
-    if (_holder != nullptr) {
-        // The held instance is shared, not copied: this path (compaction reads) never mutates a
-        // loaded delvec. get_or_load is single-flight per (segment, version), so concurrent
-        // range-split subtasks that miss together produce exactly one file read.
-        return _holder->get_or_load(tsid, version, pdelvec,
-                                    [&](DelVectorPtr* out) { return load_from_file(tsid, version, out); });
-    }
     return load_from_file(tsid, version, pdelvec);
 }
 
 Status LakeDelvecLoader::load_from_meta(const TabletMetadataPtr& metadata, const DelvecPagePB& delvec_page,
                                         DelVectorPtr* pdelvec) {
-    *pdelvec = std::make_shared<DelVector>();
+    (*pdelvec).reset(new DelVector());
     return lake::get_del_vec(_tablet_manager, *metadata, delvec_page, _fill_cache, _lake_io_opts, pdelvec->get());
 }
 
 Status LakeDelvecLoader::load_from_file(const TabletSegmentId& tsid, int64_t version, DelVectorPtr* pdelvec) {
-    *pdelvec = std::make_shared<DelVector>();
+    (*pdelvec).reset(new DelVector());
     // 2. find in delvec file
     TabletMetadataPtr metadata;
     if (_cached_metadata != nullptr && _cached_metadata->id() == tsid.tablet_id &&

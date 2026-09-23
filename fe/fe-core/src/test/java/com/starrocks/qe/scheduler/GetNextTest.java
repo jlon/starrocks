@@ -169,8 +169,7 @@ public class GetNextTest extends SchedulerTestBase {
 
         fetchDataResultStatusCode.setRef(TStatusCode.INTERNAL_ERROR);
         scheduler = startScheduling(sql);
-        Assertions.assertDoesNotThrow(scheduler::getNext);
-        Assertions.assertEquals(TStatusCode.INTERNAL_ERROR, scheduler.getExecStatus().getErrorCode());
+        Assertions.assertThrows(StarRocksException.class, scheduler::getNext, "Internal_error");
 
         fetchDataResultStatusCode.setRef(TStatusCode.THRIFT_RPC_ERROR);
         scheduler = startScheduling(sql);

@@ -21,19 +21,17 @@
 #include <filesystem>
 #include <memory>
 
-#include "base/testutil/assert.h"
 #include "column/array_column.h"
 #include "column/chunk.h"
 #include "column/column_helper.h"
 #include "column/map_column.h"
 #include "column/nullable_column.h"
 #include "column/struct_column.h"
-#include "common/config_exec_fwd.h"
 #include "formats/parquet/file_reader.h"
 #include "formats/parquet/parquet_test_util/util.h"
 #include "fs/fs.h"
 #include "fs/fs_memory.h"
-#include "runtime/runtime_state.h"
+#include "testutil/assert.h"
 #include "testutil/column_test_helper.h"
 
 namespace starrocks::formats {
@@ -54,7 +52,7 @@ protected:
     HdfsScannerContext* _create_scan_context(const std::vector<TypeDescriptor>& type_descs) {
         auto ctx = _pool.add(new HdfsScannerContext());
 
-        ctx->format_scan_context.lazy_column_coalesce_counter = &_lazy_column_coalesce_counter;
+        ctx->lazy_column_coalesce_counter = &_lazy_column_coalesce_counter;
 
         std::vector<parquet::Utils::SlotDesc> slot_descs;
         for (auto& type_desc : type_descs) {
@@ -65,15 +63,12 @@ protected:
 
         TupleDescriptor* tuple_desc =
                 parquet::Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs.data());
-        parquet::Utils::make_column_info_vector(tuple_desc, &ctx->format_scan_context.materialized_columns);
+        parquet::Utils::make_column_info_vector(tuple_desc, &ctx->materialized_columns);
         ctx->slot_descs = tuple_desc->slots();
         ASSIGN_OR_ABORT(auto file_size, _fs.get_file_size(_file_path));
         ctx->scan_range = _create_scan_range(_file_path, file_size);
-        ctx->format_scan_context.scan_range_offset = ctx->scan_range->offset;
-        ctx->format_scan_context.scan_range_length = ctx->scan_range->length;
-        ctx->format_scan_context.timezone = "Asia/Shanghai";
-        ctx->format_scan_context.stats = &_hdfs_stats;
-        ctx->format_scan_context.predicate_tree = &ctx->predicates.predicate_tree;
+        ctx->timezone = "Asia/Shanghai";
+        ctx->stats = &_hdfs_stats;
 
         return ctx;
     }
@@ -102,7 +97,7 @@ protected:
         ASSIGN_OR_ABORT(auto file_size, _fs.get_file_size(_file_path));
         auto file_reader = std::make_shared<parquet::FileReader>(config::vector_chunk_size, file.get(), file_size);
 
-        auto st = file_reader->init(&ctx->format_scan_context);
+        auto st = file_reader->init(ctx);
         if (!st.ok()) {
             std::cout << st.to_string() << std::endl;
             return nullptr;
@@ -122,7 +117,7 @@ protected:
                                                                 std::vector<bool> nullable = {},
                                                                 std::vector<std::string> column_names = {});
 
-    FormatScannerStats _hdfs_stats;
+    HdfsScannerStats _hdfs_stats;
     MemoryFileSystem _fs;
     std::string _file_path{"/dummy_file.parquet"};
     std::unique_ptr<parquet::ParquetOutputStream> _output_stream;
@@ -828,7 +823,7 @@ TEST_F(ParquetFileWriterTest, TestNullableColumnsAllRequired) {
     ASSIGN_OR_ABORT(auto file_size, _fs.get_file_size(_file_path));
     auto file_reader = std::make_shared<parquet::FileReader>(config::vector_chunk_size, file.get(), file_size);
     auto ctx = _create_scan_context(type_descs);
-    ASSERT_OK(file_reader->init(&ctx->format_scan_context));
+    ASSERT_OK(file_reader->init(ctx));
     auto file_metadata = file_reader->get_file_metadata();
 
     // Check that both columns are REQUIRED
@@ -869,7 +864,7 @@ TEST_F(ParquetFileWriterTest, TestNullableColumnsMixed) {
     ASSIGN_OR_ABORT(auto file_size, _fs.get_file_size(_file_path));
     auto file_reader = std::make_shared<parquet::FileReader>(config::vector_chunk_size, file.get(), file_size);
     auto ctx = _create_scan_context(type_descs);
-    ASSERT_OK(file_reader->init(&ctx->format_scan_context));
+    ASSERT_OK(file_reader->init(ctx));
     auto file_metadata = file_reader->get_file_metadata();
 
     // Check first column is OPTIONAL
@@ -912,7 +907,7 @@ TEST_F(ParquetFileWriterTest, TestNullableColumnsDefaultEmpty) {
     ASSIGN_OR_ABORT(auto file_size, _fs.get_file_size(_file_path));
     auto file_reader = std::make_shared<parquet::FileReader>(config::vector_chunk_size, file.get(), file_size);
     auto ctx = _create_scan_context(type_descs);
-    ASSERT_OK(file_reader->init(&ctx->format_scan_context));
+    ASSERT_OK(file_reader->init(ctx));
     auto file_metadata = file_reader->get_file_metadata();
 
     // Check that both columns are OPTIONAL (default behavior)
@@ -956,7 +951,7 @@ TEST_F(ParquetFileWriterTest, TestIcebergDeleteFileColumnsRequired) {
     ASSIGN_OR_ABORT(auto file_size, _fs.get_file_size(_file_path));
     auto file_reader = std::make_shared<parquet::FileReader>(config::vector_chunk_size, file.get(), file_size);
     auto ctx = _create_scan_context(type_descs);
-    ASSERT_OK(file_reader->init(&ctx->format_scan_context));
+    ASSERT_OK(file_reader->init(ctx));
     auto file_metadata = file_reader->get_file_metadata();
 
     // Verify column names
@@ -970,62 +965,6 @@ TEST_F(ParquetFileWriterTest, TestIcebergDeleteFileColumnsRequired) {
         EXPECT_EQ(repetition, tparquet::FieldRepetitionType::REQUIRED)
                 << "Column " << field->name << " should be REQUIRED for Iceberg delete files but is " << repetition;
     }
-}
-
-TEST_F(ParquetFileWriterTest, TestRequiredColumnRejectsNull) {
-    std::vector type_descs{TYPE_VARCHAR_DESC, TYPE_BIGINT_DESC};
-    std::vector<std::string> column_names = {"a", "b"};
-    ASSIGN_OR_ASSERT_FAIL(auto writer, _create_writer(type_descs, {true, false}, column_names));
-
-    auto chunk = std::make_shared<Chunk>();
-    {
-        auto col0 = ColumnTestHelper::build_nullable_column<Slice>({"x", "y", "z"}, {0, 0, 0});
-        chunk->append_column(std::move(col0), chunk->num_columns());
-
-        // "b" is declared REQUIRED but carries a null in row 1
-        auto col1 = ColumnTestHelper::build_nullable_column<int64_t>({100, 0, 300}, {0, 1, 0});
-        chunk->append_column(std::move(col1), chunk->num_columns());
-    }
-
-    auto st = writer->write(chunk.get());
-    ASSERT_FALSE(st.ok()) << "writing NULL into a REQUIRED column must fail";
-    EXPECT_TRUE(st.message().find("b") != std::string::npos)
-            << "error should name the offending column, got: " << st.message();
-}
-
-TEST_F(ParquetFileWriterTest, TestRequiredColumnRejectsNullBeforeWritingAnyColumn) {
-    // "a" OPTIONAL, "b" REQUIRED: only "b" is evaluated up front, so this pins that a violation
-    // on "b" still stops "a" from reaching the row group, which would otherwise leave the
-    // writer holding a row group with mismatched column chunk lengths.
-    std::vector type_descs{TYPE_VARCHAR_DESC, TYPE_BIGINT_DESC};
-    std::vector<std::string> column_names = {"a", "b"};
-    ASSIGN_OR_ASSERT_FAIL(auto writer, _create_writer(type_descs, {true, false}, column_names));
-
-    auto good_chunk = std::make_shared<Chunk>();
-    {
-        auto col0 = ColumnTestHelper::build_column<Slice>({"x", "y", "z"});
-        good_chunk->append_column(std::move(col0), 0);
-        auto col1 = ColumnTestHelper::build_column<int64_t>({1, 2, 3});
-        good_chunk->append_column(std::move(col1), 1);
-    }
-    ASSERT_OK(writer->write(good_chunk.get()));
-    ASSERT_NE(writer->_rowgroup_writer, nullptr);
-    const int64_t buffered_before = writer->_rowgroup_writer->estimated_buffered_bytes();
-    ASSERT_GT(buffered_before, 0);
-
-    auto bad_chunk = std::make_shared<Chunk>();
-    {
-        // column "a" is perfectly valid ...
-        auto col0 = ColumnTestHelper::build_nullable_column<Slice>({"p", "q", "r"}, {0, 0, 0});
-        bad_chunk->append_column(std::move(col0), bad_chunk->num_columns());
-        // ... but column "b" is not, so nothing from this chunk may reach the row group
-        auto col1 = ColumnTestHelper::build_nullable_column<int64_t>({4, 0, 6}, {0, 1, 0});
-        bad_chunk->append_column(std::move(col1), bad_chunk->num_columns());
-    }
-    ASSERT_FALSE(writer->write(bad_chunk.get()).ok());
-
-    EXPECT_EQ(writer->_rowgroup_writer->estimated_buffered_bytes(), buffered_before)
-            << "column \"a\" of the rejected chunk leaked into the row group";
 }
 
 TEST_F(ParquetFileWriterTest, TestColumnDictionaryEncodingDisabled) {
@@ -1080,7 +1019,7 @@ TEST_F(ParquetFileWriterTest, TestColumnDictionaryEncodingDisabled) {
     auto file_reader = std::make_shared<parquet::FileReader>(config::vector_chunk_size, file.get(), file_size);
 
     auto ctx = _create_scan_context(type_descs);
-    ASSERT_OK(file_reader->init(&ctx->format_scan_context));
+    ASSERT_OK(file_reader->init(ctx));
     auto file_metadata = file_reader->get_file_metadata();
 
     ASSERT_EQ(file_metadata->t_metadata().row_groups.size(), 1);
@@ -1162,7 +1101,7 @@ TEST_F(ParquetFileWriterTest, TestColumnDictionaryEncodingEnabledByDefault) {
     auto file_reader = std::make_shared<parquet::FileReader>(config::vector_chunk_size, file.get(), file_size);
 
     auto ctx = _create_scan_context(type_descs);
-    ASSERT_OK(file_reader->init(&ctx->format_scan_context));
+    ASSERT_OK(file_reader->init(ctx));
     auto file_metadata = file_reader->get_file_metadata();
 
     const auto& row_group = file_metadata->t_metadata().row_groups[0];

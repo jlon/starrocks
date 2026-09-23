@@ -54,8 +54,6 @@ import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.function.BooleanSupplier;
 
 /*
  * This is the bdb implementation of Journal interface.
@@ -141,28 +139,24 @@ public class BDBJEJournal implements Journal {
 
     @Override
     public long getMaxJournalId() {
-        return getJournalIdRange().second;
-    }
-
-    @Override
-    public Pair<Long, Long> getJournalIdRange() {
+        long ret = -1;
         if (bdbEnvironment == null) {
-            return Pair.create(-1L, -1L);
+            return ret;
         }
         List<Long> dbNames = bdbEnvironment.getDatabaseNamesWithPrefix(prefix);
         if (dbNames == null || dbNames.isEmpty()) {
-            return Pair.create(-1L, -1L);
+            return ret;
         }
 
-        long minJournalId = dbNames.get(0);
         int index = dbNames.size() - 1;
         String dbName = getFullDatabaseName(dbNames.get(index));
         long dbNumberName = dbNames.get(index);
         // open database temporarily and close after count
         try (Database database = bdbEnvironment.openDatabase(dbName).getDb()) {
-            long maxJournalId = dbNumberName + database.count() - 1;
-            return Pair.create(minJournalId, maxJournalId);
+            ret = dbNumberName + database.count() - 1;
         }
+
+        return ret;
     }
 
     @Override
@@ -239,15 +233,10 @@ public class BDBJEJournal implements Journal {
      */
     @Override
     public void deleteJournals(long deleteToJournalId) {
-        deleteJournalsAndGetMinJournalId(deleteToJournalId);
-    }
-
-    @Override
-    public long deleteJournalsAndGetMinJournalId(long deleteToJournalId) {
         List<Long> dbNames = bdbEnvironment.getDatabaseNamesWithPrefix(prefix);
-        if (dbNames == null || dbNames.isEmpty()) {
+        if (dbNames == null) {
             LOG.info("delete database names is null.");
-            return -1L;
+            return;
         }
 
         StringBuilder msg = new StringBuilder("existing database names: ");
@@ -257,21 +246,18 @@ public class BDBJEJournal implements Journal {
         msg.append(", deleteToJournalId is ").append(deleteToJournalId);
         LOG.info(msg.toString());
 
-        int firstRetainedIndex = 0;
         for (int i = 1; i < dbNames.size(); i++) {
             if (deleteToJournalId >= dbNames.get(i)) {
                 long name = dbNames.get(i - 1);
                 String dbName = getFullDatabaseName(name);
                 LOG.info("delete database name {}", dbName);
                 bdbEnvironment.removeDatabase(dbName);
-                firstRetainedIndex = i;
             } else {
                 LOG.info("database name {} is larger than deleteToJournalId {}, not delete",
                         dbNames.get(i), deleteToJournalId);
                 break;
             }
         }
-        return dbNames.get(firstRetainedIndex);
     }
 
     @Override
@@ -396,11 +382,6 @@ public class BDBJEJournal implements Journal {
      */
     @Override
     public void batchWriteCommit() throws InterruptedException, JournalException {
-        batchWriteCommit(() -> true);
-    }
-
-    @Override
-    public void batchWriteCommit(BooleanSupplier shouldRetry) throws InterruptedException, JournalException {
         if (currentTransaction == null) {
             throw new JournalException("failed to commit because no running txn!");
         }
@@ -410,7 +391,7 @@ public class BDBJEJournal implements Journal {
             for (int i = 0; i < RETRY_TIME; i++) {
                 // retry cleanups
                 if (i != 0) {
-                    waitBeforeCommitRetry(shouldRetry, exception, i);
+                    Thread.sleep(SLEEP_INTERVAL_SEC * 1000L);
 
                     if (currentTransaction == null || !currentTransaction.isValid()) {
                         try {
@@ -432,26 +413,12 @@ public class BDBJEJournal implements Journal {
                         currentTransaction.commit();
                     }
                     return;
-                } catch (DatabaseException | IllegalStateException e) {
-                    // IllegalStateException: the JE transaction was invalidated/closed before commit() ran
-                    // (e.g. it timed out during a long stall, or leadership was lost). JE's
-                    // Transaction.checkOpen() throws a plain java.lang.IllegalStateException ("Transaction
-                    // has been closed"), which is NOT a DatabaseException. If it escaped, it would bypass
-                    // JournalWriter.writeOneBatch's JournalException handler, the in-flight batch's tasks
-                    // would never be aborted, their waiting callers would block forever, and the leader WAL
-                    // apply fence (EditLog.inFlight) would leak -> demotion's EditLog.awaitWalDrained then
-                    // times out (leader_demotion_drain_timeout_sec) and System.exit(-1)s. Treat it as a
-                    // commit failure so the normal retry/abort path runs.
+                } catch (DatabaseException e) {
                     String errMsg = String.format("failed to commit journal after retried %d times! txn[%s] db[%s]",
                             i + 1, currentTransaction, currentJournalDB);
                     LOG.error(errMsg, e);
                     exception = new JournalException(errMsg);
                     exception.initCause(e);
-                    if (!shouldRetry.getAsBoolean()) {
-                        LOG.warn("skip commit retry because retry predicate is false after {} failed attempts",
-                                i + 1, exception);
-                        throw exception;
-                    }
                 }
             }
             // failed after retried
@@ -463,31 +430,6 @@ public class BDBJEJournal implements Journal {
             currentTransaction = null;
             uncommittedEntries.clear();
         }
-    }
-
-    private void waitBeforeCommitRetry(BooleanSupplier shouldRetry, JournalException exception, int retryIndex)
-            throws InterruptedException, JournalException {
-        long remainingMs = TimeUnit.SECONDS.toMillis(SLEEP_INTERVAL_SEC);
-        while (remainingMs > 0) {
-            if (!shouldRetry.getAsBoolean()) {
-                LOG.warn("skip commit retry {} because retry predicate is false", retryIndex + 1, exception);
-                throw buildRetryDisabledException(exception, retryIndex);
-            }
-            long sleepMs = Math.min(remainingMs, 100L);
-            Thread.sleep(sleepMs);
-            remainingMs -= sleepMs;
-        }
-        if (!shouldRetry.getAsBoolean()) {
-            LOG.warn("skip commit retry {} because retry predicate is false", retryIndex + 1, exception);
-            throw buildRetryDisabledException(exception, retryIndex);
-        }
-    }
-
-    private JournalException buildRetryDisabledException(JournalException exception, int retryIndex) {
-        if (exception != null) {
-            return exception;
-        }
-        return new JournalException("commit retry " + (retryIndex + 1) + " is disabled");
     }
 
     /**

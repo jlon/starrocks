@@ -16,11 +16,11 @@
 
 #include <gtest/gtest.h>
 
-#include "base/testutil/assert.h"
 #include "column/column_helper.h"
-#include "column/json_converter.h"
+#include "runtime/types.h"
 #include "simdjson.h"
-#include "types/type_descriptor.h"
+#include "testutil/assert.h"
+#include "util/json_converter.h"
 
 namespace starrocks {
 

@@ -83,7 +83,7 @@ public class CacheStatsScanNode extends ScanNode {
         }
 
         for (PhysicalPartition partition : partitions) {
-            MaterializedIndex index = partition.getQueryableBaseIndex();
+            MaterializedIndex index = partition.getLatestBaseIndex();
             List<Tablet> tablets = index.getTablets();
             long visibleVersion = partition.getVisibleVersion();
 

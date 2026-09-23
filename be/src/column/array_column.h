@@ -20,6 +20,7 @@
 #include "column/fixed_length_column.h"
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
+
 namespace starrocks {
 
 /// If an ArrayColumn is nullable, it will be nested as follows:
@@ -43,9 +44,16 @@ public:
 
     ArrayColumn(MutableColumnPtr&& elements, MutableColumnPtr&& offsets);
 
-    DISALLOW_COPY(ArrayColumn);
+    ArrayColumn(const ArrayColumn& rhs)
+            : _elements(rhs._elements->clone()), _offsets(OffsetColumn::static_pointer_cast(rhs._offsets->clone())) {}
 
     ArrayColumn(ArrayColumn&& rhs) noexcept : _elements(std::move(rhs._elements)), _offsets(std::move(rhs._offsets)) {}
+
+    ArrayColumn& operator=(const ArrayColumn& rhs) {
+        ArrayColumn tmp(rhs);
+        this->swap_column(tmp);
+        return *this;
+    }
 
     ArrayColumn& operator=(ArrayColumn&& rhs) noexcept {
         ArrayColumn tmp(std::move(rhs));
@@ -56,6 +64,7 @@ public:
     static Ptr create(const ColumnPtr& elements, const ColumnPtr& offsets) {
         return ArrayColumn::create(elements->as_mutable_ptr(), offsets->as_mutable_ptr());
     }
+    static Ptr create(const ArrayColumn& rhs) { return Base::create(rhs); }
 
     template <typename... Args>
     requires(IsMutableColumns<Args...>::value) static MutablePtr create(Args&&... args) {
@@ -65,6 +74,10 @@ public:
     ~ArrayColumn() override = default;
 
     bool is_array() const override { return true; }
+
+    const uint8_t* raw_data() const override;
+
+    uint8_t* mutable_raw_data() override;
 
     size_t size() const override;
 
@@ -106,19 +119,6 @@ public:
 
     void fill_default(const Filter& filter) override;
 
-    // Whether every row marked NULL by `nulls` occupies an empty element range here, i.e. the offsets
-    // already say "this row has no elements". fill_default() is the operation that establishes that
-    // for a set of rows; this is the check for whether it already holds.
-    //
-    // It has to be checked rather than assumed: the null flag lives in the wrapping NullableColumn
-    // while the payload lives here, and nothing enforces that a row marked NULL was also cleared
-    // here - which is exactly why fill_default() exists. Callers that hand this column's offsets
-    // downstream as a per-row output row count (the zero-copy path in UNNEST) must verify it first.
-    //
-    // `nulls` is num_rows bytes, non-zero meaning NULL. Cost is O(num_rows), against O(elements) for
-    // rebuilding the column. Returns false if num_rows does not match this column's row count.
-    bool null_rows_are_empty(const uint8_t* nulls, size_t num_rows) const;
-
     void update_rows(const Column& src, const uint32_t* indexes) override;
 
     void remove_first_n_values(size_t count) override;
@@ -139,12 +139,6 @@ public:
     uint32_t serialize_size(size_t idx) const override;
 
     MutableColumnPtr clone_empty() const override;
-
-    MutableColumnPtr clone() const override {
-        auto p = clone_empty();
-        p->append(*this, 0, size());
-        return p;
-    }
 
     size_t filter_range(const Filter& filter, size_t from, size_t to) override;
 

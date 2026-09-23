@@ -18,8 +18,6 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
-import com.starrocks.alter.reshard.presplit.Estimates;
-import com.starrocks.alter.reshard.presplit.InsertPreSplitHook;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.MaterializedIndex.IndexExtState;
@@ -70,12 +68,9 @@ import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -116,26 +111,13 @@ public class InsertOverwriteJobRunner {
     private final long dbId;
     private final long tableId;
     private final String postfix;
-    // What the optimizer estimated this statement writes. A boundary source that derives boundaries
-    // without sampling reads no data, so it has no sample to learn the input size from and takes it
-    // from here.
-    private final Estimates outputEstimates;
 
     // execution stat
     private long createPartitionElapse;
     private long insertElapse;
     private TransactionState transactionState;
 
-    // Matches the pre-split coordinator's job-poll cadence: a reshard of an empty temp partition is
-    // metadata-only and finishes in seconds, so a sub-second poll keeps the added commit latency small.
-    private static final long COMMIT_TABLE_STATE_POLL_INTERVAL_MS = 500L;
-
     public InsertOverwriteJobRunner(InsertOverwriteJob job, ConnectContext context, StmtExecutor stmtExecutor) {
-        this(job, context, stmtExecutor, Estimates.ZERO);
-    }
-
-    public InsertOverwriteJobRunner(InsertOverwriteJob job, ConnectContext context, StmtExecutor stmtExecutor,
-                                    Estimates outputEstimates) {
         this.job = job;
         this.context = context;
         this.stmtExecutor = stmtExecutor;
@@ -143,7 +125,6 @@ public class InsertOverwriteJobRunner {
         this.dbId = job.getTargetDbId();
         this.tableId = job.getTargetTableId();
         this.postfix = "_" + job.getJobId();
-        this.outputEstimates = outputEstimates;
         this.createPartitionElapse = 0;
         this.insertElapse = 0;
     }
@@ -154,8 +135,6 @@ public class InsertOverwriteJobRunner {
         this.dbId = job.getTargetDbId();
         this.tableId = job.getTargetTableId();
         this.postfix = "_" + job.getJobId();
-        // Replay has no plan to estimate from, and it never loads data, so there is nothing to size.
-        this.outputEstimates = Estimates.ZERO;
         this.createPartitionElapse = 0;
         this.insertElapse = 0;
     }
@@ -199,7 +178,7 @@ public class InsertOverwriteJobRunner {
                 doLoad();
                 break;
             case OVERWRITE_FAILED:
-                gc();
+                gc(false);
                 LOG.warn("insert overwrite job:{} failed. createPartitionElapse:{} ms, insertElapse:{} ms",
                         job.getJobId(), createPartitionElapse, insertElapse);
                 break;
@@ -215,55 +194,10 @@ public class InsertOverwriteJobRunner {
     private void doLoad() throws Exception {
         Preconditions.checkState(job.getJobState() == InsertOverwriteJobState.OVERWRITE_RUNNING);
         createTempPartitions();
-        preSplitStaticOverwriteTempPartitions();
-        preSplitDynamicOverwriteTempPartitions();
         prepareInsert();
         executeInsert();
-        doCommit();
+        doCommit(false);
         transferTo(InsertOverwriteJobState.OVERWRITE_SUCCESS);
-    }
-
-    Estimates getOutputEstimates() {
-        return outputEstimates;
-    }
-
-    void preSplitDynamicOverwriteTempPartitions() {
-        if (job.isDynamicOverwrite() && job.getTxnId() > 0) {
-            InsertPreSplitHook.maybeRunDynamicOverwritePreSplit(insertStmt, context, job.getTxnId());
-        }
-    }
-
-    void preSplitStaticOverwriteTempPartitions() {
-        try {
-            if (job.isDynamicOverwrite() || job.getTmpPartitionIds() == null || job.getTmpPartitionIds().isEmpty()) {
-                return;
-            }
-            Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
-            if (db == null) {
-                return;
-            }
-            List<String> temporaryPartitionNames;
-            try (AutoCloseableLock ignored = new AutoCloseableLock(
-                    new Locker(), db.getId(), Lists.newArrayList(tableId), LockType.READ)) {
-                OlapTable targetTable = checkAndGetTable(db, tableId);
-                temporaryPartitionNames = job.getTmpPartitionIds().stream()
-                        .map(targetTable::getPartition)
-                        .filter(Objects::nonNull)
-                        .map(Partition::getName)
-                        .toList();
-            }
-            if (temporaryPartitionNames.size() != job.getTmpPartitionIds().size()) {
-                return;
-            }
-            InsertPreSplitHook.maybeRunStaticOverwritePreSplit(
-                    insertStmt, context, job.getSourcePartitionNames(), temporaryPartitionNames,
-                    getOutputEstimates());
-        } catch (Throwable unexpected) {
-            // Pre-split is opportunistic. A catalog race or coordinator failure must never turn a
-            // valid INSERT OVERWRITE into a failed load after its temporary partitions were cloned.
-            LOG.warn("Sample-Based Tablet Pre-Split (static INSERT OVERWRITE) failed; "
-                    + "proceeding without pre-split", unexpected);
-        }
     }
 
     public void replayStateChange(InsertOverwriteStateChangeInfo info) {
@@ -274,7 +208,7 @@ public class InsertOverwriteJobRunner {
             job.setTxnId(info.getTxnId());
             job.setJobState(OVERWRITE_FAILED);
             LOG.info("replay insert overwrite job:{} to FAILED", job.getJobId());
-            replayGC();
+            gc(true);
             return;
         } else if (job.getJobState() != info.getFromState()) {
             LOG.warn("invalid job info. current state:{}, from state:{}", job.getJobState(), info.getFromState());
@@ -293,7 +227,7 @@ public class InsertOverwriteJobRunner {
                 job.setTmpPartitionIds(info.getTmpPartitionIds());
                 job.setTxnId(info.getTxnId());
                 job.setJobState(InsertOverwriteJobState.OVERWRITE_SUCCESS);
-                replayCommit();
+                doCommit(true);
                 LOG.info("replay insert overwrite job:{} to SUCCESS", job.getJobId());
                 break;
             default:
@@ -338,8 +272,8 @@ public class InsertOverwriteJobRunner {
         }
 
         // A READ lock is enough here: this section only resolves partition ids to
-        // names and logs the RUNNING state change with an empty WAL applier, so no
-        // table state is mutated. The READ lock keeps the id-to-name mapping stable
+        // names and logs the RUNNING state change, so no table state is mutated.
+        // The READ lock keeps the id-to-name mapping stable
         // (rename/drop requires the table WRITE lock) until the log entry is durable.
         // It provides NO exclusion between concurrent insert overwrite jobs on the
         // same table (see the class comment).
@@ -351,10 +285,6 @@ public class InsertOverwriteJobRunner {
         try {
             OlapTable targetTable;
             targetTable = checkAndGetTable(db, tableId);
-            if (targetTable.getState() != OlapTable.OlapTableState.NORMAL) {
-                throw new DmlException("table state is %s, please wait to insert overwrite until table state is normal",
-                        targetTable.getState());
-            }
             List<String> sourcePartitionNames = Lists.newArrayList();
             for (Long partitionId : job.getSourcePartitionIds()) {
                 Partition partition = targetTable.getPartition(partitionId);
@@ -368,7 +298,7 @@ public class InsertOverwriteJobRunner {
             InsertOverwriteStateChangeInfo info = new InsertOverwriteStateChangeInfo(job.getJobId(), job.getJobState(),
                     InsertOverwriteJobState.OVERWRITE_RUNNING, job.getSourcePartitionIds(), job.getSourcePartitionNames(),
                     job.getTmpPartitionIds(), job.getTxnId());
-            GlobalStateMgr.getCurrentState().getEditLog().logInsertOverwriteStateChange(info, wal -> {});
+            GlobalStateMgr.getCurrentState().getEditLog().logInsertOverwriteStateChange(info);
         } finally {
             locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.READ);
         }
@@ -447,16 +377,16 @@ public class InsertOverwriteJobRunner {
             throw new RuntimeException(ex);
         }
         PartitionDesc partitionDesc = addPartitionClause.getPartitionDesc();
-        List<String> partitionNames;
+        List<String> partitionColNames;
         if (partitionDesc instanceof RangePartitionDesc) {
-            partitionNames = ((RangePartitionDesc) partitionDesc).getPartitionNames();
+            partitionColNames = ((RangePartitionDesc) partitionDesc).getPartitionColNames();
         } else if (partitionDesc instanceof ListPartitionDesc) {
-            partitionNames = ((ListPartitionDesc) partitionDesc).getPartitionNames();
+            partitionColNames = ((ListPartitionDesc) partitionDesc).getPartitionColNames();
         } else {
             throw new RuntimeException("Unsupported partitionDesc");
         }
-        for (String partitionName : partitionNames) {
-            Partition partition = olapTable.getPartition(partitionName);
+        for (String partitionColName : partitionColNames) {
+            Partition partition = olapTable.getPartition(partitionColName);
             if (!sourcePartitionIds.contains(partition.getId())) {
                 sourcePartitionIds.add(partition.getId());
             }
@@ -518,20 +448,25 @@ public class InsertOverwriteJobRunner {
         createPartitionElapse = System.currentTimeMillis() - createPartitionStartTimestamp;
     }
 
-    protected void gc() {
+    private void gc(boolean isReplay) {
         LOG.info("insert overwrite job {} start to garbage collect", job.getJobId());
 
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
         if (db == null || !db.isExist()) {
             // the dynamic overwrite transaction needs only dbId and txnId to abort;
             // clean it up even when the database is gone, otherwise it lingers until
-            // the transaction timeout checker reaps it
-            abortDynamicOverwriteTxnQuietly();
+            // the transaction timeout checker reaps it. Skip on replay: the transaction
+            // was already aborted when the job originally ran.
+            if (!isReplay) {
+                abortDynamicOverwriteTxnQuietly();
+            }
             throw new DmlException("database id:%s does not exist", dbId);
         }
         Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getId(), tableId);
         if (table == null) {
-            abortDynamicOverwriteTxnQuietly();
+            if (!isReplay) {
+                abortDynamicOverwriteTxnQuietly();
+            }
             throw new DmlException("table:%d does not exist in database:%s", tableId, db.getFullName());
         }
         Preconditions.checkState(table instanceof OlapTable);
@@ -558,14 +493,13 @@ public class InsertOverwriteJobRunner {
         }
         try {
             // Drop temp partitions by partition IDs (for non-dynamic overwrite)
-            List<String> partitionNamesToDrop = new ArrayList<>();
             if (job.getTmpPartitionIds() != null) {
                 for (long pid : job.getTmpPartitionIds()) {
                     LOG.info("drop temp partition:{}", pid);
                     Partition partition = targetTable.getPartition(pid);
                     if (partition != null) {
                         collectTabletsFromPartition(partition, sourceTablets);
-                        partitionNamesToDrop.add(partition.getName());
+                        targetTable.dropTempPartition(partition.getName(), true);
                     } else {
                         LOG.warn("partition {} is null", pid);
                     }
@@ -574,38 +508,31 @@ public class InsertOverwriteJobRunner {
 
             // Drop temp partitions for dynamic overwrite
             if (job.isDynamicOverwrite()) {
-                List<String> tmpPartitions = getDynamicOverwriteTempPartitions(targetTable);
-                List<Long> tmpPartitionIds = new ArrayList<>();
-                for (String partitionName : tmpPartitions) {
-                    Partition partition = targetTable.getPartition(partitionName, true);
-                    if (partition != null) {
-                        collectTabletsFromPartition(partition, sourceTablets);
-                        partitionNamesToDrop.add(partitionName);
-                        tmpPartitionIds.add(partition.getId());
-                    }
-                }
-                job.setTmpPartitionIds(tmpPartitionIds);
+                gcDropDynamicOverwriteTempPartitions(targetTable, sourceTablets, isReplay);
             }
 
-            InsertOverwriteStateChangeInfo info = new InsertOverwriteStateChangeInfo(job.getJobId(), job.getJobState(),
-                    OVERWRITE_FAILED, job.getSourcePartitionIds(), job.getSourcePartitionNames(),
-                    job.getTmpPartitionIds(), job.getTxnId());
-            GlobalStateMgr.getCurrentState().getEditLog().logInsertOverwriteStateChange(info, wal -> {
-                for (String pName : partitionNamesToDrop) {
-                    targetTable.dropTempPartition(pName, true);
-                }
-            });
+            if (!isReplay) {
+                // Only the log entry needs the table WRITE lock; marking source tablets for
+                // force delete and aborting the load transaction are moved out of the lock.
+                InsertOverwriteStateChangeInfo info = new InsertOverwriteStateChangeInfo(job.getJobId(), job.getJobState(),
+                        OVERWRITE_FAILED, job.getSourcePartitionIds(), job.getSourcePartitionNames(),
+                        job.getTmpPartitionIds(), job.getTxnId());
+                GlobalStateMgr.getCurrentState().getEditLog().logInsertOverwriteStateChange(info);
+            }
         } catch (Exception e) {
             LOG.warn("exception when gc insert overwrite job.", e);
         } finally {
             locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.WRITE);
         }
 
-        // Mark all source tablet ids force delete to drop it directly on BE. Best-effort
-        // in-memory hints, no table lock needed.
-        GlobalStateMgr.getCurrentState().getTabletInvertedIndex().markTabletsForceDelete(sourceTablets);
+        if (!isReplay) {
+            // Mark all source tablet ids force delete to drop it directly on BE. Best-effort
+            // in-memory hints, no table lock needed.
+            GlobalStateMgr.getCurrentState().getTabletInvertedIndex().markTabletsForceDelete(sourceTablets);
 
-        abortDynamicOverwriteTxnQuietly();
+            // Abort the transaction created in prepare(), now that the table lock is released.
+            abortDynamicOverwriteTxnQuietly();
+        }
     }
 
     // Abort the transaction created in prepare() for a dynamic overwrite job, if any.
@@ -627,36 +554,43 @@ public class InsertOverwriteJobRunner {
     }
 
     /**
-     * Get temp partitions for dynamic overwrite during GC.
-     * Combines names recorded in transaction state with a catalog prefix scan. The latter is needed
-     * both after FE restart and when pre-split created a temporary partition before the BE reported it
-     * through the dynamic-partition RPC.
+     * Drop temp partitions for dynamic overwrite during GC.
+     * Handles three scenarios:
+     * 1. Normal execution: get temp partition names from TransactionState
+     * 2. After FE restart: identify temp partitions by prefix "txn{txnId}_"
+     * 3. Cancelled before prepare: no temp partitions to clean up
      */
-    List<String> getDynamicOverwriteTempPartitions(OlapTable targetTable) {
-        if (job.getTxnId() <= 0) {
-            LOG.info("dynamic overwrite job {} cancelled before prepare phase, no temp partitions to clean up",
-                    job.getJobId());
-            return List.of();
-        }
-
-        Set<String> tmpPartitionNames = new LinkedHashSet<>();
-        if (insertStmt != null) {
-            try {
-                tmpPartitionNames.addAll(getTempPartitionNamesFromTxnState());
-            } catch (Exception e) {
-                LOG.warn("failed to get temp partitions from transaction {} for dynamic overwrite job {}",
-                        job.getTxnId(), job.getJobId(), e);
+    private void gcDropDynamicOverwriteTempPartitions(OlapTable targetTable, Set<Tablet> sourceTablets,
+                                                      boolean isReplay) {
+        List<String> tmpPartitionNames = Lists.newArrayList();
+        if (!isReplay) {
+            if (insertStmt != null && job.getTxnId() > 0) {
+                // Normal execution: get temp partition names from TransactionState
+                tmpPartitionNames = gcGetTempPartitionNamesFromTxnState(targetTable);
+            } else if (job.getTxnId() > 0) {
+                // After FE restart: identify temp partitions by prefix "txn{txnId}_"
+                String tempPartitionPrefix = "txn" + job.getTxnId() + "_";
+                tmpPartitionNames = targetTable.getTempPartitions().stream()
+                        .map(Partition::getName)
+                        .filter(name -> name.startsWith(tempPartitionPrefix))
+                        .collect(Collectors.toList());
+                gcUpdateTmpPartitionIds(targetTable, tmpPartitionNames);
+                LOG.info("dynamic overwrite job {} (FE restarted) drop temp partitions with prefix '{}': {}",
+                        job.getJobId(), tempPartitionPrefix, tmpPartitionNames);
+            } else {
+                // Cancelled before prepare: no temp partitions to clean up
+                LOG.info("dynamic overwrite job {} cancelled before prepare phase, no temp partitions to clean up",
+                        job.getJobId());
             }
         }
 
-        String tempPartitionPrefix = "txn" + job.getTxnId() + "_";
-        targetTable.getTempPartitions().stream()
-                .map(Partition::getName)
-                .filter(name -> name.startsWith(tempPartitionPrefix))
-                .forEach(tmpPartitionNames::add);
-        LOG.info("dynamic overwrite job {} drop temp partitions with prefix '{}': {}",
-                job.getJobId(), tempPartitionPrefix, tmpPartitionNames);
-        return new ArrayList<>(tmpPartitionNames);
+        for (String partitionName : tmpPartitionNames) {
+            Partition partition = targetTable.getPartition(partitionName, true);
+            if (partition != null) {
+                collectTabletsFromPartition(partition, sourceTablets);
+                targetTable.dropTempPartition(partitionName, true);
+            }
+        }
     }
 
     // Wait until the load transaction of a dynamic overwrite job is no longer running,
@@ -678,15 +612,31 @@ public class InsertOverwriteJobRunner {
         }
     }
 
-    private List<String> getTempPartitionNamesFromTxnState() {
+    private List<String> gcGetTempPartitionNamesFromTxnState(OlapTable targetTable) {
         TransactionState txnState = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr()
                 .getTransactionState(dbId, job.getTxnId());
         if (txnState == null) {
             throw new DmlException("transaction state is null dbId:%s, txnId:%s", dbId, job.getTxnId());
         }
         List<String> tmpPartitionNames = txnState.getCreatedPartitionNames(tableId);
+        gcUpdateTmpPartitionIds(targetTable, tmpPartitionNames);
         LOG.info("dynamic overwrite job {} drop tmpPartitionNames:{}", job.getJobId(), tmpPartitionNames);
         return tmpPartitionNames;
+    }
+
+    private void gcUpdateTmpPartitionIds(OlapTable targetTable, List<String> partitionNames) {
+        job.setTmpPartitionIds(partitionNames.stream()
+                .map(name -> {
+                    Partition partition = targetTable.getPartition(name, true);
+                    if (partition == null) {
+                        LOG.warn("dynamic overwrite job {} temp partition {} does not exist during gc, skip",
+                                job.getJobId(), name);
+                        return null;
+                    }
+                    return partition.getId();
+                })
+                .filter(id -> id != null)
+                .collect(Collectors.toList()));
     }
 
     private void collectTabletsFromPartition(Partition partition, Set<Tablet> tablets) {
@@ -697,120 +647,7 @@ public class InsertOverwriteJobRunner {
         }
     }
 
-    protected void replayGC() {
-        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
-        if (db == null) {
-            return;
-        }
-        Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getId(), tableId);
-        if (table == null) {
-            return;
-        }
-        OlapTable targetTable = (OlapTable) table;
-        Locker locker = new Locker();
-        if (!locker.lockTableAndCheckDbExist(db, tableId, LockType.WRITE)) {
-            return;
-        }
-        try {
-            if (job.getTmpPartitionIds() != null) {
-                for (long pid : job.getTmpPartitionIds()) {
-                    LOG.info("drop temp partition:{}", pid);
-                    Partition partition = targetTable.getPartition(pid);
-                    if (partition != null) {
-                        targetTable.dropTempPartition(partition.getName(), true);
-                    } else {
-                        LOG.warn("partition {} is null", pid);
-                    }
-                }
-            }
-        } finally {
-            locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.WRITE);
-        }
-    }
-
-    /**
-     * Acquires the target table's WRITE lock for {@link #doCommit}, waiting out a concurrent tablet
-     * reshard. Returns holding that lock.
-     *
-     * <p>A tablet reshard (a load's pre-split, or the background split/merge daemon) holds
-     * {@code TABLET_RESHARD} until it finishes, and it cannot be aborted once it has left PENDING.
-     * Failing the commit for that would throw away everything this overwrite already wrote, so wait
-     * instead. Only {@code TABLET_RESHARD} is waited out: it changes no schema and is designed to
-     * coexist with DML. Every other non-NORMAL state (SCHEMA_CHANGE, ROLLUP, ...) can change the
-     * schema or index metadata this job's temporary partitions and already-built insert plan were
-     * derived from, so committing after it finished could target a layout that no longer matches —
-     * those return immediately and the caller's own state check fails the commit, exactly as before.
-     * So does a reshard that outlasts the load's remaining budget.
-     *
-     * <p>The state is only ever read under the WRITE lock — {@code OlapTable.state} is a plain field,
-     * not volatile — and the table is re-resolved by id on every attempt so a concurrent drop cannot
-     * be missed. The lock is never held across the sleep: a reshard job needs it to restore NORMAL.
-     *
-     * <p>One case this does NOT rescue, and it is pre-existing rather than introduced here. A reshard
-     * job captures its cleanup watermark at the END of its RUNNING phase, not when it is admitted
-     * ({@code SplitTabletJob#runRunningJob}), so a load transaction opened after a pre-split wait timed
-     * out can still fall below that watermark. Its CLEANING phase then waits for that transaction to
-     * become visible, while this loop waits for CLEANING to restore NORMAL. The transaction does become
-     * visible eventually, so this resolves rather than deadlocks — but if publish is slow enough that the
-     * transaction is still merely COMMITTED (a state the statement executor already reports as a
-     * successful load) when this deadline expires, the commit fails after its data was written. Before
-     * this wait existed that case failed immediately instead, so waiting is strictly better.
-     *
-     * <p>Dynamic overwrite is not immune to that window either, despite registering its transaction in
-     * the job's cleanup-exclusion set: that exclusion is revoked as soon as its pre-split wait returns
-     * ({@code PreSplitFlow}), because it is only sound while the transaction is known not to be writing.
-     * Excluding a transaction that is writing would let CLEANING unregister the resharding tablets
-     * underneath it. So the exclusion set cannot close this window for any route by construction —
-     * closing it properly means scoping the reshard state to the partition being resharded, so an
-     * overwrite's commit does not depend on a table-wide state at all. That is a separate fix.
-     */
-    private void lockForCommitWaitingOutReshard(Database db, Locker locker) {
-        // The load's REMAINING budget, not a fresh timeout: planning and writing already spent part of
-        // it. ConnectContext.getExecTimeout() honors a statement-level timeout property and excludes
-        // query-queue waiting time, matching the normal timeout checker. Replay and test callers have
-        // no context and no budget, so they never wait.
-        //
-        // A cancelled statement also stops waiting, so the request is released instead of sitting here
-        // for the rest of its budget: by this point the data is written and the coordinator has already
-        // finished, so nothing else interrupts this thread. It has to be isStatementCancelled() rather
-        // than isKilled() -- the routes that matter for an overwrite all call kill(false, ...), which
-        // leaves isKilled false: KILL QUERY, a cancelled MV TaskRun (TaskRunManager) and a closed client
-        // (MySQLReadListener).
-        Instant deadline = context == null
-                ? Instant.EPOCH
-                : context.getStartTimeInstant().plusSeconds(context.getExecTimeout());
-        while (true) {
-            if (!locker.lockTableAndCheckDbExist(db, tableId, LockType.WRITE)) {
-                throw new DmlException("insert overwrite commit failed because locking db:%s failed", dbId);
-            }
-            OlapTable.OlapTableState state;
-            try {
-                state = checkAndGetTable(db, tableId).getState();
-            } catch (Throwable resolveFailure) {
-                locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.WRITE);
-                throw resolveFailure;
-            }
-            if (state != OlapTable.OlapTableState.TABLET_RESHARD
-                    || !Instant.now().isBefore(deadline)
-                    || (context != null && context.isStatementCancelled())) {
-                return;
-            }
-            locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.WRITE);
-            LOG.info("insert overwrite job {} waiting for table {} to leave {} before committing",
-                    job.getJobId(), tableId, state);
-            try {
-                Thread.sleep(COMMIT_TABLE_STATE_POLL_INTERVAL_MS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                if (!locker.lockTableAndCheckDbExist(db, tableId, LockType.WRITE)) {
-                    throw new DmlException("insert overwrite commit failed because locking db:%s failed", dbId);
-                }
-                return;
-            }
-        }
-    }
-
-    protected void doCommit() {
+    private void doCommit(boolean isReplay) {
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
         if (db == null) {
             throw new DmlException("database id:%s does not exist", dbId);
@@ -822,14 +659,12 @@ public class InsertOverwriteJobRunner {
         Set<Tablet> sourceTablets = Sets.newHashSet();
 
         Locker locker = new Locker();
-        lockForCommitWaitingOutReshard(db, locker);
+        if (!locker.lockTableAndCheckDbExist(db, tableId, LockType.WRITE)) {
+            throw new DmlException("insert overwrite commit failed because locking db:%s failed", dbId);
+        }
         try {
             // try exception to release write lock finally
             final OlapTable targetTable = checkAndGetTable(db, tableId);
-            if (targetTable.getState() != OlapTable.OlapTableState.NORMAL) {
-                throw new DmlException("table state is %s, please wait to insert overwrite until table state is normal",
-                        targetTable.getState());
-            }
             tmpTargetTable = targetTable;
             List<String> sourcePartitionNames = job.getSourcePartitionNames();
             if (sourcePartitionNames == null || sourcePartitionNames.isEmpty()) {
@@ -874,90 +709,96 @@ public class InsertOverwriteJobRunner {
             PartitionInfo partitionInfo = targetTable.getPartitionInfo();
             if (partitionInfo.isRangePartition() || partitionInfo.getType() == PartitionType.LIST) {
                 if (job.isDynamicOverwrite()) {
-                    TransactionState txnState = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr()
-                            .getTransactionState(dbId, insertStmt.getTxnId());
-                    if (txnState == null) {
-                        throw new DmlException("transaction state is null dbId:%s, txnId:%s", dbId, insertStmt.getTxnId());
-                    }
-                    tmpPartitionNames = txnState.getCreatedPartitionNames(tableId);
-
-                    List<Long> dynamicSourcePartitionIds = new ArrayList<>();
-                    for (String tempPartitionName : tmpPartitionNames) {
-                        String oldPartitionName = tempPartitionName.substring(
-                                tempPartitionName.indexOf(AnalyzerUtils.PARTITION_NAME_PREFIX_SPLIT) + 1);
-                        Partition oldPartition = targetTable.getPartition(oldPartitionName, false);
-                        if (oldPartition != null) {
-                            dynamicSourcePartitionIds.add(oldPartition.getId());
+                    if (!isReplay) {
+                        TransactionState txnState = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr()
+                                .getTransactionState(dbId, insertStmt.getTxnId());
+                        if (txnState == null) {
+                            throw new DmlException("transaction state is null dbId:%s, txnId:%s", dbId, insertStmt.getTxnId());
                         }
-                    }
+                        tmpPartitionNames = txnState.getCreatedPartitionNames(tableId);
 
-                    // Collect target partition IDs for stats (the new temp partitions)
-                    List<Long> dynamicTargetPartitionIds = tmpPartitionNames.stream()
-                            .map(name -> {
-                                Partition partition = targetTable.getPartition(name, true);
-                                if (partition == null) {
-                                    throw new DmlException("temp partition %s does not exist", name);
-                                }
-                                return partition.getId();
-                            })
-                            .collect(Collectors.toList());
+                        List<Long> dynamicSourcePartitionIds = new ArrayList<>();
+                        for (String tempPartitionName : tmpPartitionNames) {
+                            String oldPartitionName = tempPartitionName.substring(
+                                    tempPartitionName.indexOf(AnalyzerUtils.PARTITION_NAME_PREFIX_SPLIT) + 1);
+                            Partition oldPartition = targetTable.getPartition(oldPartitionName, false);
+                            if (oldPartition != null) {
+                                dynamicSourcePartitionIds.add(oldPartition.getId());
+                            }
+                        }
 
-                    job.setTmpPartitionIds(dynamicTargetPartitionIds);
-                    tmpPartitionIds = dynamicTargetPartitionIds;
+                        // Collect target partition IDs for stats (the new temp partitions)
+                        List<Long> dynamicTargetPartitionIds = tmpPartitionNames.stream()
+                                .map(name -> {
+                                    Partition partition = targetTable.getPartition(name, true);
+                                    if (partition == null) {
+                                        throw new DmlException("temp partition %s does not exist", name);
+                                    }
+                                    return partition.getId();
+                                })
+                                .collect(Collectors.toList());
 
-                    if (stats.getSourcePartitionIds().isEmpty()) {
-                        stats.setSourcePartitionIds(dynamicSourcePartitionIds);
-                    }
+                        job.setTmpPartitionIds(dynamicTargetPartitionIds);
+                        tmpPartitionIds = dynamicTargetPartitionIds;
 
-                    if (stats.getTargetPartitionIds().isEmpty()) {
-                        stats.setTargetPartitionIds(dynamicTargetPartitionIds);
-                    }
+                        if (stats.getSourcePartitionIds().isEmpty()) {
+                            stats.setSourcePartitionIds(dynamicSourcePartitionIds);
+                        }
 
-                    if (stats.getSourceRows() == 0) {
-                        // Recalculate sumSourceRows for dynamic overwrite
-                        sumSourceRows = dynamicSourcePartitionIds.stream()
-                                .mapToLong(pid -> targetTable.mayGetPartition(pid).stream()
-                                        .mapToLong(Partition::getRowCount).sum())
-                                .sum();
-                        stats.setSourceRows(sumSourceRows);
+                        if (stats.getTargetPartitionIds().isEmpty()) {
+                            stats.setTargetPartitionIds(dynamicTargetPartitionIds);
+                        }
+
+                        if (stats.getSourceRows() == 0) {
+                            // Recalculate sumSourceRows for dynamic overwrite
+                            sumSourceRows = dynamicSourcePartitionIds.stream()
+                                    .mapToLong(pid -> targetTable.mayGetPartition(pid).stream()
+                                            .mapToLong(Partition::getRowCount).sum())
+                                    .sum();
+                            stats.setSourceRows(sumSourceRows);
+                        }
                     }
                     LOG.info("dynamic overwrite job {} replace tmpPartitionNames:{}", job.getJobId(), tmpPartitionNames);
                     ensureTempPartitionsVisible(targetTable, tmpPartitionIds);
+                    targetTable.replaceMatchPartitions(dbId, tmpPartitionNames);
                 } else {
                     ensureTempPartitionsVisible(targetTable, tmpPartitionIds);
-                    targetTable.checkReplaceTempPartitions(sourcePartitionNames, tmpPartitionNames, true);
+                    targetTable.replaceTempPartitions(dbId, sourcePartitionNames, tmpPartitionNames, true, false);
                 }
             } else if (partitionInfo instanceof SinglePartitionInfo) {
                 ensureTempPartitionsVisible(targetTable, tmpPartitionIds);
+                targetTable.replacePartition(dbId, sourcePartitionNames.get(0), tmpPartitionNames.get(0));
             } else {
                 throw new DdlException("partition type " + partitionInfo.getType() + " is not supported");
             }
 
-            InsertOverwriteStateChangeInfo info = new InsertOverwriteStateChangeInfo(job.getJobId(), job.getJobState(),
-                    InsertOverwriteJobState.OVERWRITE_SUCCESS, job.getSourcePartitionIds(), job.getSourcePartitionNames(),
-                    job.getTmpPartitionIds(), job.getTxnId());
-            final List<String> finalSourcePartitionNames = sourcePartitionNames;
-            final List<String> finalTmpPartitionNames = tmpPartitionNames;
-            GlobalStateMgr.getCurrentState().getEditLog().logInsertOverwriteStateChange(info, wal -> {
-                replacePartition(targetTable, finalSourcePartitionNames, finalTmpPartitionNames);
-                dropUnusedDynamicOverwriteTempPartitions(targetTable);
-            });
+            if (!isReplay) {
+                // Only the log entry and schema-update bump need the table WRITE lock. The
+                // remaining post-commit work (force-delete marks, row-count stats, colocation
+                // sync, listeners) is moved out of the lock into postCommit().
+                InsertOverwriteStateChangeInfo info = new InsertOverwriteStateChangeInfo(job.getJobId(), job.getJobState(),
+                        InsertOverwriteJobState.OVERWRITE_SUCCESS, job.getSourcePartitionIds(),
+                        job.getSourcePartitionNames(), job.getTmpPartitionIds(), job.getTxnId());
+                GlobalStateMgr.getCurrentState().getEditLog().logInsertOverwriteStateChange(info);
 
-            targetTable.lastSchemaUpdateTime.set(System.nanoTime());
+                targetTable.lastSchemaUpdateTime.set(System.nanoTime());
+            }
         } catch (Exception e) {
             LOG.warn("replace partitions failed when insert overwrite into dbId:{}, tableId:{}",
                     job.getTargetDbId(), job.getTargetTableId(), e);
-            throw new DmlException("%s", e, buildReplacePartitionsFailedMessage(e));
+            throw new DmlException("replace partitions failed", e);
         } finally {
             locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.WRITE);
         }
 
-        postCommit(tmpTargetTable, sourceTablets, stats);
+        if (!isReplay) {
+            postCommit(tmpTargetTable, sourceTablets, stats);
 
-        // trigger listeners after insert overwrite committed, trigger listeners after
-        // write unlock to avoid holding lock too long
-        GlobalStateMgr.getCurrentState().getOperationListenerBus()
-                .onInsertOverwriteJobCommitFinish(db, tmpTargetTable, stats);
+            // trigger listeners after insert overwrite committed, trigger listeners after
+            // write unlock to avoid holding lock too long
+            GlobalStateMgr.getCurrentState().getOperationListenerBus()
+                    .onInsertOverwriteJobCommitFinish(db, tmpTargetTable, stats);
+        }
     }
 
     // Post-commit follow-up. The partition swap is already durable in the journal, so
@@ -1017,7 +858,7 @@ public class InsertOverwriteJobRunner {
 
             if (sumTargetRows == 0) {
                 LOG.warn("TxnCommitAttachment is null or invalid, fallback to partition.getRowCount() for " +
-                        "table_id={}, partition_ids={}, txn_id={}",
+                                "table_id={}, partition_ids={}, txn_id={}",
                         tableId, job.getTmpPartitionIds(), insertStmt != null ? insertStmt.getTxnId() : "null");
                 sumTargetRows = job.getTmpPartitionIds().stream()
                         .mapToLong(p -> targetTable.mayGetPartition(p).stream().mapToLong(Partition::getRowCount).sum())
@@ -1037,79 +878,6 @@ public class InsertOverwriteJobRunner {
             // log an error if post-commit work failed, insert overwrite already succeeded
             LOG.error("insert overwrite post-commit work failed for dbId:{}, tableId:{}, the job still succeeds",
                     dbId, tableId, e);
-        }
-    }
-
-    private static String buildReplacePartitionsFailedMessage(Throwable throwable) {
-        String detail = null;
-        for (Throwable current = throwable; current != null; current = current.getCause()) {
-            if (current.getMessage() != null && !current.getMessage().isEmpty()) {
-                detail = current.getMessage();
-            }
-        }
-        if (detail == null) {
-            return "replace partitions failed";
-        }
-        return "replace partitions failed: " + detail;
-    }
-
-    private void replacePartition(OlapTable targetTable,
-                                  List<String> sourcePartitionNames,
-                                  List<String> tmpPartitionNames) {
-        PartitionInfo partitionInfo = targetTable.getPartitionInfo();
-        if (partitionInfo.isRangePartition() || partitionInfo.getType() == PartitionType.LIST) {
-            if (job.isDynamicOverwrite()) {
-                targetTable.replaceMatchPartitions(dbId, tmpPartitionNames);
-            } else {
-                targetTable.replaceTempPartitionsWithoutCheck(dbId, sourcePartitionNames, tmpPartitionNames,  false);
-            }
-        } else {
-            targetTable.replacePartition(dbId, sourcePartitionNames.get(0), tmpPartitionNames.get(0));
-        }
-    }
-
-    /**
-     * Sampling and the actual load use separate source snapshots. If rows for a sampled partition
-     * disappear before the load starts, its pre-created temporary partition is never registered in
-     * transaction state and therefore is not promoted. Drop every transaction-scoped temporary
-     * partition left after the successful replacement.
-     */
-    void dropUnusedDynamicOverwriteTempPartitions(OlapTable targetTable) {
-        if (!job.isDynamicOverwrite() || job.getTxnId() <= 0) {
-            return;
-        }
-        String tempPartitionPrefix = "txn" + job.getTxnId() + "_";
-        List<String> unusedPartitionNames = targetTable.getTempPartitions().stream()
-                .map(Partition::getName)
-                .filter(name -> name.startsWith(tempPartitionPrefix))
-                .toList();
-        for (String partitionName : unusedPartitionNames) {
-            targetTable.dropTempPartition(partitionName, true);
-        }
-        if (!unusedPartitionNames.isEmpty()) {
-            LOG.info("dynamic overwrite job {} dropped unused pre-split temp partitions: {}",
-                    job.getJobId(), unusedPartitionNames);
-        }
-    }
-
-    protected void replayCommit() {
-        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
-        if (db == null) {
-            return;
-        }
-        Locker locker = new Locker();
-        if (!locker.lockTableAndCheckDbExist(db, tableId, LockType.WRITE)) {
-            return;
-        }
-        try {
-            final OlapTable targetTable = checkAndGetTable(db, tableId);
-            List<String> tmpPartitionNames = job.getTmpPartitionIds().stream()
-                    .map(partitionId -> targetTable.getPartition(partitionId).getName())
-                    .toList();
-            replacePartition(targetTable, job.getSourcePartitionNames(), tmpPartitionNames);
-            dropUnusedDynamicOverwriteTempPartitions(targetTable);
-        } finally {
-            locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.WRITE);
         }
     }
 
@@ -1163,8 +931,12 @@ public class InsertOverwriteJobRunner {
         return (OlapTable) table;
     }
 
-    protected void testDoCommit() {
-        doCommit();
+    protected void testDoCommit(boolean isReplay) {
+        doCommit(isReplay);
+    }
+
+    protected void testGc(boolean isReplay) {
+        gc(isReplay);
     }
 
     protected void ensureTempPartitionsVisible(OlapTable targetTable, List<Long> partitionIds) {

@@ -1,4 +1,4 @@
-position: 110
+position: 60 # float position is supported
 label: 'Query Acceleration'
 collapsible: true
 collapsed: true

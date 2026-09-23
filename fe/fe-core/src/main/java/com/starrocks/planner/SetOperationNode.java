@@ -72,12 +72,6 @@ import java.util.stream.Collectors;
  * tuples.
  */
 public abstract class SetOperationNode extends PlanNode {
-    // No union/intersect/except operator calls eval_runtime_bloom_filters().
-    @Override
-    public boolean canEvaluateRuntimeFilter() {
-        return false;
-    }
-
     private static final Logger LOG = LoggerFactory.getLogger(SetOperationNode.class);
 
     // List of set operation result exprs of the originating SetOperationStmt. Used for
@@ -338,7 +332,7 @@ public abstract class SetOperationNode extends PlanNode {
             }
         }
 
-        if (canEvaluateRuntimeFilter() && description.canProbeUse(this, context)) {
+        if (description.canProbeUse(this, context)) {
             // can not push down to children.
             // use runtime filter at this level.
             description.addProbeExpr(id.asInt(), probeExpr);

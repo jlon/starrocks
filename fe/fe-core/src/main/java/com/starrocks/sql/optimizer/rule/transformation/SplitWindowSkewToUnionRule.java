@@ -16,11 +16,9 @@ package com.starrocks.sql.optimizer.rule.transformation;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.expression.BinaryType;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptimizerContext;
-import com.starrocks.sql.optimizer.Utils;
 import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.base.Ordering;
 import com.starrocks.sql.optimizer.operator.OperatorType;
@@ -36,7 +34,6 @@ import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.IsNullPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.PredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
-import com.starrocks.sql.optimizer.rule.NonDeterministicVisitor;
 import com.starrocks.sql.optimizer.rule.RuleType;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.OptExpressionDuplicator;
 import com.starrocks.sql.optimizer.skew.DataSkew;
@@ -48,8 +45,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-
-import static com.starrocks.sql.optimizer.operator.OpRuleBit.OP_SPLIT_WINDOW_SKEW;
 
 /*
  * Rule Objective:
@@ -124,24 +119,14 @@ public class SplitWindowSkewToUnionRule extends TransformationRule {
     @Override
     public boolean check(OptExpression input, OptimizerContext context) {
         if (input.getOp() instanceof LogicalWindowOperator lwo) {
-            if (lwo.isOpRuleBitSet(OP_SPLIT_WINDOW_SKEW)) {
-                return false;
-            }
-            OptExpression child = input.inputAt(0);
-            if (child.getOp().accept(new NonDeterministicVisitor(), child, null)) {
-                return false;
-            }
-
             List<ScalarOperator> partitionExprs = lwo.getPartitionExpressions();
 
             // Rule only applies if there is exactly one partition expression,
             // and that expression is a direct ColumnReference (not a function or expression).
-            // An explicit [merge_sort] hint picks the merge-sort strategy instead, so leave it alone.
             return partitionExprs != null
                     && partitionExprs.size() == 1
                     && lwo.getOrderByElements() != null
-                    && !lwo.getOrderByElements().isEmpty()
-                    && !lwo.isForceMergeSort();
+                    && !lwo.getOrderByElements().isEmpty();
         }
         return false;
     }
@@ -163,12 +148,8 @@ public class SplitWindowSkewToUnionRule extends TransformationRule {
         Statistics statistics = child.getStatistics();
 
         // 1. Identify Skew
-        // First check for explicit skew hint from user (takes precedence over statistics)
-        // Then fallback to statistics-based detection
-        List<SkewedInfo> skewedInfos = findSkewedPartitionFromHint(window);
-        if (skewedInfos.isEmpty()) {
-            skewedInfos = findSkewedPartition(window.getPartitionExpressions(), statistics);
-        }
+        // We look for a partition column that has a specific value causing data skew.
+        List<SkewedInfo> skewedInfos = findSkewedPartition(window.getPartitionExpressions(), statistics);
 
         //todo (m.bogusz) in theory we could have multiple skewed values, but for now we only handle one
         if (skewedInfos.size() != 1) {
@@ -220,14 +201,8 @@ public class SplitWindowSkewToUnionRule extends TransformationRule {
 
         // 4. Build Union
         LogicalUnionOperator unionOp = buildUnionOperator(context, child, window, unskewedBranch);
-        OptExpression unionExpr = OptExpression.create(unionOp, skewedBranch.root, unskewedBranch.root);
-        // The split builds a fresh UNION subtree and the duplicated branch starts without logical properties or
-        // statistics. Derive logical properties first so statistics estimators can inspect output columns, then
-        // calculate fresh statistics for the duplicated branch.
-        deriveLogicalProperty(unionExpr);
-        Utils.calculateStatistics(unionExpr, context);
 
-        return Lists.newArrayList(unionExpr);
+        return Lists.newArrayList(OptExpression.create(unionOp, skewedBranch.root, unskewedBranch.root));
     }
 
     private LogicalUnionOperator buildUnionOperator(OptimizerContext context,
@@ -267,8 +242,6 @@ public class SplitWindowSkewToUnionRule extends TransformationRule {
 
         LogicalWindowOperator.Builder windowBuilder = new LogicalWindowOperator.Builder()
                 .withOperator(originalWindow)
-                .setSkewColumn(null)
-                .setSkewValues(List.of())
                 .setUseHashBasedPartition(partitionExprs.isEmpty() && originalWindow.isUseHashBasedPartition())
                 .setIsSkewed(partitionExprs.isEmpty() && originalWindow.isSkewed());
 
@@ -300,20 +273,7 @@ public class SplitWindowSkewToUnionRule extends TransformationRule {
             windowBuilder.setPartitionExpressions(partitionExprs);
         }
 
-        LogicalWindowOperator branchWindow = windowBuilder.build();
-        branchWindow.setOpRuleBit(OP_SPLIT_WINDOW_SKEW);
-        return new BranchResult(OptExpression.create(branchWindow, filterExpr), mapping);
-    }
-
-    private void deriveLogicalProperty(OptExpression root) {
-        if (root.getLogicalProperty() != null) {
-            return;
-        }
-
-        for (OptExpression child : root.getInputs()) {
-            deriveLogicalProperty(child);
-        }
-        root.deriveLogicalPropertyItself();
+        return new BranchResult(OptExpression.create(windowBuilder.build(), filterExpr), mapping);
     }
 
     private List<ScalarOperator> rewriteExpressions(List<ScalarOperator> exprs, OptExpressionDuplicator duplicator) {
@@ -347,46 +307,6 @@ public class SplitWindowSkewToUnionRule extends TransformationRule {
             this.columnMapping = columnMapping;
         }
 
-    }
-
-    /**
-     * Check for explicit skew hint from user: [skew|t.column(value)]
-     * This takes precedence over statistics-based detection.
-     */
-    private List<SkewedInfo> findSkewedPartitionFromHint(LogicalWindowOperator window) {
-        ScalarOperator skewColumn = window.getSkewColumn();
-        List<ScalarOperator> skewValues = window.getSkewValues();
-
-        if (skewColumn == null || skewValues == null || skewValues.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        if (!(skewColumn instanceof ColumnRefOperator col)) {
-            return Collections.emptyList();
-        }
-
-        // Verify that the skewed column is part of the partition expressions
-        if (!window.getPartitionExpressions().contains(col)) {
-            throw new SemanticException("Can't find skew column");
-        }
-
-        // Validate that each skew value is type-compatible with the column and cast to the column's type
-        return skewValues.stream()
-                .map(v -> {
-                    if (!(v instanceof ConstantOperator c)) {
-                        throw new SemanticException("Window skew hint values must be constant");
-                    }
-                    if (c.isNull()) {
-                        return new SkewedInfo(col, ConstantOperator.createNull(col.getType()));
-                    }
-                    Optional<ConstantOperator> cast = c.castTo(col.getType());
-                    if (cast.isEmpty()) {
-                        throw new SemanticException("Window skew hint value type mismatch: " +
-                                c.getType() + " vs " + col.getType());
-                    }
-                    return new SkewedInfo(col, cast.get());
-                })
-                .toList();
     }
 
     private List<SkewedInfo> findSkewedPartition(List<ScalarOperator> partitionExprs, Statistics statistics) {

@@ -97,27 +97,10 @@ public class SkewJoinTest extends PlanTestBase {
     }
 
     @Test
-    public void testSkewJoinLeftOuterWithRightSideHintIsNotRewritten() throws Exception {
-        // The salting rewrite replicates the NON-skewed child once per salt value. Naming the skew
-        // column on t1 here puts the skewed child on the right, so the child being replicated is t0 --
-        // the preserved side of the left outer join. Every replica that matches nothing emits its own
-        // null-padded row, so a single t0 row comes back up to skew_join_rand_range + 1 times and the
-        // row count moves with rand() between runs. Verified on a cluster before this guard existed:
-        // `t2 left join [skew|t1.c_string(..)] t1 on t1.c_string = t2.c_string` returned ten different
-        // counts in ten runs (66559..67555) where the correct answer was 59040.
+    public void testSkewJoinWithRightSideHint() throws Exception {
         String sql = "select * from t0 left join [skew|t1.v4(100)] t1 on t0.v1 = t1.v4";
         String sqlPlan = getFragmentPlan(sql);
-        assertNotContains(sqlPlan, "rand_col");
-        assertCContains(sqlPlan, "equal join conjunct: 1: v1 = 4: v4");
-    }
-
-    @Test
-    public void testSkewJoinInnerWithRightSideHintStillRewritten() throws Exception {
-        // Same orientation, inner join: nothing is preserved, so a replica that matches nothing just
-        // drops out and the rewrite stays sound. The guard above must not reach this.
-        String sql = "select * from t0 join [skew|t1.v4(100)] t1 on t0.v1 = t1.v4";
-        String sqlPlan = getFragmentPlan(sql);
-        assertCContains(sqlPlan, "rand_col");
+        assertCContains(sqlPlan, "equal join conjunct: 14: rand_col = 7: rand_col");
         assertCContains(sqlPlan, "equal join conjunct: 1: v1 = 4: v4");
     }
 
@@ -292,11 +275,12 @@ public class SkewJoinTest extends PlanTestBase {
 
     @Test
     public void testSkewJoinWithStats() throws Exception {
-        String sql = "select * from test.customer join test.part on c_mktsegment = p_name ";
+        String sql = "select * from test.customer join test.part on c_mktsegment = p_name and c_custkey = p_partkey ";
         String sqlPlan = getFragmentPlan(sql);
         // rewrite success
         assertCContains(sqlPlan, "equal join conjunct: 20: rand_col = 27: rand_col\n" +
-                "  |  equal join conjunct: 7: C_MKTSEGMENT = 11: P_NAME");
+                "  |  equal join conjunct: 7: C_MKTSEGMENT = 11: P_NAME\n" +
+                "  |  equal join conjunct: 1: C_CUSTKEY = 10: P_PARTKEY");
 
         int skewJoinUseMCVCount = connectContext.getSessionVariable().getSkewJoinOptimizeUseMCVCount();
         double skewDataThreshold = connectContext.getSessionVariable().getSkewJoinDataSkewThreshold();
@@ -304,13 +288,15 @@ public class SkewJoinTest extends PlanTestBase {
         connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(0.3);
         sqlPlan = getFragmentPlan(sql);
         // not rewrite because of the skewJoinUseMCVCount and skewDataThreshold
-        assertCContains(sqlPlan, "equal join conjunct: 7: C_MKTSEGMENT = 11: P_NAME");
+        assertCContains(sqlPlan, "equal join conjunct: 7: C_MKTSEGMENT = 11: P_NAME\n" +
+                "  |  equal join conjunct: 1: C_CUSTKEY = 10: P_PARTKEY");
         connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(skewDataThreshold);
         connectContext.getSessionVariable().setSkewJoinOptimizeUseMCVCount(skewJoinUseMCVCount);
 
-        sql = "select * from test.customer join test.part on trim(c_mktsegment) = p_name ";
+        sql = "select * from test.customer join test.part on trim(c_mktsegment) = p_name and c_custkey = p_partkey ";
         sqlPlan = getFragmentPlan(sql);
-        assertCContains(sqlPlan, "equal join conjunct: 20: trim = 11: P_NAME");
+        assertCContains(sqlPlan, "equal join conjunct: 20: trim = 11: P_NAME\n" +
+                "  |  equal join conjunct: 1: C_CUSTKEY = 10: P_PARTKEY");
 
         sql = "select c_custkey, sum(p_retailprice) from (select c_custkey, c_mktsegment from test.customer) c" +
                 " join (select p_name,p_retailprice from test.part) p on c.c_mktsegment = p.p_name group by c_custkey";
@@ -318,10 +304,11 @@ public class SkewJoinTest extends PlanTestBase {
         assertCContains(sqlPlan, "equal join conjunct: 21: rand_col = 28: rand_col\n" +
                 "  |  equal join conjunct: 7: C_MKTSEGMENT = 11: P_NAME");
 
-        sql = "select * from test.customer join test.part on p_name = c_mktsegment";
+        sql = "select * from test.customer join test.part on p_name = c_mktsegment and p_partkey = c_custkey";
         sqlPlan = getFragmentPlan(sql);
         assertCContains(sqlPlan, "equal join conjunct: 20: rand_col = 27: rand_col\n" +
-                "  |  equal join conjunct: 7: C_MKTSEGMENT = 11: P_NAME");
+                "  |  equal join conjunct: 7: C_MKTSEGMENT = 11: P_NAME\n" +
+                "  |  equal join conjunct: 1: C_CUSTKEY = 10: P_PARTKEY");
     }
 
     @Test
@@ -336,29 +323,19 @@ public class SkewJoinTest extends PlanTestBase {
 
     @Test
     public void testIntSkewColumnVarchar() throws Exception {
-        double oldThreshold = connectContext.getSessionVariable().getSkewJoinDataSkewThreshold();
-        long oldMaxOverlap = connectContext.getSessionVariable().getSkewJoinMaxOtherSideOverlapRowCount();
-        try {
-            connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(0.0);
-            connectContext.getSessionVariable().setSkewJoinMaxOtherSideOverlapRowCount(Long.MAX_VALUE);
-            ((MockHistogramStatisticStorage) connectContext.getGlobalStateMgr()
-                    .getStatisticStorage()).addHistogramStatistis("c_nationkey", IntegerType.INT, 100);
+        connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(0);
+        ((MockHistogramStatisticStorage) connectContext.getGlobalStateMgr()
+                .getStatisticStorage()).addHistogramStatistis("c_nationkey", IntegerType.INT, 100);
 
-            String sql = "select * from test.customer join test.part on P_SIZE = C_NATIONKEY and p_partkey = c_custkey";
-            String sqlPlan = getFragmentPlan(sql);
-            assertCContains(sqlPlan, "C_NATIONKEY IN (22, 23, 24, 10, 11)");
-        } finally {
-            connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(oldThreshold);
-            connectContext.getSessionVariable().setSkewJoinMaxOtherSideOverlapRowCount(oldMaxOverlap);
-        }
+        String sql = "select * from test.customer join test.part on P_SIZE = C_NATIONKEY and p_partkey = c_custkey";
+        String sqlPlan = getFragmentPlan(sql);
+        assertCContains(sqlPlan, "C_NATIONKEY IN (22, 23, 24, 10, 11)");
     }
 
     @Test
     void testSkewJoinWithNullOnlySkewByStats() throws Exception {
         final var oldStatisticsStorage = connectContext.getGlobalStateMgr().getStatisticStorage();
         final double oldThreshold = connectContext.getSessionVariable().getSkewJoinDataSkewThreshold();
-        final boolean oldEnableStats = connectContext.getSessionVariable().isEnableStatsToOptimizeSkewJoin();
-        final boolean oldEnableRewrite = connectContext.getSessionVariable().isEnableOptimizerSkewJoinOptimizeV1();
         try {
             final var emptyStatisticsStorage = new EmptyStatisticStorage() {
                 @Override
@@ -395,9 +372,8 @@ public class SkewJoinTest extends PlanTestBase {
                       |  <slot 9> : [NULL]
                     """);
         } finally {
+            // Restore threshold
             connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(oldThreshold);
-            connectContext.getSessionVariable().setEnableStatsToOptimizeSkewJoin(oldEnableStats);
-            connectContext.getSessionVariable().setEnableOptimizerSkewJoinOptimizeV1(oldEnableRewrite);
             connectContext.getGlobalStateMgr().setStatisticStorage(oldStatisticsStorage);
         }
     }
@@ -406,8 +382,6 @@ public class SkewJoinTest extends PlanTestBase {
     void testSkewJoinWithNullOnlySkewAndMcvSkew() throws Exception {
         final var oldStatisticsStorage = connectContext.getGlobalStateMgr().getStatisticStorage();
         final double oldThreshold = connectContext.getSessionVariable().getSkewJoinDataSkewThreshold();
-        final boolean oldEnableStats = connectContext.getSessionVariable().isEnableStatsToOptimizeSkewJoin();
-        final boolean oldEnableRewrite = connectContext.getSessionVariable().isEnableOptimizerSkewJoinOptimizeV1();
         try {
             final var emptyStatisticsStorage = new EmptyStatisticStorage() {
                 @Override
@@ -420,12 +394,11 @@ public class SkewJoinTest extends PlanTestBase {
                     }
 
                     return ColumnStatistic.builder() //
-                            .setNullsFraction(0.0) //
+                            .setNullsFraction(0.1) //
                             .build();
                 }
             };
             setTableStatistics(getOlapTable("t0"), 1337);
-            setTableStatistics(getOlapTable("t1"), 1337);
             connectContext.getGlobalStateMgr().setStatisticStorage(emptyStatisticsStorage);
             connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(0.1);
             connectContext.getSessionVariable().setEnableStatsToOptimizeSkewJoin(true);
@@ -449,112 +422,8 @@ public class SkewJoinTest extends PlanTestBase {
                       |  <slot 9> : [11,22]
                     """);
         } finally {
+            // Restore threshold
             connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(oldThreshold);
-            connectContext.getSessionVariable().setEnableStatsToOptimizeSkewJoin(oldEnableStats);
-            connectContext.getSessionVariable().setEnableOptimizerSkewJoinOptimizeV1(oldEnableRewrite);
-            connectContext.getGlobalStateMgr().setStatisticStorage(oldStatisticsStorage);
-        }
-    }
-
-    @Test
-    void testSkewJoinNoRewriteWhenBothSidesSkewedOnSameValues() throws Exception {
-        // GIVEN
-        final var oldStatisticsStorage = connectContext.getGlobalStateMgr().getStatisticStorage();
-        final double oldThreshold = connectContext.getSessionVariable().getSkewJoinDataSkewThreshold();
-        final boolean oldEnableStats = connectContext.getSessionVariable().isEnableStatsToOptimizeSkewJoin();
-        final boolean oldEnableRewrite = connectContext.getSessionVariable().isEnableOptimizerSkewJoinOptimizeV1();
-        final long oldMaxOverlap = connectContext.getSessionVariable().getSkewJoinMaxOtherSideOverlapRowCount();
-        try {
-            final long totalRows = 10_000;
-            final var statisticsStorage = new EmptyStatisticStorage() {
-                @Override
-                public ColumnStatistic getColumnStatistic(Table table, String column) {
-                    // Both sides share the same heavy-hitter MCV values.
-                    if ((table.getName().equalsIgnoreCase("t0") && column.equalsIgnoreCase("v1"))
-                            || (table.getName().equalsIgnoreCase("t1") && column.equalsIgnoreCase("v4"))) {
-                        return ColumnStatistic.builder()
-                                .setNullsFraction(0.0)
-                                .setHistogram(new Histogram(List.of(),
-                                        Map.of("11", 4000L, "22", 3000L))) // 70% of rows in MCVs
-                                .build();
-                    }
-                    return ColumnStatistic.builder().setNullsFraction(0.0).build();
-                }
-            };
-            setTableStatistics(getOlapTable("t0"), totalRows);
-            setTableStatistics(getOlapTable("t1"), totalRows);
-            connectContext.getGlobalStateMgr().setStatisticStorage(statisticsStorage);
-            connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(0.1);
-            connectContext.getSessionVariable().setEnableStatsToOptimizeSkewJoin(true);
-            connectContext.getSessionVariable().setEnableOptimizerSkewJoinOptimizeV1(true);
-            // Overlapping rows on other side = 4000 + 3000 = 7000, set guard threshold below that.
-            connectContext.getSessionVariable().setSkewJoinMaxOtherSideOverlapRowCount(5000);
-
-            // WHEN
-            String sql = "select * from t0 join t1 on t0.v1 = t1.v4";
-            String plan = getFragmentPlan(sql);
-
-            // THEN
-            assertNotContains(plan, "rand_col");
-            assertNotContains(plan, "generate_serials");
-        } finally {
-            connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(oldThreshold);
-            connectContext.getSessionVariable().setEnableStatsToOptimizeSkewJoin(oldEnableStats);
-            connectContext.getSessionVariable().setEnableOptimizerSkewJoinOptimizeV1(oldEnableRewrite);
-            connectContext.getSessionVariable().setSkewJoinMaxOtherSideOverlapRowCount(oldMaxOverlap);
-            connectContext.getGlobalStateMgr().setStatisticStorage(oldStatisticsStorage);
-        }
-    }
-
-    @Test
-    void testSkewJoinRewriteWhenDifferentValuesAreSkewedOnBothSides() throws Exception {
-        // GIVEN
-        final var oldStatisticsStorage = connectContext.getGlobalStateMgr().getStatisticStorage();
-        final double oldThreshold = connectContext.getSessionVariable().getSkewJoinDataSkewThreshold();
-        final boolean oldEnableStats = connectContext.getSessionVariable().isEnableStatsToOptimizeSkewJoin();
-        final boolean oldEnableRewrite = connectContext.getSessionVariable().isEnableOptimizerSkewJoinOptimizeV1();
-        final long oldMaxOverlap = connectContext.getSessionVariable().getSkewJoinMaxOtherSideOverlapRowCount();
-        try {
-            final long totalRows = 10_000;
-            final var statisticsStorage = new EmptyStatisticStorage() {
-                @Override
-                public ColumnStatistic getColumnStatistic(Table table, String column) {
-                    if (table.getName().equalsIgnoreCase("t0") && column.equalsIgnoreCase("v1")) {
-                        return ColumnStatistic.builder()
-                                .setNullsFraction(0.0)
-                                .setHistogram(new Histogram(List.of(),
-                                        Map.of("11", 4000L, "22", 3000L)))
-                                .build();
-                    }
-                    if (table.getName().equalsIgnoreCase("t1") && column.equalsIgnoreCase("v4")) {
-                        return ColumnStatistic.builder()
-                                .setNullsFraction(0.0)
-                                .setHistogram(new Histogram(List.of(),
-                                        Map.of("33", 4000L, "44", 3000L))) // different MCVs
-                                .build();
-                    }
-                    return ColumnStatistic.builder().setNullsFraction(0.0).build();
-                }
-            };
-            setTableStatistics(getOlapTable("t0"), totalRows);
-            setTableStatistics(getOlapTable("t1"), totalRows);
-            connectContext.getGlobalStateMgr().setStatisticStorage(statisticsStorage);
-            connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(0.1);
-            connectContext.getSessionVariable().setEnableStatsToOptimizeSkewJoin(true);
-            connectContext.getSessionVariable().setEnableOptimizerSkewJoinOptimizeV1(true);
-
-            // WHEN
-            String sql = "select * from t0 join t1 on t0.v1 = t1.v4";
-            String plan = getFragmentPlan(sql);
-
-            // THEN
-            assertCContains(plan, "rand_col");
-            assertCContains(plan, "generate_serials");
-        } finally {
-            connectContext.getSessionVariable().setSkewJoinDataSkewThreshold(oldThreshold);
-            connectContext.getSessionVariable().setEnableStatsToOptimizeSkewJoin(oldEnableStats);
-            connectContext.getSessionVariable().setEnableOptimizerSkewJoinOptimizeV1(oldEnableRewrite);
-            connectContext.getSessionVariable().setSkewJoinMaxOtherSideOverlapRowCount(oldMaxOverlap);
             connectContext.getGlobalStateMgr().setStatisticStorage(oldStatisticsStorage);
         }
     }

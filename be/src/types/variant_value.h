@@ -19,46 +19,15 @@
 #include <functional>
 #include <string>
 #include <string_view>
-#include <utility>
 
-#include "base/container/raw_container.h"
-#include "base/statusor.h"
-#include "base/string/slice.h"
 #include "common/compiler_util.h"
+#include "common/statusor.h"
 #include "fmt/format.h"
-#include "types/variant.h"
+#include "util/raw_container.h"
+#include "util/slice.h"
+#include "util/variant.h"
 
 namespace starrocks {
-
-class VariantRowValue;
-
-// Non-owning row-level variant reference. Holds only metadata/value views.
-// Lifetime: referenced bytes must outlive this object.
-class VariantRowRef {
-public:
-    VariantRowRef(std::string_view metadata, std::string_view value) : _metadata(metadata), _value(value) {}
-    VariantRowRef(VariantMetadata metadata, const VariantValue& value)
-            : _metadata(std::move(metadata)), _value(value) {}
-    VariantRowRef() : _metadata(VariantMetadata::kEmptyMetadata), _value(VariantValue::kEmptyValue) {}
-
-    const VariantMetadata& get_metadata() const { return _metadata; }
-    const VariantValue& get_value() const { return _value; }
-    bool is_null() const { return _value.is_null(); }
-
-    static VariantRowRef from_variant(const VariantMetadata& metadata, const VariantValue& value) {
-        return VariantRowRef(metadata, value);
-    }
-
-    size_t serialize(uint8_t* dst) const;
-    uint32_t serialize_size() const;
-    StatusOr<std::string> to_json(cctz::time_zone timezone = cctz::local_time_zone()) const;
-    std::string to_string() const;
-    VariantRowValue to_owned() const;
-
-private:
-    VariantMetadata _metadata;
-    VariantValue _value;
-};
 
 class VariantRowValue {
 public:
@@ -167,7 +136,6 @@ public:
 
     const VariantMetadata& get_metadata() const { return _metadata; }
     const VariantValue& get_value() const { return _value; }
-    VariantRowRef as_ref() const { return VariantRowRef(_metadata, _value); }
 
     // Variant value has a maximum size limit of 16MB to prevent excessive memory usage.
     static constexpr uint32_t kMaxVariantSize = 16 * 1024 * 1024;
@@ -235,48 +203,26 @@ private:
     VariantValue _value;
 };
 
-inline VariantRowValue VariantRowRef::to_owned() const {
-    return VariantRowValue::from_variant(_metadata, _value);
-}
-
-inline int compare(const VariantRowValue& lhs, const VariantRowValue& rhs) {
-    // Fast path for byte-identical payloads.
-    const auto lhs_meta = lhs.get_metadata().raw();
-    const auto rhs_meta = rhs.get_metadata().raw();
-    const auto lhs_val = lhs.get_value().raw();
-    const auto rhs_val = rhs.get_value().raw();
-    if (lhs_meta == rhs_meta && lhs_val == rhs_val) {
-        return 0;
-    }
-
-    // Semantic path: compare normalized JSON text.
-    auto lhs_json = lhs.to_json(cctz::utc_time_zone());
-    auto rhs_json = rhs.to_json(cctz::utc_time_zone());
-    if (lhs_json.ok() && rhs_json.ok()) {
-        if (lhs_json.value() == rhs_json.value()) {
-            return 0;
-        }
-        return lhs_json.value() < rhs_json.value() ? -1 : 1;
-    }
-
-    // Fallback to deterministic raw ordering when JSON conversion fails.
-    if (lhs_meta != rhs_meta) {
-        return lhs_meta < rhs_meta ? -1 : 1;
-    }
-    return lhs_val < rhs_val ? -1 : 1;
-}
-
-// NOTE: operator== (and all comparison operators) delegate to compare(), which uses
-// JSON serialization for semantic equality when bytes differ. This is intentional for
-// correctness (e.g., {"a":1} encoded differently should still compare equal), but is
-// expensive in hash-join or group-by hot paths. Callers that need raw byte-identity
-// (e.g., for deduplication of identical encoded values) can compare raw() directly.
 inline bool operator==(const VariantRowValue& lhs, const VariantRowValue& rhs) {
-    return compare(lhs, rhs) == 0;
+    return lhs.get_metadata() == rhs.get_metadata() && lhs.get_value() == rhs.get_value();
 }
 
 inline bool operator!=(const VariantRowValue& lhs, const VariantRowValue& rhs) {
-    return compare(lhs, rhs) != 0;
+    return !(lhs == rhs);
+}
+
+inline int compare(const VariantRowValue& lhs, const VariantRowValue& rhs) {
+    const auto lhs_meta = lhs.get_metadata().raw();
+    const auto rhs_meta = rhs.get_metadata().raw();
+    if (lhs_meta != rhs_meta) {
+        return lhs_meta < rhs_meta ? -1 : 1;
+    }
+    const auto lhs_val = lhs.get_value().raw();
+    const auto rhs_val = rhs.get_value().raw();
+    if (lhs_val == rhs_val) {
+        return 0;
+    }
+    return lhs_val < rhs_val ? -1 : 1;
 }
 
 inline bool operator<(const VariantRowValue& lhs, const VariantRowValue& rhs) {
@@ -326,8 +272,6 @@ struct less<starrocks::VariantRowValue> {
     }
 
     bool operator()(const starrocks::VariantRowValue* lhs, const starrocks::VariantRowValue* rhs) const {
-        DCHECK(lhs != nullptr);
-        DCHECK(rhs != nullptr);
         return starrocks::compare(*lhs, *rhs) < 0;
     }
 };
@@ -339,8 +283,6 @@ struct less_equal<starrocks::VariantRowValue> {
     }
 
     bool operator()(const starrocks::VariantRowValue* lhs, const starrocks::VariantRowValue* rhs) const {
-        DCHECK(lhs != nullptr);
-        DCHECK(rhs != nullptr);
         return starrocks::compare(*lhs, *rhs) <= 0;
     }
 };
@@ -352,8 +294,6 @@ struct greater<starrocks::VariantRowValue> {
     }
 
     bool operator()(const starrocks::VariantRowValue* lhs, const starrocks::VariantRowValue* rhs) const {
-        DCHECK(lhs != nullptr);
-        DCHECK(rhs != nullptr);
         return starrocks::compare(*lhs, *rhs) > 0;
     }
 };
@@ -365,8 +305,6 @@ struct greater_equal<starrocks::VariantRowValue> {
     }
 
     bool operator()(const starrocks::VariantRowValue* lhs, const starrocks::VariantRowValue* rhs) const {
-        DCHECK(lhs != nullptr);
-        DCHECK(rhs != nullptr);
         return starrocks::compare(*lhs, *rhs) >= 0;
     }
 };
@@ -378,8 +316,6 @@ struct equal_to<starrocks::VariantRowValue> {
     }
 
     bool operator()(const starrocks::VariantRowValue* lhs, const starrocks::VariantRowValue* rhs) const {
-        DCHECK(lhs != nullptr);
-        DCHECK(rhs != nullptr);
         return starrocks::compare(*lhs, *rhs) == 0;
     }
 };
@@ -391,8 +327,6 @@ struct not_equal_to<starrocks::VariantRowValue> {
     }
 
     bool operator()(const starrocks::VariantRowValue* lhs, const starrocks::VariantRowValue* rhs) const {
-        DCHECK(lhs != nullptr);
-        DCHECK(rhs != nullptr);
         return starrocks::compare(*lhs, *rhs) != 0;
     }
 };

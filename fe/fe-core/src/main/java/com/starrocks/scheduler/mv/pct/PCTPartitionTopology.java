@@ -15,7 +15,6 @@
 package com.starrocks.scheduler.mv.pct;
 
 import com.starrocks.catalog.Table;
-import com.starrocks.mv.pct.BaseToMVPartitionMapping;
 import com.starrocks.sql.common.PCellSetMapping;
 import com.starrocks.sql.common.PCellSortedSet;
 
@@ -37,14 +36,9 @@ public final class PCTPartitionTopology {
     private final PCellSortedSet mvToCellMap;
 
     /**
-     * For each ref base table, stores its partition mapping including both normalized partition cells
-     * and an optional source name mapping that traces MV partition names back to original base partition names.
-     * <p>
-     * Key is the base table object, value is the {@link BaseToMVPartitionMapping} for that table.
-     * This lets the refresh pipeline recover the exact range/list cell behind a base-table partition name
-     * when generating predicates or projecting refresh work back to base tables.
+     * For each ref base table, stores its normalized partition cells.
      */
-    private final Map<Table, BaseToMVPartitionMapping> refBaseTableToCellMap;
+    private final Map<Table, PCellSortedSet> refBaseTableToCellMap;
 
     /**
      * Forward intersection mapping from base-table partitions to MV partitions.
@@ -67,7 +61,7 @@ public final class PCTPartitionTopology {
     private final Map<String, Map<Table, PCellSortedSet>> mvRefBaseTableIntersectedPartitions;
 
     public PCTPartitionTopology(PCellSortedSet mvToCellMap,
-                                Map<Table, BaseToMVPartitionMapping> refBaseTableToCellMap,
+                                Map<Table, PCellSortedSet> refBaseTableToCellMap,
                                 Map<Table, PCellSetMapping> refBaseTableMVIntersectedPartitions,
                                 Map<String, Map<Table, PCellSortedSet>> mvRefBaseTableIntersectedPartitions) {
         this.mvToCellMap = mvToCellMap;
@@ -80,7 +74,7 @@ public final class PCTPartitionTopology {
         return mvToCellMap;
     }
 
-    public Map<Table, BaseToMVPartitionMapping> getRefBaseTableToCellMap() {
+    public Map<Table, PCellSortedSet> getRefBaseTableToCellMap() {
         return refBaseTableToCellMap;
     }
 

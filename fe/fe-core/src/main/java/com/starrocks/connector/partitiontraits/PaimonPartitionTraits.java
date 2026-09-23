@@ -50,7 +50,7 @@ public class PaimonPartitionTraits extends DefaultTraits {
         Map<String, PartitionInfo> partitionNameWithPartition =
                 getPartitionNameWithPartitionInfo();
         return partitionNameWithPartition.values().stream()
-                .map(info -> info.getModifiedTimeUnit().toMillis(info.getModifiedTime()))
+                .map(com.starrocks.connector.PartitionInfo::getModifiedTime)
                 .max(Long::compareTo);
     }
 

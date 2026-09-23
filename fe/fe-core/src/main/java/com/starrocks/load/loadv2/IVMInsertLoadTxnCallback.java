@@ -97,15 +97,15 @@ public class IVMInsertLoadTxnCallback implements InsertLoadTxnCallback {
     }
 
     @Override
-    public void afterCommitted(TransactionState txnState) throws StarRocksException {
+    public void afterCommitted(TransactionState txnState, boolean txnOperated) throws StarRocksException {
         if (CollectionUtils.sizeIsEmpty(this.baseTableInfoTvrDeltaMap)) {
             LOG.info("Materialized view {} has no base table info tvr version range to update, skip", mv.getName());
             return;
         }
         LOG.info("Materialized view {} has been committed, update the base table info tvr version range: {}",
                 mv.getName(), baseTableInfoTvrDeltaMap);
-        final MaterializedView.MvRefreshScheme copiedScheme = mv.getRefreshScheme().copy(); // copy on write
-        final MaterializedView.AsyncRefreshContext asyncRefreshContext = copiedScheme.getAsyncRefreshContext();
+        final MaterializedView.MvRefreshScheme refreshScheme = mv.getRefreshScheme();
+        final MaterializedView.AsyncRefreshContext asyncRefreshContext = refreshScheme.getAsyncRefreshContext();
         Map<BaseTableInfo, TvrVersionRange> mvBaseTableInfoTvrDeltaMap =
                 asyncRefreshContext.getBaseTableInfoTvrVersionRangeMap();
 
@@ -120,12 +120,10 @@ public class IVMInsertLoadTxnCallback implements InsertLoadTxnCallback {
                     "captured owner={}, current owner={}", capturedOwner, currentOwner);
         }
 
-        long maxChangedTableRefreshTime = mv.getRefreshScheme().getLastRefreshTime();
-        copiedScheme.setLastRefreshTime(maxChangedTableRefreshTime);
-        ChangeMaterializedViewRefreshSchemeLog changeRefreshSchemeLog =
-                new ChangeMaterializedViewRefreshSchemeLog(mv, copiedScheme);
-        GlobalStateMgr.getCurrentState().getEditLog().logMvChangeRefreshScheme(changeRefreshSchemeLog,
-                wal -> mv.setRefreshScheme(copiedScheme));
+        long maxChangedTableRefreshTime = refreshScheme.getLastRefreshTime();
+        mv.getRefreshScheme().setLastRefreshTime(maxChangedTableRefreshTime);
+        ChangeMaterializedViewRefreshSchemeLog changeRefreshSchemeLog = new ChangeMaterializedViewRefreshSchemeLog(mv);
+        GlobalStateMgr.getCurrentState().getEditLog().logMvChangeRefreshScheme(changeRefreshSchemeLog);
         LOG.info("Update materialized view {} refresh scheme, " +
                 "last refresh time: {}, version meta changed", mv.getName(), maxChangedTableRefreshTime);
     }

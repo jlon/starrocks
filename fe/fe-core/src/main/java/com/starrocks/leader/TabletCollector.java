@@ -15,7 +15,7 @@
 package com.starrocks.leader;
 
 import com.starrocks.common.Config;
-import com.starrocks.common.util.LeaderDaemon;
+import com.starrocks.common.util.FrontendDaemon;
 import com.starrocks.rpc.ThriftConnectionPool;
 import com.starrocks.rpc.ThriftRPCRequestExecutor;
 import com.starrocks.server.GlobalStateMgr;
@@ -33,7 +33,7 @@ import java.util.List;
 import java.util.PriorityQueue;
 import java.util.Set;
 
-public class TabletCollector extends LeaderDaemon {
+public class TabletCollector extends FrontendDaemon {
     private static final Logger LOG = LogManager.getLogger(TabletCollector.class);
     private static final long CHECK_INTERVAL_MS = 100;
 
@@ -47,7 +47,7 @@ public class TabletCollector extends LeaderDaemon {
     }
 
     @Override
-    protected void runAfterLeaseValid() {
+    protected void runAfterCatalogReady() {
         if (RunMode.isSharedDataMode()) {
             return;
         }
@@ -55,14 +55,6 @@ public class TabletCollector extends LeaderDaemon {
         updateQueue();
 
         collect(collectQueue.poll());
-    }
-
-    @Override
-    protected synchronized void onStopped() {
-        // Both are leader-session bookkeeping: which BEs we've already enqueued and the
-        // priority of next collection. On re-election the queue is rebuilt from updateQueue().
-        collectQueue.clear();
-        queuedBeIds.clear();
     }
 
     private void updateQueue() {
@@ -108,7 +100,6 @@ public class TabletCollector extends LeaderDaemon {
                     client -> client.get_tablets_info(new TGetTabletsInfoRequest()));
 
             if (result.getStatus().getStatus_code() == TStatusCode.OK) {
-                updateTabletMaxCompactionScore(backend, result);
                 GlobalStateMgr.getCurrentState().getReportHandler()
                         .putTabletReportTask(backend.getId(), result.getReport_version(), result.getTablets());
                 LOG.debug("collect tablet from backend {} successfully, time used: {}ms", backend.getId(),
@@ -128,12 +119,6 @@ public class TabletCollector extends LeaderDaemon {
         // otherwise it will block the collection of other backends.
         collectStat.lastCollectTime = System.currentTimeMillis();
         collectQueue.add(collectStat);
-    }
-
-    static void updateTabletMaxCompactionScore(Backend backend, TGetTabletsInfoResult result) {
-        if (result.isSetTablet_max_compaction_score()) {
-            backend.setTabletMaxCompactionScore(result.getTablet_max_compaction_score());
-        }
     }
 
     public static class CollectStat implements Comparable<CollectStat> {

@@ -59,15 +59,11 @@ public class FunctionRefAnalyzer {
     }
 
     public static void analyzeArgsDef(FunctionArgsDef argsDef) {
-        analyzeArgsDef(argsDef, true);
-    }
-
-    public static void analyzeArgsDef(FunctionArgsDef argsDef, boolean requireExplicitSize) {
         List<TypeDef> argTypeDefs = argsDef.getArgTypeDefs();
         Type[] argTypes = new Type[argTypeDefs.size()];
         int i = 0;
         for (TypeDef typeDef : argTypeDefs) {
-            TypeDefAnalyzer.analyze(typeDef, requireExplicitSize);
+            TypeDefAnalyzer.analyze(typeDef);
             argTypes[i++] = typeDef.getType();
         }
         argsDef.setArgTypes(argTypes);

@@ -28,8 +28,8 @@
 #include "gen_cpp/PlanNodes_types.h"
 #include "gen_cpp/Types_types.h"
 #include "runtime/descriptors.h"
+#include "runtime/types.h"
 #include "types/logical_type.h"
-#include "types/type_descriptor.h"
 
 // The test object library is compiled with -fno-access-control, so the test can reach the
 // private members (_init_output_chunk, _curr_build_chunk, NLJoinContext::_build_chunks) directly.
@@ -56,6 +56,13 @@ protected:
         t.__set_slotIdx(id);
         t.__set_isMaterialized(true);
         t.__set_isNullable(nullable);
+        // On branch-3.5/4.0/4.1 SlotDescriptor::is_nullable() is derived from the legacy
+        // null-indicator offset (nullIndicatorBit), not from the isNullable field, and their
+        // thrift declares nullIndicatorBit without a default (so it defaults to 0 => a non-zero
+        // bit_mask => nullable). Set it explicitly so the requested nullability is honored on
+        // these branches too: bit == -1 yields bit_mask 0 (non-nullable).
+        t.__set_nullIndicatorByte(0);
+        t.__set_nullIndicatorBit(nullable ? 0 : -1);
         return _pool.add(new SlotDescriptor(t));
     }
 
@@ -78,14 +85,14 @@ protected:
     // OperatorRuntimeAccess (DCHECK'd non-null). _init_output_chunk never touches it.
     std::unique_ptr<NLJoinProbeOperatorFactory> make_factory(const std::shared_ptr<NLJoinContext>& ctx,
                                                              TJoinOp::type join_op) {
-        return std::make_unique<NLJoinProbeOperatorFactory>(0, 1, _empty_record_desc, _empty_record_desc, "",
+        return std::make_unique<NLJoinProbeOperatorFactory>(0, 1, _empty_row_desc, _empty_row_desc, _empty_row_desc, "",
                                                             std::vector<ExprContext*>{}, std::vector<ExprContext*>{},
                                                             std::map<SlotId, ExprContext*>{},
                                                             std::shared_ptr<NLJoinContext>(ctx), join_op);
     }
 
     ObjectPool _pool;
-    RecordDescriptor _empty_record_desc;
+    RowDescriptor _empty_row_desc;
     std::vector<ExprContext*> _no_exprs;
     std::map<SlotId, ExprContext*> _no_common_exprs;
     std::string _no_sql;

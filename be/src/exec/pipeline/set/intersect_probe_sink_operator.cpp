@@ -14,8 +14,6 @@
 
 #include "exec/pipeline/set/intersect_probe_sink_operator.h"
 
-#include "exprs/expr_executor.h"
-
 namespace starrocks::pipeline {
 
 Status IntersectProbeSinkOperator::prepare(RuntimeState* state) {
@@ -48,14 +46,14 @@ std::string IntersectProbeSinkOperator::get_name() const {
 Status IntersectProbeSinkOperatorFactory::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(OperatorFactory::prepare(state));
 
-    RETURN_IF_ERROR(ExprExecutor::prepare(_dst_exprs, state));
-    RETURN_IF_ERROR(ExprExecutor::open(_dst_exprs, state));
+    RETURN_IF_ERROR(Expr::prepare(_dst_exprs, state));
+    RETURN_IF_ERROR(Expr::open(_dst_exprs, state));
 
     return Status::OK();
 }
 
 void IntersectProbeSinkOperatorFactory::close(RuntimeState* state) {
-    ExprExecutor::close(_dst_exprs, state);
+    Expr::close(_dst_exprs, state);
     OperatorFactory::close(state);
 }
 

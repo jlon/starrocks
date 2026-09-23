@@ -14,17 +14,22 @@
 
 #pragma once
 
+#include <runtime/types.h>
+
 #include <string_view>
 
-#include "base/phmap/phmap.h"
 #include "butil/containers/flat_map.h"
 #include "column/column.h"
 #include "column/column_hash.h"
 #include "column/schema.h"
 #include "common/global_types.h"
-#include "common/query_cache_owner_info.h"
+#include "exec/query_cache/owner_info.h"
+#include "storage/variant_tuple.h"
+#include "util/phmap/phmap.h"
 
 namespace starrocks {
+class ChunkPB;
+
 class DatumTuple;
 class ChunkExtraData;
 using ChunkExtraDataPtr = std::shared_ptr<ChunkExtraData>;
@@ -146,10 +151,7 @@ public:
     void update_column(ColumnPtr& column, SlotId slot_id);
     void append_column(const ColumnPtr& column, ColumnId column_id, [[maybe_unused]] bool is_column_id);
 
-    // Appends `column` under `field`/`slot_id`, or -- if a column with the same field id is already
-    // present (a reused chunk that survived reset()) -- updates that column in place. Used for the
-    // synthetic ANN distance column, which the scan loop can re-emit onto the same chunk.
-    void append_or_update_column(ColumnPtr&& column, const FieldPtr& field, SlotId slot_id);
+    void append_vector_column(ColumnPtr&& column, const FieldPtr& field, SlotId slot_id);
     void update_column_by_index(ColumnPtr&& column, size_t idx);
     void append_or_update_column(ColumnPtr&& column, SlotId slot_id);
 
@@ -255,6 +257,8 @@ public:
     // Return the data of n-th row.
     // This method is relatively slow and mainly used for unit tests now.
     DatumTuple get(size_t n) const;
+
+    VariantTuple get(size_t n, const std::vector<uint32_t>& column_indexes) const;
 
     void set_delete_state(DelCondSatisfied state) { _delete_state = state; }
 
@@ -543,7 +547,7 @@ public:
 
     // schema must exist and will be updated.
     void append_column(MutableColumnPtr&& column, const FieldPtr& field);
-    void append_or_update_column(MutableColumnPtr&& column, const FieldPtr& field, SlotId slot_id);
+    void append_vector_column(MutableColumnPtr&& column, const FieldPtr& field, SlotId slot_id);
     void append_column(MutableColumnPtr&& column, SlotId slot_id);
     void insert_column(size_t idx, MutableColumnPtr&& column, const FieldPtr& field);
     void update_column(MutableColumnPtr&& column, SlotId slot_id);

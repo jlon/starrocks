@@ -1,5 +1,4 @@
 ---
-sidebar_position: 50
 displayed_sidebar: docs
 description: "Marimo（リアクティブ Python ノートブック）を StarRocks と統合して、対話的なデータ分析を行う方法を説明します。"
 ---

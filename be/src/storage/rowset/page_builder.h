@@ -37,11 +37,11 @@
 #include <cstdint>
 #include <vector>
 
-#include "base/string/faststring.h"
-#include "column/global_dict/types.h"
 #include "common/status.h"
 #include "gutil/macros.h"
-#include "storage_primitive/rowid_types.h"
+#include "runtime/global_dict/types.h"
+#include "storage/rowset/common.h"
+#include "util/faststring.h"
 
 namespace starrocks {
 
@@ -55,8 +55,6 @@ namespace starrocks {
 class PageBuilder {
 public:
     PageBuilder() = default;
-    PageBuilder(const PageBuilder&) = delete;
-    const PageBuilder& operator=(const PageBuilder&) = delete;
 
     virtual ~PageBuilder() = default;
 
@@ -114,6 +112,10 @@ public:
     // only `BinaryDictPageBuilder` needed to overload this method.
     // this information is used for doing low-cardinality string column read optimization.
     virtual bool all_dict_encoded() const { return false; }
+
+private:
+    PageBuilder(const PageBuilder&) = delete;
+    const PageBuilder& operator=(const PageBuilder&) = delete;
 };
 
 } // namespace starrocks

@@ -22,13 +22,13 @@
 #include "column/fixed_length_column.h"
 #include "column/map_column.h"
 #include "column/vectorized_fwd.h"
-#include "common/constexpr.h"
 #include "exprs/expr_context.h"
 #include "exprs/function_helper.h"
 #include "exprs/lambda_function.h"
 #include "exprs/map_expr.h"
 #include "glog/logging.h"
-#include "runtime/chunk_accumulator.h"
+#include "runtime/user_function_cache.h"
+#include "storage/chunk_helper.h"
 
 namespace starrocks {
 
@@ -73,7 +73,7 @@ StatusOr<ColumnPtr> MapApplyExpr::evaluate_checked(ExprContext* context, Chunk* 
             DCHECK(nullable != nullptr);
             data_column = nullable->data_column();
             // empty null map with non-empty elements
-            auto data_mut = data_column->clone();
+            auto data_mut = std::move(*data_column).mutate();
             data_mut->empty_null_in_complex_column(
                     nullable->null_column()->immutable_data(),
                     down_cast<MapColumn*>(data_mut.get())->offsets_column()->immutable_data());
@@ -82,7 +82,7 @@ StatusOr<ColumnPtr> MapApplyExpr::evaluate_checked(ExprContext* context, Chunk* 
                 input_null_map = FunctionHelper::union_null_column(nullable->null_column(),
                                                                    std::move(input_null_map)); // merge null
             } else {
-                input_null_map = ColumnHelper::as_column<NullColumn>(nullable->null_column()->clone());
+                input_null_map = NullColumn::static_pointer_cast(Column::mutate(nullable->null_column()));
             }
         }
         DCHECK(data_column->is_map());
@@ -155,9 +155,9 @@ StatusOr<ColumnPtr> MapApplyExpr::evaluate_checked(ExprContext* context, Chunk* 
                                                  map_col->keys_column()->size()));
     }
 
-    auto res_map = MapColumn::create(std::move(*map_col->keys_column()).mutate(),
-                                     std::move(*map_col->values_column()).mutate(),
-                                     ColumnHelper::as_column<UInt32Column>(input_map->offsets_column()->clone()));
+    auto res_map = MapColumn::create(
+            std::move(*map_col->keys_column()).mutate(), std::move(*map_col->values_column()).mutate(),
+            ColumnHelper::as_column<UInt32Column>(std::move(*input_map->offsets_column()).mutate()));
 
     if (_maybe_duplicated_keys && res_map->size() > 0) {
         down_cast<MapColumn*>(res_map->as_mutable_raw_ptr())->remove_duplicated_keys();

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+
 package com.starrocks.sql.optimizer.operator.physical;
 
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
@@ -63,12 +64,6 @@ public abstract class PhysicalOperator extends Operator {
         ColumnRefSet result = new ColumnRefSet();
         if (predicate != null) {
             result.union(predicate.getUsedColumns());
-        }
-
-        if (predicateCommonOperators != null) {
-            predicateCommonOperators.forEach((k, v) -> {
-                result.union(v.getUsedColumns());
-            });
         }
 
         if (orderSpec != null) {

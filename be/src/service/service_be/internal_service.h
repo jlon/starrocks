@@ -45,16 +45,11 @@ class Controller;
 namespace starrocks {
 
 class ExecEnv;
-class BatchWriteMgr;
-class LoadChannelMgr;
 
 template <typename T>
 class BackendInternalServiceImpl : public PInternalServiceImplBase<T> {
 public:
-    BackendInternalServiceImpl(ExecEnv* exec_env, orchestration::OrchestrationEnv* orchestration_env,
-                               LoadChannelMgr* load_channel_mgr, BatchWriteMgr* batch_write_mgr = nullptr)
-            : PInternalServiceImplBase<T>(exec_env, orchestration_env, batch_write_mgr),
-              _load_channel_mgr(load_channel_mgr) {}
+    BackendInternalServiceImpl(ExecEnv* exec_env) : PInternalServiceImplBase<T>(exec_env) {}
 
     void tablet_writer_open(google::protobuf::RpcController* controller, const PTabletWriterOpenRequest* request,
                             PTabletWriterOpenResult* response, google::protobuf::Closure* done) override;
@@ -107,9 +102,6 @@ public:
                                            const PTabletReaderScanGetNextRequest* request,
                                            PTabletReaderScanGetNextResult* response,
                                            google::protobuf::Closure* done) override;
-
-private:
-    LoadChannelMgr* _load_channel_mgr;
 };
 
 } // namespace starrocks

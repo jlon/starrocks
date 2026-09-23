@@ -13,8 +13,6 @@
 // limitations under the License.
 package com.starrocks.qe;
 
-import com.starrocks.common.DdlException;
-import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.thrift.TBinaryEncodingFormat;
 import com.starrocks.thrift.TBinaryEncodingLevel;
 import com.starrocks.thrift.TQueryOptions;
@@ -24,57 +22,6 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 public class SessionVariableTest {
-
-    @Test
-    public void testAITopNThresholdValidationAndState() throws Exception {
-        SessionVariable variables = new SessionVariable();
-        Assertions.assertTrue(variables.isEnableAiTopnPushdown());
-        Assertions.assertEquals(1000, variables.getAiTopnPushdownMaxGlobalLimit());
-        variables.replayFromJson("{}");
-        Assertions.assertTrue(variables.isEnableAiTopnPushdown());
-        Assertions.assertEquals(1000, variables.getAiTopnPushdownMaxGlobalLimit());
-
-        variables.setAiTopnPushdownMaxGlobalLimit(0);
-        variables.setEnableAiTopnPushdown(false);
-        Assertions.assertEquals(false,
-                variables.getNonDefaultVariables().get(SessionVariable.ENABLE_AI_TOPN_PUSHDOWN).actualValue);
-        Assertions.assertEquals(0L,
-                variables.getNonDefaultVariables().get(SessionVariable.AI_TOPN_PUSHDOWN_MAX_GLOBAL_LIMIT).actualValue);
-        SessionVariable clone = variables.clone();
-        SessionVariable restored = new SessionVariable();
-        restored.replayFromJson(variables.getJsonString());
-        Assertions.assertFalse(clone.isEnableAiTopnPushdown());
-        Assertions.assertFalse(restored.isEnableAiTopnPushdown());
-        Assertions.assertEquals(0, clone.getAiTopnPushdownMaxGlobalLimit());
-        Assertions.assertEquals(0, restored.getAiTopnPushdownMaxGlobalLimit());
-
-        clone.setAiTopnPushdownMaxGlobalLimit(Long.MAX_VALUE);
-        clone.setEnableAiTopnPushdown(true);
-        Assertions.assertTrue(clone.isEnableAiTopnPushdown());
-        Assertions.assertFalse(variables.isEnableAiTopnPushdown());
-        Assertions.assertEquals(Long.MAX_VALUE, clone.getAiTopnPushdownMaxGlobalLimit());
-        Assertions.assertEquals(0, variables.getAiTopnPushdownMaxGlobalLimit());
-        Assertions.assertThrows(SemanticException.class, () -> variables.setAiTopnPushdownMaxGlobalLimit(-1));
-        Assertions.assertEquals(0, variables.getAiTopnPushdownMaxGlobalLimit());
-    }
-
-    @Test
-    public void testPaimonReaderMode() throws Exception {
-        SessionVariable sessionVariable = new SessionVariable();
-        Assertions.assertEquals(SessionVariable.PaimonReaderMode.AUTO, sessionVariable.getPaimonReaderMode());
-
-        Assertions.assertEquals("AUTO",
-                VariableVarConverters.convert(SessionVariable.PAIMON_READER_MODE, "auto"));
-        Assertions.assertEquals("JNI",
-                VariableVarConverters.convert(SessionVariable.PAIMON_READER_MODE, "jNi"));
-        String nativeMode = VariableVarConverters.convert(SessionVariable.PAIMON_READER_MODE, "native");
-        Assertions.assertEquals("NATIVE", nativeMode);
-        sessionVariable.setPaimonReaderMode(nativeMode);
-        Assertions.assertEquals(SessionVariable.PaimonReaderMode.NATIVE, sessionVariable.getPaimonReaderMode());
-
-        Assertions.assertThrows(DdlException.class,
-                () -> VariableVarConverters.convert(SessionVariable.PAIMON_READER_MODE, "invalid"));
-    }
 
     @Test
     public void testNonDefaultVariables() {
@@ -156,17 +103,17 @@ public class SessionVariableTest {
 
         // Default mode is AUTO
         Assertions.assertEquals(com.starrocks.connector.ConnectorSinkShuffleMode.AUTO,
-                sessionVariable.getIcebergConnectorSinkShuffleMode());
+                sessionVariable.getConnectorSinkShuffleMode());
 
         // Backward compatibility: enableIcebergSinkGlobalShuffle implies FORCE when mode stays at default AUTO.
         com.starrocks.common.jmockit.Deencapsulation.setField(sessionVariable, "enableIcebergSinkGlobalShuffle", true);
         Assertions.assertEquals(com.starrocks.connector.ConnectorSinkShuffleMode.FORCE,
-                sessionVariable.getIcebergConnectorSinkShuffleMode());
+                sessionVariable.getConnectorSinkShuffleMode());
 
         // Explicitly set mode to NEVER should not be affected by legacy boolean.
         com.starrocks.common.jmockit.Deencapsulation.setField(sessionVariable, "connectorSinkShuffleMode", "never");
         Assertions.assertEquals(com.starrocks.connector.ConnectorSinkShuffleMode.NEVER,
-                sessionVariable.getIcebergConnectorSinkShuffleMode());
+                sessionVariable.getConnectorSinkShuffleMode());
     }
 
     @Test
@@ -176,23 +123,12 @@ public class SessionVariableTest {
         // Test default value
         Assertions.assertFalse(sessionVariable.isMVPlanner());
 
-        // Deprecated compatibility flag should remain inert.
+        // Test setter and getter
         sessionVariable.setMVPlanner(true);
-        Assertions.assertFalse(sessionVariable.isMVPlanner());
+        Assertions.assertTrue(sessionVariable.isMVPlanner());
 
         sessionVariable.setMVPlanner(false);
         Assertions.assertFalse(sessionVariable.isMVPlanner());
-    }
-
-    @Test
-    public void testEnableIncrementalRefreshMvIsNoOp() {
-        SessionVariable sessionVariable = new SessionVariable();
-
-        Assertions.assertFalse(sessionVariable.isEnableIncrementalRefreshMV());
-        sessionVariable.setEnableIncrementalRefreshMv(true);
-        Assertions.assertFalse(sessionVariable.isEnableIncrementalRefreshMV());
-        sessionVariable.setEnableIncrementalRefreshMv(false);
-        Assertions.assertFalse(sessionVariable.isEnableIncrementalRefreshMV());
     }
 
     @Test
@@ -227,24 +163,6 @@ public class SessionVariableTest {
                 () -> sessionVariable.setBinaryEncodingFormat("invalid"));
         Assertions.assertThrows(IllegalArgumentException.class,
                 () -> sessionVariable.setBinaryEncodingLevel("invalid"));
-    }
-
-    @Test
-    public void testLakeTabletInternalParallelSkewSplitRatioValidation() {
-        SessionVariable sessionVariable = new SessionVariable();
-        // A positive finite ratio is accepted.
-        sessionVariable.setLakeTabletInternalParallelSkewSplitRatio(2.0);
-        Assertions.assertEquals(2.0, sessionVariable.getLakeTabletInternalParallelSkewSplitRatio(), 0.0);
-        // Non-positive or non-finite ratios are rejected: a non-positive value would make every sufficiently
-        // large tablet look skewed (over-splitting), and NaN/Infinity would silently disable the skew override.
-        Assertions.assertThrows(SemanticException.class,
-                () -> sessionVariable.setLakeTabletInternalParallelSkewSplitRatio(0));
-        Assertions.assertThrows(SemanticException.class,
-                () -> sessionVariable.setLakeTabletInternalParallelSkewSplitRatio(-1.0));
-        Assertions.assertThrows(SemanticException.class,
-                () -> sessionVariable.setLakeTabletInternalParallelSkewSplitRatio(Double.NaN));
-        Assertions.assertThrows(SemanticException.class,
-                () -> sessionVariable.setLakeTabletInternalParallelSkewSplitRatio(Double.POSITIVE_INFINITY));
     }
 
     @Test

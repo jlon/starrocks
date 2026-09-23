@@ -37,11 +37,9 @@ package com.starrocks.qe;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import com.starrocks.alter.reshard.presplit.PreSplitProfile;
 import com.starrocks.authentication.AccessControlContext;
 import com.starrocks.authentication.AuthenticationMgr;
 import com.starrocks.authentication.AuthenticationProvider;
@@ -77,7 +75,6 @@ import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.service.arrow.flight.sql.ArrowFlightSqlConnectContext;
 import com.starrocks.sql.analyzer.Authorizer;
-import com.starrocks.sql.analyzer.PreResolvedViewBodies;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.CleanTemporaryTableStmt;
 import com.starrocks.sql.ast.ExecuteStmt;
@@ -93,7 +90,6 @@ import com.starrocks.sql.ast.expression.StringLiteral;
 import com.starrocks.sql.optimizer.QueryMaterializationContext;
 import com.starrocks.sql.optimizer.dump.DumpInfo;
 import com.starrocks.sql.optimizer.dump.QueryDumpInfo;
-import com.starrocks.sql.optimizer.statistics.StatisticsLoadBudget;
 import com.starrocks.sql.parser.SqlParser;
 import com.starrocks.sql.spm.SQLPlanStorage;
 import com.starrocks.thrift.TPipelineProfileLevel;
@@ -214,7 +210,7 @@ public class ConnectContext {
     //    or current processing stmt is the last stmt for multi stmts
     // used to set mysql result package
     protected boolean isLastStmt = true;
-    protected boolean isMultiStmt = false;
+    protected boolean isSingleStmt = false;
     // set true when user dump query through HTTP
     protected boolean isHTTPQueryDump = false;
 
@@ -235,7 +231,6 @@ public class ConnectContext {
     protected TWorkGroup resourceGroup;
 
     protected volatile boolean isPending = false;
-    protected volatile boolean isPlanning = false;
     protected volatile boolean isForward = false;
 
     private ConnectContext parent;
@@ -247,13 +242,6 @@ public class ConnectContext {
     // shared across the fresh QueryAnalyzer instances spawned for scalar/IN/EXISTS subqueries; a
     // cycle routed through a subquery would otherwise reset the per-Visitor set on every hop.
     private final Set<String> viewExpansionPath = Sets.newHashSet();
-
-    // Names of the recursive CTEs whose recursive member is currently being analyzed. Like
-    // viewExpansionPath it lives on the session (not on a single QueryAnalyzer.Visitor) so it is
-    // shared across the fresh QueryAnalyzer instances spawned for scalar/IN/EXISTS subqueries; a
-    // recursive reference routed through such a subquery would otherwise not see the enclosing
-    // recursive CTE, fall through to the optimizer and expand without end (StackOverflowError).
-    private final Set<String> recursiveCteAnalysisPath = Sets.newHashSet();
 
     private final Map<String, PrepareStmtContext> preparedStmtCtxs = Maps.newHashMap();
 
@@ -268,17 +256,6 @@ public class ConnectContext {
     // QueryMaterializationContext is different from MaterializationContext that it keeps the context during the query
     // lifecycle instead of per materialized view.
     private QueryMaterializationContext queryMVContext;
-    private StatisticsLoadBudget statisticsLoadBudget;
-
-    // View bodies the unlocked pre-pass resolved for the statement being planned, handed to the locked
-    // analyzer when it expands those views. Scoped to one statement: StatementPlanner clears it.
-    private final PreResolvedViewBodies preResolvedViewBodies = new PreResolvedViewBodies();
-
-    // FE-side Sample-Based Tablet Pre-Split runs before the load coordinator exists. INSERT keeps
-    // its per-statement timings here so the eventual profile can attach them. Broker Load instead
-    // uses a job-owned collector because its asynchronous work must not depend on this context's
-    // statement-level reset or on a reused client context.
-    private volatile PreSplitProfile preSplitProfile;
 
     // Query source to distinguish different types of queries
     private QuerySource querySource = QuerySource.EXTERNAL;
@@ -306,49 +283,11 @@ public class ConnectContext {
     // listeners for this connection
     private List<Listener> listeners = Lists.newArrayList();
 
-    // Upper bound on the entries the diagnostics area below keeps, so that it stays bounded for
-    // the lifetime of the connection whatever a statement records into it. The value is the
-    // MySQL default for max_error_count, and the entries kept are the first ones, as MySQL does
-    // once the limit is reached.
-    private static final int MAX_WARNING_COUNT = 64;
-
-    // Session-level SQL warning buffer (MySQL diagnostics area). Holds the diagnostics produced
-    // by the most recent statement that generated any, so they can be read back via
-    // SHOW WARNINGS / SHOW ERRORS. Cleared at the start of the next statement, except for SET,
-    // transaction control and SHOW statements, which leave it unchanged while they succeed and
-    // replace it with their own error when they fail (see StmtExecutor.execute).
-    private final List<QueryWarning> warnings = Lists.newArrayList();
-
     private boolean skipFinishSink = false;
     private FinishSinkHandler handler = null;
 
     // Track if current write is CTAS (Create Table As Select)
     private boolean isCTAS = false;
-
-    // An optimize rewrite copies logical rows into a temporary partition and must not
-    // include unrelated schema-change shadow columns in its sink tuple.
-    private boolean optimizeRewrite = false;
-
-    // Per-physical-partition read-version override: if set, OlapScanNode uses the mapped version
-    // instead of physicalPartition.getVisibleVersion() for each entry in this map.
-    // Null means no override (normal visible-version path).
-    private Map<Long, Long> scanVersionOverride = null;
-
-    public void setScanVersionOverride(Map<Long, Long> scanVersionOverride) {
-        this.scanVersionOverride = scanVersionOverride;
-    }
-
-    public Map<Long, Long> getScanVersionOverride() {
-        return scanVersionOverride;
-    }
-
-    public void setOptimizeRewrite(boolean optimizeRewrite) {
-        this.optimizeRewrite = optimizeRewrite;
-    }
-
-    public boolean isOptimizeRewrite() {
-        return optimizeRewrite;
-    }
 
     public void setTxnId(long txnId) {
         this.txnId = txnId;
@@ -823,7 +762,6 @@ public class ConnectContext {
         startTime = Instant.now();
         returnRows = 0;
         pendingTimeSecond = 0;
-        preSplitProfile = null;
     }
 
     @VisibleForTesting
@@ -831,24 +769,6 @@ public class ConnectContext {
         startTime = start;
         returnRows = 0;
         pendingTimeSecond = 0;
-        preSplitProfile = null;
-    }
-
-    public PreSplitProfile getPreSplitProfile() {
-        return preSplitProfile;
-    }
-
-    public PreSplitProfile getOrCreatePreSplitProfile() {
-        PreSplitProfile current = preSplitProfile;
-        if (current != null) {
-            return current;
-        }
-        synchronized (this) {
-            if (preSplitProfile == null) {
-                preSplitProfile = new PreSplitProfile();
-            }
-            return preSplitProfile;
-        }
     }
 
     public void setEndTime() {
@@ -985,16 +905,6 @@ public class ConnectContext {
             return;
         }
         closed = true;
-        // Clean up explicit transaction state to prevent memory leak in explicitTxnStateMap
-        if (txnId != 0) {
-            try {
-                globalStateMgr.getGlobalTransactionMgr()
-                        .clearExplicitTxnState(txnId);
-            } catch (Exception e) {
-                // Ignore exceptions during cleanup to avoid masking the original close reason
-            }
-            txnId = 0;
-        }
         mysqlChannel.close();
         threadLocalInfo.remove();
         returnRows = 0;
@@ -1003,24 +913,6 @@ public class ConnectContext {
 
     public boolean isKilled() {
         return (parent != null && parent.isKilled()) || isKilled;
-    }
-
-    /**
-     * Whether this statement has been cancelled by any route, as opposed to {@link #isKilled()}, which
-     * only covers connection-scoped kills. {@code KILL QUERY}, a cancelled TaskRun and a closed client
-     * all call {@code kill(false, ...)}, which reaches only {@link StmtExecutor#cancel(String)} and
-     * leaves {@code isKilled} false. Use this wherever work outside query execution needs to notice
-     * cancellation -- by then the coordinator {@code cancel()} targets has usually already finished.
-     */
-    public boolean isStatementCancelled() {
-        if (isKilled()) {
-            return true;
-        }
-        StmtExecutor executorRef = executor;
-        if (executorRef != null && executorRef.isCancelled()) {
-            return true;
-        }
-        return parent != null && parent.isStatementCancelled();
     }
 
     // Set kill flag to true;
@@ -1389,10 +1281,6 @@ public class ConnectContext {
         return viewExpansionPath;
     }
 
-    public Set<String> getRecursiveCteAnalysisPath() {
-        return recursiveCteAnalysisPath;
-    }
-
     public void setForwardTimes(int forwardTimes) {
         this.forwardTimes = forwardTimes;
     }
@@ -1415,18 +1303,6 @@ public class ConnectContext {
 
     public void setQueryMVContext(QueryMaterializationContext queryMVContext) {
         this.queryMVContext = queryMVContext;
-    }
-
-    public PreResolvedViewBodies getPreResolvedViewBodies() {
-        return preResolvedViewBodies;
-    }
-
-    public StatisticsLoadBudget getStatisticsLoadBudget() {
-        return statisticsLoadBudget;
-    }
-
-    public void setStatisticsLoadBudget(StatisticsLoadBudget statisticsLoadBudget) {
-        this.statisticsLoadBudget = statisticsLoadBudget;
     }
 
     public QuerySource getQuerySource() {
@@ -1562,19 +1438,6 @@ public class ConnectContext {
     }
 
     /**
-     * Returns the session variable name that governs the timeout for the current execution context,
-     * used when building timeout-hint messages.
-     */
-    public String getTimeoutHintVariable() {
-        if (isExecLoadType()) {
-            return SessionVariable.INSERT_TIMEOUT;
-        } else if (isMetadataContext()) {
-            return SessionVariable.METADATA_COLLECT_QUERY_TIMEOUT;
-        }
-        return SessionVariable.QUERY_TIMEOUT;
-    }
-
-    /**
      * Check the connect context is timeout or not. If true, kill the connection, otherwise, return false.
      *
      * @param now : current time in milliseconds
@@ -1629,7 +1492,7 @@ public class ConnectContext {
                             tableName, tableTimeout, pendingTime);
                 } else {
                     msg = String.format("please increase the '%s' session variable, pending time:%s",
-                            getTimeoutHintVariable(), pendingTime);
+                            isExecLoadType() ? SessionVariable.INSERT_TIMEOUT : SessionVariable.QUERY_TIMEOUT, pendingTime);
                 }
                 errMsg = ErrorCode.ERR_TIMEOUT.formatErrorMsg(getExecType(), execTimeout, msg);
             }
@@ -1679,14 +1542,6 @@ public class ConnectContext {
 
     public boolean isPending() {
         return isPending;
-    }
-
-    public void setPlanning(boolean planning) {
-        isPlanning = planning;
-    }
-
-    public boolean isPlanning() {
-        return isPlanning;
     }
 
     public void setIsForward(boolean forward) {
@@ -2036,24 +1891,6 @@ public class ConnectContext {
         return listeners;
     }
 
-    // Every failure path replaces the buffer before recording its error (StmtExecutor.execute and
-    // ConnectProcessor.recordPreExecutionFailureDiagnostics), so the error a client just received
-    // in the ERR packet is never the entry dropped once the limit is reached.
-    public void addWarning(QueryWarning warning) {
-        if (warnings.size() >= MAX_WARNING_COUNT) {
-            return;
-        }
-        this.warnings.add(warning);
-    }
-
-    public List<QueryWarning> getWarnings() {
-        return ImmutableList.copyOf(warnings);
-    }
-
-    public void clearWarnings() {
-        this.warnings.clear();
-    }
-
     public void onQueryFinished() {
         for (Listener listener : listeners) {
             try {
@@ -2074,11 +1911,11 @@ public class ConnectContext {
         listeners.clear();
     }
 
-    public boolean isMultiStmt() {
-        return isMultiStmt;
+    public boolean isSingleStmt() {
+        return isSingleStmt;
     }
 
-    public void setMultiStmt(boolean multiStmt) {
-        isMultiStmt = multiStmt;
+    public void setSingleStmt(boolean singleStmt) {
+        isSingleStmt = singleStmt;
     }
 }

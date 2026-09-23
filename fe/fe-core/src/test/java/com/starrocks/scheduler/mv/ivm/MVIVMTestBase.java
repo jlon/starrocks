@@ -47,7 +47,7 @@ public abstract class MVIVMTestBase extends MVTestBase {
         IVMInsertLoadTxnCallback callback =
                 new IVMInsertLoadTxnCallback(mvId.getDbId(), mv.getId());
         callback.beforeCommitted(null);
-        callback.afterCommitted(null);
+        callback.afterCommitted(null, true);
         return execPlan;
     }
 

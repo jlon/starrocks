@@ -19,7 +19,6 @@
 #include <memory>
 #include <sstream>
 
-#include "base/simd/simd.h"
 #include "column/array_column.h"
 #include "column/array_view_column.h"
 #include "column/chunk.h"
@@ -33,7 +32,9 @@
 #include "exprs/expr_context.h"
 #include "exprs/function_helper.h"
 #include "exprs/lambda_function.h"
-#include "runtime/chunk_accumulator.h"
+#include "runtime/user_function_cache.h"
+#include "simd/simd.h"
+#include "storage/chunk_helper.h"
 
 namespace starrocks {
 ArrayMapExpr::ArrayMapExpr(const TExprNode& node) : Expr(node, false) {}
@@ -170,11 +171,7 @@ StatusOr<ColumnPtr> ArrayMapExpr::evaluate_lambda_expr(ExprContext* context, Chu
 
         // if lambda expr doesn't rely on argument, we don't need to put it into cur_chunk
         if constexpr (!independent_lambda_expr) {
-            // Move it in: when the same array column is passed as two lambda arguments
-            // (e.g. array_map((x, y) -> ..., a, a)), both iterations yield the same elements
-            // column, and Chunk requires its columns to be unique. The rvalue overload
-            // copy-on-writes the duplicate instead of aliasing one column to two slots.
-            cur_chunk->append_column(std::move(elements_column), arguments_ids[i]);
+            cur_chunk->append_column(elements_column, arguments_ids[i]);
         }
     }
     DCHECK(aligned_offsets != nullptr);
@@ -275,7 +272,7 @@ StatusOr<ColumnPtr> ArrayMapExpr::evaluate_lambda_expr(ExprContext* context, Chu
         array_column->check_or_die();
         ColumnPtr result_column = array_column;
         if (result_null_column != nullptr) {
-            result_column = NullableColumn::create(std::move(array_column), result_null_column);
+            result_column = NullableColumn::create(std::move(array_column), std::move(result_null_column));
             result_column->check_or_die();
         }
         result_column = ConstColumn::create(result_column, chunk->num_rows());
@@ -286,7 +283,7 @@ StatusOr<ColumnPtr> ArrayMapExpr::evaluate_lambda_expr(ExprContext* context, Chu
                 ArrayColumn::create(std::move(column), ColumnHelper::as_column<UInt32Column>(aligned_offsets->clone()));
         array_column->check_or_die();
         if (result_null_column != nullptr) {
-            return NullableColumn::create(std::move(array_column), result_null_column);
+            return NullableColumn::create(std::move(array_column), std::move(result_null_column));
         }
         return array_column;
     }
@@ -457,27 +454,11 @@ std::string ArrayMapExpr::debug_string() const {
 }
 
 int ArrayMapExpr::get_slot_ids(std::vector<SlotId>* slot_ids) const {
-    std::vector<SlotId> collected;
-    Expr::get_slot_ids(&collected);
-    // The columns the extracted common expressions depend on are genuine captures.
+    int num = Expr::get_slot_ids(slot_ids);
     for (const auto& [slot_id, expr] : _outer_common_exprs) {
-        expr->get_slot_ids(&collected);
-    }
-    int num = 0;
-    for (SlotId id : collected) {
-        // Drop the synthetic slot ids we assigned to the extracted common expressions themselves:
-        // each is produced and consumed inside this array_map's own evaluate_lambda_expr (in its
-        // private tmp_chunk) and never exists in an enclosing chunk. Such a slot can reach here
-        // through the child lambda's captured slots, because extraction rewrote the lambda body to
-        // reference it. Surfacing it to an enclosing lambda makes that lambda treat it as a
-        // captured column and look it up via Chunk::get_column_by_slot_id on the input chunk,
-        // crashing the BE (e.g. nested array_map over a constant array whose inner lambda captures
-        // the outer lambda argument).
-        if (_outer_common_exprs.find(id) != _outer_common_exprs.end()) {
-            continue;
-        }
-        slot_ids->push_back(id);
+        slot_ids->push_back(slot_id);
         num++;
+        num += (expr->get_slot_ids(slot_ids));
     }
     return num;
 }

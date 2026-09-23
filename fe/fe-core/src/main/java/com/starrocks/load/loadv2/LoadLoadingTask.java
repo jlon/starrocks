@@ -34,7 +34,6 @@
 
 package com.starrocks.load.loadv2;
 
-import com.starrocks.alter.reshard.presplit.PreSplitProfile;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.common.Config;
@@ -45,7 +44,6 @@ import com.starrocks.common.Version;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.common.util.LogBuilder;
 import com.starrocks.common.util.LogKey;
-import com.starrocks.common.util.ProfileKeyDictionary;
 import com.starrocks.common.util.ProfileManager;
 import com.starrocks.common.util.RuntimeProfile;
 import com.starrocks.common.util.TimeUtils;
@@ -103,7 +101,6 @@ public class LoadLoadingTask extends LoadTask {
     private final TPartialUpdateMode partialUpdateMode;
 
     private final ConnectContext context;
-    private final PreSplitProfile preSplitProfile;
 
     private LoadPlanner loadPlanner;
     private final OriginStatementInfo originStmt;
@@ -131,7 +128,6 @@ public class LoadLoadingTask extends LoadTask {
         this.mergeConditionStr = builder.mergeConditionStr;
         this.sessionVariables = builder.sessionVariables;
         this.context = builder.context;
-        this.preSplitProfile = builder.preSplitProfile;
         this.loadJobType = builder.loadJobType;
         this.originStmt = builder.originStmt;
         this.loadStmt = builder.loadStmt;
@@ -197,7 +193,7 @@ public class LoadLoadingTask extends LoadTask {
 
         summaryProfile.addInfoString(ProfileManager.QUERY_TYPE, "Load");
         summaryProfile.addInfoString(ProfileManager.QUERY_STATE, isFinished ? "Finished" : "Running");
-        summaryProfile.addInfoString(ProfileKeyDictionary.STARROCKS_VERSION,
+        summaryProfile.addInfoString("StarRocks Version",
                 String.format("%s-%s", Version.STARROCKS_VERSION, Version.STARROCKS_COMMIT_HASH));
         summaryProfile.addInfoString(ProfileManager.USER, context.getQualifiedUser());
         summaryProfile.addInfoString(ProfileManager.DEFAULT_DB, context.getDatabase());
@@ -233,16 +229,10 @@ public class LoadLoadingTask extends LoadTask {
             sb.deleteCharAt(sb.length() - 1);
             summaryProfile.addInfoString(ProfileManager.VARIABLES, sb.toString());
 
-            summaryProfile.addInfoString(ProfileKeyDictionary.NON_DEFAULT_SESSION_VARIABLES,
-                    variables.getNonDefaultVariablesJson());
+            summaryProfile.addInfoString("NonDefaultSessionVariables", variables.getNonDefaultVariablesJson());
         }
 
         profile.addChild(summaryProfile);
-        if (preSplitProfile != null) {
-            PreSplitProfile.appendTo(profile, preSplitProfile);
-        } else {
-            PreSplitProfile.appendTo(profile, context);
-        }
 
         return profile;
     }
@@ -354,7 +344,6 @@ public class LoadLoadingTask extends LoadTask {
         private String mergeConditionStr;
         private TPartialUpdateMode partialUpdateMode;
         private ConnectContext context;
-        private PreSplitProfile preSplitProfile;
         private OriginStatementInfo originStmt;
         private LoadStmt loadStmt;
         private List<List<TBrokerFileStatus>> fileStatusList;
@@ -462,11 +451,6 @@ public class LoadLoadingTask extends LoadTask {
 
         public Builder setContext(ConnectContext context) {
             this.context = context;
-            return this;
-        }
-
-        public Builder setPreSplitProfile(PreSplitProfile preSplitProfile) {
-            this.preSplitProfile = preSplitProfile;
             return this;
         }
 

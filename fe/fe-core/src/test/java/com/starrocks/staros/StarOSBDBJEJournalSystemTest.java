@@ -16,7 +16,6 @@
 package com.starrocks.staros;
 
 
-import com.starrocks.common.Pair;
 import com.starrocks.journal.JournalCursor;
 import com.starrocks.journal.JournalEntity;
 import com.starrocks.journal.JournalException;
@@ -44,7 +43,7 @@ public class StarOSBDBJEJournalSystemTest {
         // test construction
         StarOSBDBJEJournalSystem journalSystem = new StarOSBDBJEJournalSystem(environment);
 
-        new StarOSBDBJEJournalSystem(journal);
+        StarOSBDBJEJournalSystem journalSystem2 = new StarOSBDBJEJournalSystem(journal);
 
         // test get and set
         long id = journalSystem.getReplayId();
@@ -64,8 +63,8 @@ public class StarOSBDBJEJournalSystemTest {
             public void open() throws InterruptedException, JournalException {
             }
             @Mock
-            public Pair<Long, Long> getJournalIdRange() {
-                return Pair.create(-1L, -1L);
+            public long getMaxJournalId() {
+                return -1;
             }
         };
         new MockUp<BDBJournalCursor>() {
@@ -82,7 +81,7 @@ public class StarOSBDBJEJournalSystemTest {
         };
         new MockUp<JournalWriter>() {
             @Mock
-            public void init(long minJournalId, long maxJournalId) throws JournalException {
+            public void init(long id) throws JournalException {
             }
             @Mock
             public void startDaemon() {

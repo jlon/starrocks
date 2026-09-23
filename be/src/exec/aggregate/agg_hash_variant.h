@@ -24,8 +24,6 @@
 
 namespace starrocks {
 
-class RuntimeState;
-
 enum AggrPhase { AggrPhase1, AggrPhase2 };
 
 // Aggregate Hash maps

@@ -12,15 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#pragma once
-
 #include <bthread/condition_variable.h>
 #include <bthread/mutex.h>
 
 #include <atomic>
 
-#include "base/concurrency/countdown_latch.h"
 #include "google/protobuf/stubs/callback.h"
+#include "util/countdown_latch.h"
 
 namespace starrocks {
 

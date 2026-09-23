@@ -43,7 +43,6 @@ public class SplitCastPlanFragment extends PlanFragment {
         this.children.addAll(planFragment.getChildren());
         this.setLoadGlobalDicts(planFragment.loadGlobalDicts);
         this.setQueryGlobalDicts(planFragment.queryGlobalDicts);
-        this.setQueryGlobalDictExprs(planFragment.queryGlobalDictExprs);
     }
 
     // get the list of destination fragments by exchange nodes

@@ -14,7 +14,6 @@
 
 #include "storage/binlog_manager.h"
 
-#include "fs/fs_factory.h"
 #include "storage/rowset/rowset.h"
 #include "storage/tablet.h"
 
@@ -159,7 +158,7 @@ Status BinlogManager::_recover_version(int64_t version, BinlogLsn& min_lsn, std:
             useless_file_ids->push_back(file_id);
             continue;
         }
-        const BinlogFileMetaPBPtr& file_meta = status_or.value();
+        BinlogFileMetaPBPtr file_meta = status_or.value();
         recovered_file_metas.push_back(file_meta);
         BinlogLsn lsn(file_meta->start_version(), file_meta->start_seq_id());
         last_file_meta = file_meta;
@@ -260,7 +259,7 @@ void BinlogManager::precommit_ingestion(int64_t version, const BinlogBuildResult
     VLOG(3) << "Pre-commit ingestion, tablet: " << _tablet_id << ", version: " << version << ", path: " << _path;
     DCHECK_EQ(version, _ingestion_version);
     DCHECK(_build_result == nullptr);
-    _build_result = result;
+    _build_result = std::move(result);
 }
 
 void BinlogManager::abort_ingestion(int64_t version, const BinlogBuildResultPtr& result) {
@@ -364,7 +363,7 @@ void BinlogManager::_check_wait_reader_binlog_files() {
         if (binlog_file->reader_count() > 0) {
             break;
         }
-        const auto& file_meta = binlog_file->file_meta();
+        auto file_meta = binlog_file->file_meta();
         _total_wait_reader_binlog_file_size -= file_meta->file_size();
         for (int64_t rowset_id : file_meta->rowsets()) {
             int32_t count = --_wait_reader_rowset_count_map[rowset_id];
@@ -465,12 +464,12 @@ bool BinlogManager::_check_alive_binlog_files(int64_t current_second, int64_t bi
 }
 
 void BinlogManager::delete_unused_binlog() {
-    StatusOr<std::shared_ptr<FileSystem>> status_or = FileSystemFactory::CreateSharedFromString(_path);
+    StatusOr<std::shared_ptr<FileSystem>> status_or = FileSystem::CreateSharedFromString(_path);
     if (!status_or.ok()) {
         LOG(ERROR) << "Failed to delete unused binlog, tablet: " << _tablet_id << ", " << status_or.status();
         return;
     }
-    const std::shared_ptr<FileSystem>& fs = status_or.value();
+    std::shared_ptr<FileSystem> fs = status_or.value();
     int64_t file_id;
     int32_t total_num = 0;
     int32_t fail_num = 0;

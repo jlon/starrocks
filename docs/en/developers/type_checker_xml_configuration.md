@@ -171,7 +171,7 @@ See `lib/type_checker_config.xml` for the complete configuration.
 The type checker system is used automatically when processing JDBC query results:
 
 ```cpp
-#include "exec/jdbc/type_checker_manager.h"
+#include "types/type_checker_manager.h"
 
 TypeCheckerManager& manager = TypeCheckerManager::getInstance();
 StatusOr<LogicalType> result = manager.checkType("java.lang.Integer", slot_desc);
@@ -230,10 +230,11 @@ Behavior: XML loading fails, system logs ERROR
 
 Run the type checker tests:
 ```bash
-# Build and run all type checker tests
-./run-be-ut.sh --build-target starrocks_test \
-  --gtest_filter='TypeCheckerTest.*:TypeCheckerManagerConfigTest.*:TypeCheckerXMLLoaderTest.*' \
-  --without-java-ext
+# Run all type checker tests
+./be/test/types/type_checker_test
+
+# Run XML loader specific tests
+./be/test/types/type_checker_xml_loader_test
 ```
 
 ### Manual Testing
@@ -356,8 +357,9 @@ All type validation logic is now data-driven via XML configuration, eliminating 
 
 ## See Also
 
-- Type Checker Implementation: `be/src/exec/jdbc/type_checker.h`
-- XML Loader: `be/src/exec/jdbc/type_checker_xml_loader.h`
-- Type Checker Manager: `be/src/exec/jdbc/type_checker_manager.h`
+- Type Checker Implementation: `be/src/types/checker/type_checker.h`
+- XML Loader: `be/src/types/checker/type_checker_xml_loader.h`
+- Type Checker Manager: `be/src/types/type_checker_manager.h`
 - Default Configuration: `lib/type_checker_config.xml`
-- Unit Tests: `be/test/exec/jdbc/type_checker_test.cpp`, `be/test/exec/jdbc/type_checker_xml_loader_test.cpp`
+- Unit Tests: `be/test/types/type_checker_test.cpp`, `be/test/types/type_checker_xml_loader_test.cpp`
+

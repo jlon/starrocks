@@ -28,7 +28,7 @@
 #include "formats/csv/numeric_converter.h"
 #include "formats/csv/string_converter.h"
 #include "formats/csv/varbinary_converter.h"
-#include "types/type_descriptor.h"
+#include "runtime/types.h"
 
 namespace starrocks::csv {
 

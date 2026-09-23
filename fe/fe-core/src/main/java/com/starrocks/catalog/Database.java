@@ -202,14 +202,6 @@ public class Database extends MetaObject implements Writable {
         return replicaQuotaSize;
     }
 
-    public boolean isTableExist(Table table) {
-        if (table.isTemporaryTable()) {
-            return idToTable.containsKey(table.getId());
-        } else {
-            return nameToTable.containsKey(table.getName());
-        }
-    }
-
     public boolean registerTableUnlocked(Table table) {
         if (table == null) {
             return false;
@@ -262,10 +254,9 @@ public class Database extends MetaObject implements Writable {
                         "] cannot be dropped. If you want to forcibly drop(cannot be recovered)," +
                         " please use \"DROP TABLE <table> FORCE\".");
             }
+            unprotectDropTable(table.getId(), isForce, false);
             DropInfo info = new DropInfo(id, table.getId(), -1L, isForce);
-            GlobalStateMgr.getCurrentState().getEditLog().logDropTable(info, wal -> {
-                unprotectDropTable(table.getId(), isForce, false);
-            });
+            GlobalStateMgr.getCurrentState().getEditLog().logDropTable(info);
         } finally {
             locker.unLockDatabase(id, LockType.WRITE);
         }
@@ -290,10 +281,9 @@ public class Database extends MetaObject implements Writable {
                 }
                 ErrorReport.reportDdlException(ErrorCode.ERR_BAD_TABLE_ERROR, tableName);
             }
+            unprotectDropTemporaryTable(tableId, isForce, false);
             DropInfo info = new DropInfo(id, table.getId(), -1L, isForce);
-            GlobalStateMgr.getCurrentState().getEditLog().logDropTable(info, wal -> {
-                unprotectDropTemporaryTable(tableId, isForce, false);
-            });
+            GlobalStateMgr.getCurrentState().getEditLog().logDropTable(info);
         } finally {
             locker.unLockDatabase(id, LockType.WRITE);
         }
