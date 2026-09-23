@@ -98,6 +98,9 @@ public class RpdParser {
             if (matcher.find()) {
                 String database = matcher.group(1);
                 String table = matcher.group(2) != null ? matcher.group(2) : "*";
+                if ("all".equalsIgnoreCase(database)) {
+                    database = "*";
+                }
                 return new DatabaseTable(database, table);
             }
 

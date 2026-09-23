@@ -7,12 +7,12 @@
     <parent>
         <groupId>com.starrocks</groupId>
         <artifactId>starrocks-fe</artifactId>
-        <version>4.1.1</version>
+        <version>4.1.4</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <artifactId>fe-plugin-shield</artifactId>
-    <version>1.0.0</version>
+    <version>4.1.4</version>
     <packaging>jar</packaging>
     <name>fe-plugin-shield</name>
     <description>StarRocks Shield (神盾) real-time authorization plugin for Hive external catalogs</description>
@@ -54,6 +54,7 @@
     </dependencies>
 
     <build>
+        <finalName>fe-plugin-shield-1.0.0</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

@@ -23,6 +23,9 @@ public class ShieldUserIdentity {
         }
         String username = starRocksUser.substring(0, separatorIndex);
         String psaId = starRocksUser.substring(separatorIndex + 1);
+        if (!psaId.chars().allMatch(Character::isDigit)) {
+            return null;
+        }
         return new ShieldUserIdentity(username, psaId);
     }
 

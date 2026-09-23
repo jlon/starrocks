@@ -3,10 +3,10 @@ package com.oppo.starrocks.shield;
 import java.io.IOException;
 import java.util.Map;
 
-import com.starrocks.analysis.TableName;
 import com.starrocks.authorization.AccessDeniedException;
 import com.starrocks.authorization.ExternalAccessController;
 import com.starrocks.authorization.PrivilegeType;
+import com.starrocks.catalog.TableName;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReportException;
 import com.starrocks.qe.ConnectContext;

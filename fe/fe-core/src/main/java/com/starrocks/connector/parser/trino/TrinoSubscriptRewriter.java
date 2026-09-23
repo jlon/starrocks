@@ -73,6 +73,6 @@ public class TrinoSubscriptRewriter {
             return false;
         }
         FunctionCallExpr functionCall = (FunctionCallExpr) expr;
-        return FunctionSet.SPLIT.equalsIgnoreCase(functionCall.getFnName().getFunction());
+        return FunctionSet.SPLIT.equalsIgnoreCase(functionCall.getFnName().toString());
     }
 }

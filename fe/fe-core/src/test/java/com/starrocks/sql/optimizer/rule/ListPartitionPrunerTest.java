@@ -734,9 +734,9 @@ public class ListPartitionPrunerTest {
 
         List<Optional<ScalarOperator>> result = OptExternalPartitionPruner.getEffectivePartitionPredicate(scanOperator,
                 ImmutableList.of(daynoCol, hourCol), predicate);
-        Assert.assertTrue(result.get(0).isPresent());
-        Assert.assertFalse(result.get(1).isPresent());
-        Assert.assertEquals("20260704",
+        Assertions.assertTrue(result.get(0).isPresent());
+        Assertions.assertFalse(result.get(1).isPresent());
+        Assertions.assertEquals("20260704",
                 ((ConstantOperator) result.get(0).get().getChild(1)).toString());
     }
 

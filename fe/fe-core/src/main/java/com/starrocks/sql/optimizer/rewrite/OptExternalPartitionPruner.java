@@ -42,7 +42,6 @@ import com.starrocks.planner.RangePartitionPruner;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.expression.BinaryType;
 import com.starrocks.sql.ast.expression.ExprUtils;
-import com.starrocks.type.Type;
 import com.starrocks.sql.ast.expression.LiteralExpr;
 import com.starrocks.sql.ast.expression.LiteralExprFactory;
 import com.starrocks.sql.common.ErrorType;

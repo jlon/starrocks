@@ -607,23 +607,21 @@ bool Rowset::should_use_parallel_load(const SegmentReadOptions& seg_options, int
         return false;
     }
 
-    const auto& files_to_offset = metadata().bundle_file_offsets();
-    const auto bundle_file_offsets_size = metadata().bundle_file_offsets_size();
     for (int index = seg_start; index < seg_end; ++index) {
         if (skip_segment_idxs != nullptr && skip_segment_idxs->count(index) > 0) {
             continue;
         }
 
-        const auto& seg_name = metadata().segments(index);
+        const auto& segment_meta = metadata().segment_metas(index);
         std::string segment_path;
         if (seg_options.lake_io_opts.location_provider) {
-            segment_path = seg_options.lake_io_opts.location_provider->segment_location(tablet_id(), seg_name);
+            segment_path = seg_options.lake_io_opts.location_provider->segment_location(tablet_id(), segment_meta.filename());
         } else {
-            segment_path = _tablet_mgr->segment_location(tablet_id(), seg_name);
+            segment_path = _tablet_mgr->segment_location(tablet_id(), segment_meta.filename());
         }
         FileInfo segment_info{.path = segment_path};
-        if (bundle_file_offsets_size > 0) {
-            segment_info.bundle_file_offset = files_to_offset.Get(index);
+        if (segment_meta.has_bundle_file_offset()) {
+            segment_info.bundle_file_offset = segment_meta.bundle_file_offset();
         }
         auto segment = cache->lookup_segment(segment_info.cache_key());
         if (segment == nullptr || !segment->is_open()) {

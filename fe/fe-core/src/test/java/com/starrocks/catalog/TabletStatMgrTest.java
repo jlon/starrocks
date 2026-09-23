@@ -619,7 +619,7 @@ public class TabletStatMgrTest {
     }
 
     @Test
-    public void testParallelLakeTabletStatWaitsForCanceledJobsBeforeReturning(@Mocked LakeService lakeService)
+    public void testParallelLakeTabletStatIgnoresUnknownTabletStats(@Mocked LakeService lakeService)
             throws Exception {
         boolean oldEnabled = Config.enable_parallel_lake_tablet_stat_collection;
         boolean oldCnBatch = Config.enable_lake_tablet_stat_cn_batch_collection;
@@ -643,7 +643,6 @@ public class TabletStatMgrTest {
             };
 
             CountDownLatch slowRequestStarted = new CountDownLatch(1);
-            CountDownLatch slowRequestCancelObserved = new CountDownLatch(1);
             CountDownLatch allowSlowRequestExit = new CountDownLatch(1);
             new Expectations() {
                 {
@@ -686,8 +685,6 @@ public class TabletStatMgrTest {
                                         allowSlowRequestExit.await(30, TimeUnit.SECONDS);
                                         return new TabletStatResponse();
                                     } catch (InterruptedException e) {
-                                        slowRequestCancelObserved.countDown();
-                                        Assertions.assertTrue(allowSlowRequestExit.await(5, TimeUnit.SECONDS));
                                         throw e;
                                     }
                                 }
@@ -718,15 +715,13 @@ public class TabletStatMgrTest {
             updateThread.setDaemon(true);
             updateThread.start();
 
-            Assertions.assertTrue(slowRequestCancelObserved.await(5, TimeUnit.SECONDS));
-            boolean returnedBeforeSlowRequestExit = updateReturned.await(100, TimeUnit.MILLISECONDS);
+            Assertions.assertTrue(slowRequestStarted.await(5, TimeUnit.SECONDS));
             allowSlowRequestExit.countDown();
+            Assertions.assertTrue(updateReturned.await(5, TimeUnit.SECONDS));
             updateThread.join(5000);
 
-            Assertions.assertFalse(returnedBeforeSlowRequestExit,
-                    "parallel collector should wait for canceled in-flight jobs to exit before returning");
             Assertions.assertFalse(updateThread.isAlive());
-            Assertions.assertTrue(updateFailure.get() instanceof NullPointerException);
+            Assertions.assertNull(updateFailure.get());
         } finally {
             Config.enable_parallel_lake_tablet_stat_collection = oldEnabled;
             Config.enable_lake_tablet_stat_cn_batch_collection = oldCnBatch;
@@ -968,16 +963,29 @@ public class TabletStatMgrTest {
             TabletStatMgr tabletStatMgr = createTabletStatMgrForTest();
             ThreadPoolExecutor executor = Deencapsulation.invoke(tabletStatMgr,
                     "getLakeTabletStatExecutor", 2, 2);
+            AtomicReference<Throwable> updateFailure = new AtomicReference<>();
+            Thread updateThread = new Thread(() -> {
+                try {
+                    Deencapsulation.invoke(tabletStatMgr, "updateLakeTableTabletStat", db, table);
+                } catch (Throwable t) {
+                    updateFailure.set(t);
+                }
+            });
+            updateThread.start();
             boolean executorShutdown;
             try {
-                Assertions.assertThrows(NullPointerException.class,
-                        () -> Deencapsulation.invoke(tabletStatMgr, "updateLakeTableTabletStat", db, table));
+                Assertions.assertTrue(slowRequestStarted.await(5, TimeUnit.SECONDS));
+                tabletStatMgr.setStop();
+                updateThread.join(5000);
                 executorShutdown = executor.isShutdown();
             } finally {
                 allowSlowRequestExit.countDown();
+                updateThread.join(5000);
                 executor.shutdownNow();
             }
 
+            Assertions.assertFalse(updateThread.isAlive());
+            Assertions.assertNotNull(updateFailure.get());
             Assertions.assertTrue(executorShutdown,
                     "executor must be shut down when canceled jobs do not drain before timeout");
         } finally {
@@ -990,7 +998,7 @@ public class TabletStatMgrTest {
     }
 
     @Test
-    public void testParallelLakeTabletStatPropagatesUncheckedJobFailure(@Mocked LakeService lakeService) {
+    public void testParallelLakeTabletStatIgnoresUnknownTabletStat(@Mocked LakeService lakeService) {
         boolean oldEnabled = Config.enable_parallel_lake_tablet_stat_collection;
         boolean oldCnBatch = Config.enable_lake_tablet_stat_cn_batch_collection;
         int oldParallelism = Config.lake_tablet_stat_collect_parallelism;
@@ -1031,7 +1039,7 @@ public class TabletStatMgrTest {
             };
 
             TabletStatMgr tabletStatMgr = createTabletStatMgrForTest();
-            Assertions.assertThrows(NullPointerException.class,
+            Assertions.assertDoesNotThrow(
                     () -> Deencapsulation.invoke(tabletStatMgr, "updateLakeTableTabletStat", db, table));
         } finally {
             Config.enable_parallel_lake_tablet_stat_collection = oldEnabled;

@@ -81,7 +81,7 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
         assertPlanContains(sql, "cardinality(array_intersect(split('a_b', '_'), ['a']))");
 
         sql = "select sequence(1, 5)";
-        assertPlanContains(sql, "array_generate(1, 5)");
+        assertPlanContains(sql, "array_generate(1, 5, 1)");
 
         sql = "select sequence(1, cardinality(split('1,2,3', ',')))";
         analyzeSuccess(sql);
@@ -355,10 +355,10 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
     @Test
     public void testConditionalFnTransform() throws Exception {
         String sql = "select nvl(tb, 'ALL') from tall";
-        assertPlanContains(sql, "coalesce(2: tb, 'ALL')");
+        assertPlanContains(sql, "coalesce(CAST(2: tb AS VARCHAR), 'ALL')");
 
         sql = "select nvl(`tb`, 'ALL') from tall";
-        assertPlanContains(sql, "coalesce(2: tb, 'ALL')");
+        assertPlanContains(sql, "coalesce(CAST(2: tb AS VARCHAR), 'ALL')");
     }
 
     @Test

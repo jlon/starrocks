@@ -7,12 +7,12 @@ import com.oppo.starrocks.shield.ShieldApiClient;
 import com.oppo.starrocks.shield.ShieldConfig;
 import com.oppo.starrocks.shield.ShieldUserIdentity;
 import com.oppo.starrocks.shield.UserGroupInfo;
+import com.starrocks.authentication.AccessControlContext;
 import com.starrocks.authentication.AuthenticationException;
 import com.starrocks.authentication.AuthenticationProvider;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.mysql.MysqlPassword;
-import com.starrocks.qe.ConnectContext;
-import com.starrocks.sql.ast.UserIdentity;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -33,7 +33,7 @@ public final class ShieldSharedAuthenticationProvider implements AuthenticationP
     }
 
     @Override
-    public void authenticate(ConnectContext context, UserIdentity userIdentity, byte[] authResponse)
+    public void authenticate(AccessControlContext authContext, UserIdentity userIdentity, byte[] authResponse)
             throws AuthenticationException {
         String loginUser = userIdentity.getUser();
         if (!config.matchesUsername(loginUser)) {
@@ -48,7 +48,7 @@ public final class ShieldSharedAuthenticationProvider implements AuthenticationP
             throw new AuthenticationException("cannot load shared Shield auth password: " + e.getMessage());
         }
 
-        verifyMysqlPassword(context, userIdentity, authResponse, passwordBytes);
+        verifyMysqlPassword(authContext, userIdentity, authResponse, passwordBytes);
 
         if (config.isVerifyShieldOnLogin()) {
             verifyShieldAccess(loginUser);
@@ -62,10 +62,10 @@ public final class ShieldSharedAuthenticationProvider implements AuthenticationP
         return passwordStore.loadPasswordBytes();
     }
 
-    private void verifyMysqlPassword(ConnectContext context, UserIdentity userIdentity,
+    private void verifyMysqlPassword(AccessControlContext authContext, UserIdentity userIdentity,
                                    byte[] authResponse, byte[] passwordBytes) throws AuthenticationException {
         String usePassword = authResponse.length == 0 ? "NO" : "YES";
-        if (!ShieldSharedPasswordCodec.verify(passwordBytes, authResponse, context.getAuthDataSalt())) {
+        if (!ShieldSharedPasswordCodec.verify(passwordBytes, authResponse, authContext.getAuthDataSalt())) {
             throw new AuthenticationException(ErrorCode.ERR_AUTHENTICATION_FAIL, userIdentity.getUser(), usePassword);
         }
     }
@@ -85,8 +85,8 @@ public final class ShieldSharedAuthenticationProvider implements AuthenticationP
     }
 
     @Override
-    public byte[] authSwitchRequestPacket(ConnectContext context, String user, String host)
+    public byte[] authSwitchRequestPacket(AccessControlContext authContext, String user, String host)
             throws AuthenticationException {
-        return context.getAuthDataSalt();
+        return authContext.getAuthDataSalt();
     }
 }

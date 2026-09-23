@@ -1275,9 +1275,13 @@ TEST_F(LakeRowsetSegmentMetadataFilterTest, test_unopened_cached_segment_uses_ad
     cache->prune();
 
     const auto& rowset_meta = _tablet_metadata->rowsets(0);
-    const auto segment_path = _tablet_mgr->segment_location(_tablet_metadata->id(), rowset_meta.segments(0));
+    const auto& segment_meta = rowset_meta.segment_metas(0);
+    const auto segment_path = _tablet_mgr->segment_location(_tablet_metadata->id(), segment_meta.filename());
     ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(segment_path));
     FileInfo segment_info{.path = segment_path};
+    if (segment_meta.has_bundle_file_offset()) {
+        segment_info.bundle_file_offset = segment_meta.bundle_file_offset();
+    }
     auto cached_segment = std::make_shared<Segment>(fs, segment_info, 0, _tablet_schema, _tablet_mgr.get());
     ASSERT_FALSE(cached_segment->is_open());
     cache->cache_segment(segment_info.cache_key(), cached_segment);
