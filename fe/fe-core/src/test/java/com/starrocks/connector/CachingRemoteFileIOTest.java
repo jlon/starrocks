@@ -15,20 +15,25 @@
 
 package com.starrocks.connector;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.starrocks.common.FeConstants;
 import com.starrocks.connector.hive.HiveRemoteFileIO;
 import com.starrocks.connector.hive.MockedRemoteFileSystem;
 import mockit.MockUp;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.starrocks.connector.hive.MockedRemoteFileSystem.HDFS_HIVE_TABLE;
 
@@ -102,5 +107,38 @@ public class CachingRemoteFileIOTest {
         Map<RemotePathKey, List<RemoteFileDesc>> remoteFileInfos = cachingFileIO.getRemoteFiles(pathKey);
         Assertions.assertNotNull(remoteFileInfos);
         Assertions.assertTrue(remoteFileInfos.containsKey(pathKey));
+    }
+
+    @Test
+    public void testGetRemoteFilesWithoutCacheDoesNotPopulateNestedCaches() {
+        AtomicInteger loadCount = new AtomicInteger();
+        RemoteFileIO delegate = new RemoteFileIO() {
+            @Override
+            public Map<RemotePathKey, List<RemoteFileDesc>> getRemoteFiles(RemotePathKey pathKey) {
+                loadCount.incrementAndGet();
+                return ImmutableMap.of(pathKey, Lists.newArrayList());
+            }
+
+            @Override
+            public FileStatus[] getFileStatus(Path... files) throws IOException {
+                return new FileStatus[0];
+            }
+        };
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            CachingRemoteFileIO catalogCache = new CachingRemoteFileIO(delegate, executor, 60, -1, 0.1);
+            CachingRemoteFileIO queryCache = CachingRemoteFileIO.createQueryLevelInstance(catalogCache, 0.1);
+            RemotePathKey pathKey = RemotePathKey.of("hdfs://127.0.0.1:10000/table", false);
+
+            queryCache.getRemoteFiles(pathKey, false);
+            Assertions.assertEquals(1, loadCount.get());
+            Assertions.assertTrue(queryCache.getPresentRemoteFiles(Lists.newArrayList(pathKey)).isEmpty());
+            Assertions.assertTrue(catalogCache.getPresentRemoteFiles(Lists.newArrayList(pathKey)).isEmpty());
+
+            queryCache.getRemoteFiles(pathKey, false);
+            Assertions.assertEquals(2, loadCount.get());
+        } finally {
+            executor.shutdownNow();
+        }
     }
 }

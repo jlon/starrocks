@@ -47,6 +47,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkState;
+import static com.starrocks.connector.hive.HiveMetadata.useMetastoreCache;
 import static com.starrocks.connector.hive.HiveStorageFormat.PARQUET;
 import static com.starrocks.connector.hive.HiveUtils.checkLocationProperties;
 import static com.starrocks.connector.hive.HiveUtils.createDirectory;
@@ -347,7 +348,7 @@ public class HiveMetastoreOperations {
                 .collect(Collectors.toList());
 
         Map<String, HivePartitionStats> partitionStats;
-        if (enableCatalogLevelCache) {
+        if (enableCatalogLevelCache && useMetastoreCache()) {
             partitionStats = metastore.getPresentPartitionsStatistics(hivePartitionNames);
         } else {
             partitionStats = metastore.getPartitionStatistics(table, partitionNames);

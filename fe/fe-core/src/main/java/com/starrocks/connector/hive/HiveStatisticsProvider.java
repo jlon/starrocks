@@ -142,7 +142,8 @@ public class HiveStatisticsProvider {
                 Lists.newArrayList(hmsOps.getPartitionByPartitionKeys(table, partitionKeys).values());
 
         List<RemoteFileInfo> remoteFileInfos =
-                fileOps.getRemoteFileInfoForStats(table, partitions, GetRemoteFilesParams.newBuilder().build());
+                fileOps.getRemoteFileInfoForStats(table, partitions, GetRemoteFilesParams.newBuilder()
+                        .setUseCache(HiveMetadata.useRemoteFileCache()).build());
         long totalBytes = 0;
         for (RemoteFileInfo remoteFileInfo : remoteFileInfos) {
             for (RemoteFileDesc fileDesc : remoteFileInfo.getFiles()) {

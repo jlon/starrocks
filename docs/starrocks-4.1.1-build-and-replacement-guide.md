@@ -963,6 +963,38 @@ find "$dst_root" -maxdepth 1 \( -name "fe-*-main.jar" -o -name "spark-dpp-main.j
 如果当前源码改动没有涉及 `fe-spi/**`，不要机械替换 `fe-spi-4.1.1.jar`。
 2026-07-04 的物料已经记录了该 jar 的实际替换结果；后续应重新按源码变更判断。
 
+## 2026-09-01 Hive/Hudi 会话级元数据缓存开关
+
+本次新增两个仅会话级 FE 参数：
+
+```sql
+SET enable_metastore_cache = false;
+SET enable_remote_file_cache = false;
+```
+
+两者默认均为 `true`。设为 `false` 时，Hive/Hudi connector 分别绕过
+Metastore 缓存和远程文件元数据缓存，直接访问底层 HMS 或文件系统；不会失效或回填
+Catalog/查询级缓存。该逻辑只在 FE 生成 Hive/Hudi 扫描范围前执行，BE 接收已生成的
+扫描范围，因此没有 BE 源码或 BE 物料变更。
+
+- 构建：在 `starrocks/dev-env-centos7:4.1-latest` 的
+  `sr-dev-4.1.1-build` 容器中执行 `mvn --batch-mode -f fe/pom.xml -pl fe-core -am package`
+  （跳过测试、clean、Jacoco 和 Checkstyle），Maven Reactor 的 9 个模块均为
+  `SUCCESS`。
+- 构建产物：`fe/fe-core/target/fe-core-4.1.1.jar`，SHA-256 为
+  `0a604eb6b99c2b77be617b8a77892c465dbfc267b8d23c547a3aad1d0f6c6a4e`。
+- 物料替换：仅替换
+  `StarRocks-4.1.1/fe/lib/fe-core-4.1.1.jar`，保留 `oppo:oppo` 和 `0644`。
+  替换后目标 SHA-256 与构建产物一致，并通过 `cmp -s` 字节级校验。
+- 备份：
+  `/home/service/var/starrocks/docker/starrocks-4.1.1-centos/starrocks-4.1.1-centos-amd64/_backups_20260901085213/fe-lib/fe-core-4.1.1.jar`，
+  SHA-256 为
+  `516f472af26ad4ef6417ba4296ab669ce3e55b46e133a2ac54e2b659c1e92f7d`。
+- 兼容性：目标是 Java 17（classfile major version 61）FE jar。构建也在 CentOS 7
+  容器的 OpenJDK 17 中完成，宿主机为 Ubuntu 不影响该 Java jar 的运行兼容性。
+- 发布：重新构建镜像并滚动重启全部 FE 后，新建会话才可使用这两个参数。BE 不需要
+  替换或重启。混合 FE 版本期间不要设置新参数，因为旧 FE 不识别它们。
+
 ## 替换后验证
 
 1. 校验 sha256：
