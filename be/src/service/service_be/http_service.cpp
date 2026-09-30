@@ -60,6 +60,7 @@
 #include "http/action/proc_profile_action.h"
 #include "http/action/proc_profile_file_action.h"
 #include "http/action/query_cache_action.h"
+#include "http/action/query_log_action.h"
 #include "http/action/reload_tablet_action.h"
 #include "http/action/restore_tablet_action.h"
 #include "http/action/runtime_filter_cache_action.h"
@@ -298,6 +299,14 @@ Status HttpServiceBE::start() {
     auto* greplog_action = new GrepLogAction();
     _ev_http_server->register_handler(HttpMethod::GET, "/greplog", greplog_action);
     _http_handlers.emplace_back(greplog_action);
+
+    auto* query_log_list_action = new QueryLogAction(QueryLogActionType::LIST);
+    _ev_http_server->register_handler(HttpMethod::GET, "/api/query_logs", query_log_list_action);
+    _http_handlers.emplace_back(query_log_list_action);
+
+    auto* query_log_search_action = new QueryLogAction(QueryLogActionType::SEARCH);
+    _ev_http_server->register_handler(HttpMethod::GET, "/api/query_logs/search", query_log_search_action);
+    _http_handlers.emplace_back(query_log_search_action);
 
     // Register proc profile list action (for JSON API)
     auto* proc_profile_action = new ProcProfileAction(_env);

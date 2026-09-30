@@ -35,6 +35,7 @@ set(WEB_SERVER_FILES
   action/health_action.cpp
   action/checksum_action.cpp
   action/greplog_action.cpp
+  action/query_log_action.cpp
   action/snapshot_action.cpp
   action/reload_tablet_action.cpp
   action/restore_tablet_action.cpp

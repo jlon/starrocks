@@ -36,6 +36,7 @@
 #include "http/action/proc_profile_action.h"
 #include "http/action/proc_profile_file_action.h"
 #include "http/action/query_cache_action.h"
+#include "http/action/query_log_action.h"
 #include "http/action/reload_tablet_action.h"
 #include "http/action/restore_tablet_action.h"
 #include "http/action/runtime_filter_cache_action.h"
@@ -169,6 +170,11 @@ TEST(BeHandlerPrivilegeTest, proc_profile_file_requires_OPERATE) {
 TEST(BeHandlerPrivilegeTest, greplog_requires_OPERATE) {
     GrepLogAction h;
     EXPECT_EQ(Priv::OPERATE, h.required_privilege());
+}
+
+TEST(BeHandlerPrivilegeTest, query_logs_require_OPERATE) {
+    EXPECT_EQ(Priv::OPERATE, QueryLogAction(QueryLogActionType::LIST).required_privilege());
+    EXPECT_EQ(Priv::OPERATE, QueryLogAction(QueryLogActionType::SEARCH).required_privilege());
 }
 
 // --------- DownloadAction: dynamic need_auth() based on download type ---------

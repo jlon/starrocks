@@ -86,6 +86,7 @@ import com.starrocks.http.rest.OAuth2Action;
 import com.starrocks.http.rest.ProfileAction;
 import com.starrocks.http.rest.QueryDetailAction;
 import com.starrocks.http.rest.QueryDumpAction;
+import com.starrocks.http.rest.QueryLogAction;
 import com.starrocks.http.rest.QueryProgressAction;
 import com.starrocks.http.rest.RowCountAction;
 import com.starrocks.http.rest.SetConfigAction;
@@ -226,6 +227,7 @@ public class HttpServer {
         ShowRuntimeInfoAction.registerAction(controller);
         MemoryUsageAction.registerAction(controller);
         GetLogFileAction.registerAction(controller);
+        QueryLogAction.registerAction(controller);
         TriggerAction.registerAction(controller);
         GetSmallFileAction.registerAction(controller);
         RowCountAction.registerAction(controller);

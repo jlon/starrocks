@@ -297,6 +297,7 @@ set(EXEC_FILES
         ./http/message_body_sink_test.cpp
         ./http/metrics_action_test.cpp
         ./http/datacache_action_test.cpp
+        ./http/query_log_action_test.cpp
         ./http/stream_load_test.cpp
         ./http/transaction_stream_load_test.cpp
         ./http/action/update_config_action_test.cpp
