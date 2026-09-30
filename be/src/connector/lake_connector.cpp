@@ -796,6 +796,12 @@ void LakeDataSource::init_counter(RuntimeState* state) {
     _rows_key_range_counter =
             ADD_CHILD_COUNTER(_runtime_profile, "ShortKeyRangeNumber", TUnit::UNIT, segment_init_name);
     _column_iterator_init_timer = ADD_CHILD_TIMER(_runtime_profile, "ColumnIteratorInit", segment_init_name);
+    _column_file_open_timer = ADD_CHILD_TIMER(_runtime_profile, "ColumnFileOpen", "ColumnIteratorInit");
+    _column_file_open_counter = ADD_CHILD_COUNTER(_runtime_profile, "ColumnFileOpenCount", TUnit::UNIT,
+                                                  "ColumnIteratorInit");
+    _column_file_open_skipped_counter = ADD_CHILD_COUNTER(_runtime_profile, "ColumnFileOpenSkipped", TUnit::UNIT,
+                                                          "ColumnIteratorInit");
+    _ordinal_index_load_timer = ADD_CHILD_TIMER(_runtime_profile, "OrdinalIndexLoad", "ColumnIteratorInit");
     _bitmap_index_iterator_init_timer = ADD_CHILD_TIMER(_runtime_profile, "BitmapIndexIteratorInit", segment_init_name);
     _zone_map_filter_timer = ADD_CHILD_TIMER(_runtime_profile, "ZoneMapIndexFilter", segment_init_name);
     _rows_key_range_filter_timer = ADD_CHILD_TIMER(_runtime_profile, "ShortKeyFilter", segment_init_name);
@@ -901,6 +907,10 @@ void LakeDataSource::update_counter(RuntimeState* state) {
     COUNTER_UPDATE(_get_delta_column_group_timer, _reader->stats().get_delta_column_group_ns);
     COUNTER_UPDATE(_seg_init_timer, _reader->stats().segment_init_ns);
     COUNTER_UPDATE(_column_iterator_init_timer, _reader->stats().column_iterator_init_ns);
+    COUNTER_UPDATE(_column_file_open_timer, _reader->stats().column_file_open_ns);
+    COUNTER_UPDATE(_column_file_open_counter, _reader->stats().column_file_open_count);
+    COUNTER_UPDATE(_column_file_open_skipped_counter, _reader->stats().column_file_open_skipped);
+    COUNTER_UPDATE(_ordinal_index_load_timer, _reader->stats().ordinal_index_load_ns);
     COUNTER_UPDATE(_bitmap_index_iterator_init_timer, _reader->stats().bitmap_index_iterator_init_ns);
     COUNTER_UPDATE(_zone_map_filter_timer, _reader->stats().zone_map_filter_ns);
     COUNTER_UPDATE(_rows_key_range_filter_timer, _reader->stats().rows_key_range_filter_ns);

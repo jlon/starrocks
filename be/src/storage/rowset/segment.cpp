@@ -315,7 +315,26 @@ struct SegmentZoneMapPruner {
         const auto column_unique_id = tablet_column.unique_id();
 
         if (const auto it = parent->_column_readers.find(column_unique_id); it == parent->_column_readers.end()) {
-            return false;
+            if (tablet_column.is_extended()) {
+                return false;
+            }
+
+            if (!parent->_use_segment_zone_map_filter(read_options)) {
+                return false;
+            }
+
+            auto iter_or = parent->new_column_iterator_or_default(tablet_column, nullptr);
+            if (!iter_or.ok()) {
+                return false;
+            }
+            auto* default_iter = dynamic_cast<DefaultValueColumnIterator*>(iter_or->get());
+            if (default_iter == nullptr || !default_iter->init({}).ok()) {
+                return false;
+            }
+            SparseRange<> row_ranges;
+            return default_iter->get_row_ranges_by_zone_map({col_pred}, nullptr, &row_ranges, CompoundNodeType::AND)
+                           .ok() &&
+                   row_ranges.empty();
         } else {
             return it->second->has_zone_map() && !it->second->segment_zone_map_filter({col_pred}) &&
                    (tablet_column.is_key() || parent->_use_segment_zone_map_filter(read_options));

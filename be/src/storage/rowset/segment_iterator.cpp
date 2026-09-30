@@ -1225,11 +1225,22 @@ Status SegmentIterator::_init_column_iterator_by_cid(const ColumnId cid, const C
     if (col_iter == nullptr) {
         // not found in delta column group, create normal column iterator
         ASSIGN_OR_RETURN(_column_iterators[cid], _segment->new_column_iterator_or_default(col, access_path));
+        // A column added after this segment was written has no data or index pages to read.
+        // Extended columns may still read their root column, so they must keep the file.
+        if (!col.is_extended() && _segment->is_default_column(col)) {
+            ++_opts.stats->column_file_open_skipped;
+            return _column_iterators[cid]->init(iter_opts);
+        }
         const auto encryption_info = _segment->encryption_info();
         if (encryption_info) {
             opts.encryption_info = *encryption_info;
         }
-        ASSIGN_OR_RETURN(auto rfile, _opts.fs->new_random_access_file_with_bundling(opts, _segment->file_info()));
+        ++_opts.stats->column_file_open_count;
+        auto rfile_or = [&] {
+            SCOPED_RAW_TIMER(&_opts.stats->column_file_open_ns);
+            return _opts.fs->new_random_access_file_with_bundling(opts, _segment->file_info());
+        }();
+        ASSIGN_OR_RETURN(auto rfile, std::move(rfile_or));
         if (config::io_coalesce_lake_read_enable && !_segment->is_default_column(col) &&
             _segment->lake_tablet_manager() != nullptr) {
             ASSIGN_OR_RETURN(auto file_size, rfile->get_size());
@@ -1252,7 +1263,12 @@ Status SegmentIterator::_init_column_iterator_by_cid(const ColumnId cid, const C
         // TODO io_coalesce
         _column_iterators[cid] = std::move(col_iter);
         opts.encryption_info = dcg_encryption_info;
-        ASSIGN_OR_RETURN(auto dcg_file, _opts.fs->new_random_access_file(opts, dcg_filename));
+        ++_opts.stats->column_file_open_count;
+        auto dcg_file_or = [&] {
+            SCOPED_RAW_TIMER(&_opts.stats->column_file_open_ns);
+            return _opts.fs->new_random_access_file(opts, dcg_filename);
+        }();
+        ASSIGN_OR_RETURN(auto dcg_file, std::move(dcg_file_or));
         iter_opts.read_file = dcg_file.get();
         _column_files[cid] = std::move(dcg_file);
     }

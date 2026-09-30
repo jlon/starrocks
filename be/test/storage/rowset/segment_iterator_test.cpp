@@ -24,6 +24,7 @@
 #include "column/column_helper.h"
 #include "common/config.h"
 #include "common/object_pool.h"
+#include "fs/bundle_file.h"
 #include "fs/fs_memory.h"
 #include "gen_cpp/tablet_schema.pb.h"
 #include "gtest/gtest.h"
@@ -31,6 +32,7 @@
 #include "runtime/global_dict/types_fwd_decl.h"
 #include "storage/chunk_helper.h"
 #include "storage/column_predicate_rewriter.h"
+#include "storage/delta_column_group.h"
 #include "storage/olap_common.h"
 #include "storage/rowset/column_iterator.h"
 #include "storage/rowset/segment.h"
@@ -54,6 +56,35 @@ public:
 
     const std::string kSegmentDir = "/segment_test";
     std::shared_ptr<MemoryFileSystem> _fs = nullptr;
+};
+
+class CountingMemoryFileSystem : public MemoryFileSystem {
+public:
+    StatusOr<std::unique_ptr<RandomAccessFile>> new_random_access_file(const RandomAccessFileOptions& opts,
+                                                                       const std::string& path) override {
+        ++opens;
+        return MemoryFileSystem::new_random_access_file(opts, path);
+    }
+
+    int opens = 0;
+};
+
+class NonEmptyDeltaColumnGroupLoader final : public DeltaColumnGroupLoader {
+public:
+    explicit NonEmptyDeltaColumnGroupLoader(DeltaColumnGroupList dcgs) : _dcgs(std::move(dcgs)) {}
+
+    Status load(const TabletSegmentId&, int64_t, DeltaColumnGroupList* dcgs) override {
+        *dcgs = _dcgs;
+        return Status::OK();
+    }
+
+    Status load(int64_t, RowsetId, uint32_t, int64_t, DeltaColumnGroupList* dcgs) override {
+        *dcgs = _dcgs;
+        return Status::OK();
+    }
+
+private:
+    DeltaColumnGroupList _dcgs;
 };
 
 namespace test {
@@ -161,6 +192,141 @@ private:
     Schema vec_schema;
 };
 } // namespace test
+
+TEST_F(SegmentIteratorTest, testMissingColumnDoesNotOpenSegmentFile) {
+    auto fs = std::make_shared<CountingMemoryFileSystem>();
+    ASSERT_OK(fs->create_dir(kSegmentDir));
+    const std::string bundle_file_name = kSegmentDir + "/missing_column";
+    auto bundle_context = std::make_shared<BundleWritableFileContext>();
+    ASSERT_OK(bundle_context->try_create_bundle_file([&] { return fs->new_writable_file(bundle_file_name); }));
+    bundle_context->increase_active_writers();
+    bundle_context->increase_active_writers();
+    BundleWritableFile prefix_writer(bundle_context.get(), FileEncryptionInfo{});
+    ASSERT_OK(prefix_writer.append("prefix"));
+    ASSERT_OK(prefix_writer.close());
+    ASSERT_OK(bundle_context->decrease_active_writers());
+
+    std::shared_ptr<TabletSchema> old_schema =
+            test::TabletSchemaBuilder().create(0, false, TYPE_INT, true).create(2, false, TYPE_INT).build();
+    auto bundle_writer = std::make_unique<BundleWritableFile>(bundle_context.get(), FileEncryptionInfo{});
+    SegmentWriter writer(std::move(bundle_writer), 0, old_schema, SegmentWriterOptions{});
+    ASSERT_OK(writer.init({0, 1}, true));
+    auto write_chunk = ChunkHelper::new_chunk(ChunkHelper::convert_schema(old_schema, {0, 1}), 3);
+    for (int i = 0; i < 3; ++i) {
+        write_chunk->get_column_by_index(0)->as_mutable_ptr()->append_datum(i);
+        write_chunk->get_column_by_index(1)->as_mutable_ptr()->append_datum(i + 10);
+    }
+    ASSERT_OK(writer.append_chunk(*write_chunk));
+    uint64_t index_size = 0;
+    uint64_t file_size = 0;
+    ASSERT_OK(writer.finalize_columns(&index_size));
+    ASSERT_OK(writer.finalize_footer(&file_size));
+    const int64_t bundle_file_offset = writer.bundle_file_offset();
+    ASSERT_GT(bundle_file_offset, 0);
+    ASSERT_OK(bundle_context->decrease_active_writers());
+
+    ASSIGN_OR_ABORT(auto segment, Segment::open(fs,
+                                                FileInfo{.path = bundle_file_name,
+                                                         .size = static_cast<int64_t>(file_size),
+                                                         .bundle_file_offset = bundle_file_offset},
+                                                0, old_schema));
+    std::shared_ptr<TabletSchema> new_schema = test::TabletSchemaBuilder()
+                                                       .create(0, false, TYPE_INT, true)
+                                                       .create(1, false, TYPE_INT, true)
+                                                       .create(2, false, TYPE_INT)
+                                                       .build();
+    OlapReaderStatistics stats;
+    SegmentReadOptions opts;
+    opts.fs = fs;
+    opts.stats = &stats;
+    opts.tablet_schema = new_schema;
+
+    const int opens_before_scan = fs->opens;
+    auto missing_schema = test::VecSchemaBuilder().add(1, "added", TYPE_INT).build();
+    auto missing_iter = new_segment_iterator(segment, missing_schema, opts);
+    auto missing_chunk = ChunkHelper::new_chunk(missing_schema, 3);
+    ASSERT_OK(missing_iter->get_next(missing_chunk.get()));
+    ASSERT_EQ(3, missing_chunk->num_rows());
+    ASSERT_EQ(0, missing_chunk->get_column_by_index(0)->get(0).get_int32());
+    ASSERT_EQ(opens_before_scan, fs->opens);
+    ASSERT_EQ(0, stats.column_file_open_ns);
+    ASSERT_EQ(0, stats.column_file_open_count);
+    ASSERT_EQ(1, stats.column_file_open_skipped);
+
+    auto physical_schema = test::VecSchemaBuilder()
+                                   .add(0, "stored_a", TYPE_INT)
+                                   .add(1, "added", TYPE_INT)
+                                   .add(2, "stored_b", TYPE_INT)
+                                   .build();
+    ObjectPool pool;
+    auto predicate = pool.add(new_column_eq_predicate(get_type_info(TYPE_INT), 1, "1"));
+    PredicateAndNode pred_root;
+    pred_root.add_child(PredicateColumnNode{predicate});
+
+    SegmentReadOptions filter_opts = opts;
+    OlapReaderStatistics filter_stats;
+    filter_opts.stats = &filter_stats;
+    filter_opts.pred_tree = PredicateTree::create(std::move(pred_root));
+    ASSERT_OK(ZonemapPredicatesRewriter::rewrite_predicate_tree(&pool, filter_opts.pred_tree,
+                                                                filter_opts.pred_tree_for_zone_map));
+
+    const int opens_before_segment_prune = fs->opens;
+    auto filtered_iter = segment->new_iterator(physical_schema, filter_opts);
+    ASSERT_TRUE(filtered_iter.status().is_end_of_file());
+    ASSERT_EQ(opens_before_segment_prune, fs->opens);
+    ASSERT_EQ(3, filter_stats.segment_stats_filtered);
+
+    auto dcg = std::make_shared<DeltaColumnGroup>();
+    dcg->init(1, {{99}}, {"unused.cols"});
+    filter_opts.dcg_loader = std::make_shared<NonEmptyDeltaColumnGroupLoader>(DeltaColumnGroupList{dcg});
+    filter_stats = {};
+    const int opens_before_dcg_scan = fs->opens;
+    auto dcg_iter = segment->new_iterator(physical_schema, filter_opts);
+    ASSERT_OK(dcg_iter.status());
+    auto dcg_chunk = ChunkHelper::new_chunk(physical_schema, 3);
+    ASSERT_TRUE(dcg_iter.value()->get_next(dcg_chunk.get()).is_end_of_file());
+    ASSERT_EQ(0, filter_stats.segment_stats_filtered);
+    ASSERT_EQ(opens_before_dcg_scan + 2, fs->opens);
+
+    SegmentReadOptions sample_opts = opts;
+    OlapReaderStatistics sample_stats;
+    sample_opts.stats = &sample_stats;
+    sample_opts.sample_options.__set_enable_sampling(true);
+    sample_opts.sample_options.__set_sample_method(SampleMethod::BY_PAGE);
+    sample_opts.sample_options.__set_random_seed(1);
+    sample_opts.sample_options.__set_probability_percent(100);
+    auto sample_iter = new_segment_iterator(segment, missing_schema, sample_opts);
+    auto sample_chunk = ChunkHelper::new_chunk(missing_schema, 3);
+    ASSERT_TRUE(sample_iter->get_next(sample_chunk.get()).is_invalid_argument());
+    ASSERT_EQ(0, sample_stats.column_file_open_count);
+    ASSERT_EQ(1, sample_stats.column_file_open_skipped);
+
+    const int opens_before_stored_scan = fs->opens;
+    auto stored_schema = test::VecSchemaBuilder().add(0, "stored_a", TYPE_INT).add(2, "stored_b", TYPE_INT).build();
+    auto stored_iter = new_segment_iterator(segment, stored_schema, opts);
+    auto stored_chunk = ChunkHelper::new_chunk(stored_schema, 3);
+    ASSERT_OK(stored_iter->get_next(stored_chunk.get()));
+    ASSERT_EQ(3, stored_chunk->num_rows());
+    ASSERT_EQ(2, stored_chunk->get_column_by_index(0)->get(2).get_int32());
+    ASSERT_EQ(12, stored_chunk->get_column_by_index(1)->get(2).get_int32());
+    ASSERT_EQ(opens_before_stored_scan + 2, fs->opens);
+    ASSERT_EQ(2, stats.column_file_open_count);
+
+    auto mixed_schema = test::VecSchemaBuilder()
+                                .add(0, "stored_a", TYPE_INT)
+                                .add(1, "added", TYPE_INT)
+                                .add(2, "stored_b", TYPE_INT)
+                                .build();
+    auto mixed_iter = new_segment_iterator(segment, mixed_schema, opts);
+    auto mixed_chunk = ChunkHelper::new_chunk(mixed_schema, 3);
+    ASSERT_OK(mixed_iter->get_next(mixed_chunk.get()));
+    ASSERT_EQ(3, mixed_chunk->num_rows());
+    ASSERT_EQ(2, mixed_chunk->get_column_by_index(0)->get(2).get_int32());
+    ASSERT_EQ(0, mixed_chunk->get_column_by_index(1)->get(2).get_int32());
+    ASSERT_EQ(12, mixed_chunk->get_column_by_index(2)->get(2).get_int32());
+    ASSERT_EQ(4, stats.column_file_open_count);
+    ASSERT_EQ(2, stats.column_file_open_skipped);
+}
 
 // This case is only triggered by dictionary inconsistencies.
 // NOLINTNEXTLINE

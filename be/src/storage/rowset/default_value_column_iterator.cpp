@@ -42,9 +42,12 @@
 #include "column/column_access_path.h"
 #include "column/column_builder.h"
 #include "column/datum.h"
+#include "column/datum_convert.h"
 #include "runtime/decimalv3.h"
+#include "storage/column_predicate.h"
 #include "storage/range.h"
 #include "storage/types.h"
+#include "storage/zone_map_detail.h"
 #include "types/array_type_info.h"
 #include "types/map_type_info.h"
 #include "types/struct_type_info.h"
@@ -597,12 +600,36 @@ Status DefaultValueColumnIterator::get_row_ranges_by_zone_map(const std::vector<
                                                               SparseRange<>* row_ranges, CompoundNodeType pred_relation,
                                                               const Range<>* src_range) {
     DCHECK(row_ranges->empty());
-    // TODO
-    if (src_range == nullptr) {
-        row_ranges->add({0, static_cast<rowid_t>(_num_rows)});
+    auto add_source_range = [&] {
+        if (src_range == nullptr) {
+            row_ranges->add({0, static_cast<rowid_t>(_num_rows)});
+        } else {
+            row_ranges->add(*src_range);
+        }
+    };
+
+    if (predicates.empty()) {
+        add_source_range();
     } else {
-        row_ranges->add(*src_range);
+        Datum default_value;
+        if (_is_default_value_null || datum_from_string(_type_info.get(), &default_value, _default_value, nullptr).ok()) {
+            ZoneMapDetail zone_map(default_value, default_value, _is_default_value_null);
+            const bool may_match = pred_relation == CompoundNodeType::AND
+                                           ? std::ranges::all_of(predicates, [&](const auto* pred) {
+                                                 return pred->zone_map_filter(zone_map);
+                                             })
+                                           : std::ranges::any_of(predicates, [&](const auto* pred) {
+                                                 return pred->zone_map_filter(zone_map);
+                                             });
+            if (may_match) {
+                add_source_range();
+            }
+        } else {
+            // Some complex default values cannot be represented as a scalar Datum.
+            add_source_range();
+        }
     }
+
     // TODO: Setting `_may_contained_deleted_row` to true is a temporary fix,
     // which will affect performance in some scenarios.
     // It is best to filter according to DefaultValue,
