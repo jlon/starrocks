@@ -35,6 +35,52 @@ log_stderr()
     echo "[`date`] $@" >&2
 }
 
+cfs_mount_enabled()
+{
+    case "${CFS_MOUNT_ENABLED:-false}" in
+        1|true|TRUE|yes|YES)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+mount_cfs()
+{
+    if ! cfs_mount_enabled; then
+        return 0
+    fi
+
+    local required_var
+    for required_var in CFS_VOLUME_NAME CFS_OWNER CFS_ACCESS_KEY CFS_SECRET_KEY CFS_MASTER_ADDR; do
+        if [[ -z "${!required_var:-}" ]]; then
+            log_stderr "Missing required CFS environment variable: $required_var"
+            return 1
+        fi
+    done
+
+    local install_url=${CFS_INSTALL_URL:-https://ocs-cn-south.oppoer.me/chubaofs-resource/tmp/cbfs_install.sh}
+    case "$install_url" in
+        https://*)
+            ;;
+        *)
+            log_stderr "CFS_INSTALL_URL must use HTTPS."
+            return 1
+            ;;
+    esac
+
+    local mount_path=${CFS_MOUNT_PATH:-/home/service/var/starrocks}
+    local log_path=${CFS_LOG_PATH:-/home/service/var/logs/cfs/log}
+    log_stderr "Mounting CFS at $mount_path."
+    curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "$install_url" | \
+        bash -s -- "$mount_path" "$CFS_VOLUME_NAME" "$CFS_OWNER" \
+        "$CFS_ACCESS_KEY" "$CFS_SECRET_KEY" "$CFS_MASTER_ADDR" "$log_path"
+    local -a pipe_status=("${PIPESTATUS[@]}")
+    [[ ${pipe_status[0]} -eq 0 && ${pipe_status[1]} -eq 0 ]]
+}
+
 parse_confval_from_fe_conf()
 {
     # a naive script to grep given confkey from fe conf file
@@ -317,6 +363,7 @@ if [[ "x$svc_name" == "x" ]] ; then
     exit 1
 fi
 
+mount_cfs || exit 1
 update_conf_from_configmap
 META_DIR=`resolve_meta_dir`
 log_stderr "Using FE meta_dir: $META_DIR (POD_NAME=$POD_NAME)"
