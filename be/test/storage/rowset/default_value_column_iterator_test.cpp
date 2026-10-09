@@ -20,6 +20,7 @@
 #include "storage/rowset/column_iterator.h"
 #include "storage/tablet_schema.h"
 #include "storage/types.h"
+#include "testutil/assert.h"
 
 namespace starrocks {
 class DefaultValueColumnIteratorTest : public testing::Test {
@@ -55,6 +56,59 @@ TEST_F(DefaultValueColumnIteratorTest, delete_after_column) {
     for (size_t i = 0; i < 10; i++) {
         ASSERT_TRUE(column->is_null(i));
     }
+}
+
+TEST_F(DefaultValueColumnIteratorTest, zone_map_filters_constant_default_value) {
+    TypeInfoPtr type_info = get_type_info(TYPE_INT);
+    DefaultValueColumnIterator iter(true, "7", false, type_info, 0, 10);
+    ASSERT_OK(iter.init({}));
+
+    std::unique_ptr<ColumnPredicate> equals_default(new_column_eq_predicate(type_info, 0, "7"));
+    std::unique_ptr<ColumnPredicate> equals_other(new_column_eq_predicate(type_info, 0, "8"));
+    std::unique_ptr<ColumnPredicate> greater_than_default(new_column_gt_predicate(type_info, 0, "7"));
+
+    SparseRange<> row_ranges;
+    ASSERT_OK(iter.get_row_ranges_by_zone_map({equals_default.get()}, nullptr, &row_ranges, CompoundNodeType::AND));
+    EXPECT_EQ(10, row_ranges.span_size());
+
+    row_ranges.clear();
+    ASSERT_OK(iter.get_row_ranges_by_zone_map({equals_other.get()}, nullptr, &row_ranges, CompoundNodeType::AND));
+    EXPECT_TRUE(row_ranges.empty());
+
+    row_ranges.clear();
+    ASSERT_OK(iter.get_row_ranges_by_zone_map({equals_default.get(), greater_than_default.get()}, nullptr,
+                                              &row_ranges, CompoundNodeType::AND));
+    EXPECT_TRUE(row_ranges.empty());
+
+    row_ranges.clear();
+    ASSERT_OK(iter.get_row_ranges_by_zone_map({equals_other.get(), equals_default.get()}, nullptr, &row_ranges,
+                                              CompoundNodeType::OR));
+    EXPECT_EQ(10, row_ranges.span_size());
+
+    const Range<> source_range(3, 7);
+    row_ranges.clear();
+    ASSERT_OK(iter.get_row_ranges_by_zone_map({equals_default.get()}, nullptr, &row_ranges, CompoundNodeType::AND,
+                                              &source_range));
+    ASSERT_EQ(1, row_ranges.size());
+    EXPECT_EQ(3, row_ranges.begin());
+    EXPECT_EQ(7, row_ranges.end());
+}
+
+TEST_F(DefaultValueColumnIteratorTest, zone_map_filters_null_default_value) {
+    TypeInfoPtr type_info = get_type_info(TYPE_INT);
+    DefaultValueColumnIterator iter(false, "", true, type_info, 0, 10);
+    ASSERT_OK(iter.init({}));
+
+    std::unique_ptr<ColumnPredicate> is_null(new_column_null_predicate(type_info, 0, true));
+    std::unique_ptr<ColumnPredicate> is_not_null(new_column_null_predicate(type_info, 0, false));
+
+    SparseRange<> row_ranges;
+    ASSERT_OK(iter.get_row_ranges_by_zone_map({is_null.get()}, nullptr, &row_ranges, CompoundNodeType::AND));
+    EXPECT_EQ(10, row_ranges.span_size());
+
+    row_ranges.clear();
+    ASSERT_OK(iter.get_row_ranges_by_zone_map({is_not_null.get()}, nullptr, &row_ranges, CompoundNodeType::AND));
+    EXPECT_TRUE(row_ranges.empty());
 }
 
 // Test that DefaultValueColumnIterator properly destroys placement-new'd Datum
