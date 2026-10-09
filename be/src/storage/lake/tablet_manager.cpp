@@ -640,9 +640,11 @@ StatusOr<TabletMetadataPtr> TabletManager::get_tablet_metadata(const string& pat
 StatusOr<TabletMetadataPtr> TabletManager::get_tablet_metadata(const string& path, const CacheOptions& cache_opts,
                                                                int64_t expected_gtid,
                                                                const std::shared_ptr<FileSystem>& fs) {
-    if (auto ptr = _metacache->lookup_tablet_metadata(path); ptr != nullptr) {
-        TRACE("got cached tablet metadata");
-        return ptr;
+    if (!cache_opts.skip_meta_cache) {
+        if (auto ptr = _metacache->lookup_tablet_metadata(path); ptr != nullptr) {
+            TRACE("got cached tablet metadata");
+            return ptr;
+        }
     }
     StatusOr<TabletMetadataPtr> metadata_or;
     auto [tablet_id, version] = parse_tablet_metadata_filename(basename(path));
@@ -826,8 +828,10 @@ StatusOr<TabletMetadataPtr> TabletManager::get_single_tablet_metadata(int64_t ta
                                                                       const std::shared_ptr<FileSystem>& fs,
                                                                       BundleMetadataCache* bundle_cache) {
     auto tablet_path = tablet_metadata_location(tablet_id, version);
-    if (auto ptr = _metacache->lookup_tablet_metadata(tablet_path); ptr != nullptr) {
-        return ptr;
+    if (!cache_opts.skip_meta_cache) {
+        if (auto ptr = _metacache->lookup_tablet_metadata(tablet_path); ptr != nullptr) {
+            return ptr;
+        }
     }
     if (version == kInitialVersion) {
         return Status::NotFound("Not found expected tablet metadata");
