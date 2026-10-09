@@ -631,9 +631,9 @@ Status RowsetUpdateState::rewrite_segment(uint32_t segment_id, int64_t txn_id, c
         // after rename, add old segment to orphan files, for gc later.
         FileMetaPB file_meta;
         file_meta.set_name(rowset_meta.segments(segment_id));
-        if (rowset_meta.shared_segments_size() > 0) {
-            file_meta.set_shared(rowset_meta.shared_segments(segment_id));
-        }
+        file_meta.set_shared(rowset_meta.bundle_file_offsets_size() > 0 ||
+                             (rowset_meta.shared_segments_size() > segment_id &&
+                              rowset_meta.shared_segments(segment_id)));
         orphan_files->push_back(std::move(file_meta));
     }
     TRACE("end rewrite segment");

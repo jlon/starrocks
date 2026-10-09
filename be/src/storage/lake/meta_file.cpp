@@ -228,14 +228,17 @@ void MetaFileBuilder::apply_opwrite(const TxnLogPB_OpWrite& op_write, const std:
     }
 }
 
+static bool is_shared_segment(const RowsetMetadataPB& rowset, int index) {
+    return rowset.bundle_file_offsets_size() > 0 ||
+           (rowset.shared_segments_size() > index && rowset.shared_segments(index));
+}
+
 void MetaFileBuilder::apply_column_mode_partial_update(const TxnLogPB_OpWrite& op_write) {
     // remove all segments that only contains partial columns.
     for (int i = 0; i < op_write.rowset().segments_size(); ++i) {
         FileMetaPB file_meta;
         file_meta.set_name(op_write.rowset().segments(i));
-        if (op_write.rowset().shared_segments_size() > 0) {
-            file_meta.set_shared(op_write.rowset().shared_segments(i));
-        }
+        file_meta.set_shared(is_shared_segment(op_write.rowset(), i));
         _tablet_meta->mutable_orphan_files()->Add(std::move(file_meta));
     }
 }
@@ -566,9 +569,7 @@ void MetaFileBuilder::apply_opcompaction_with_conflict(const TxnLogPB_OpCompacti
     for (int i = 0; i < rowset_metadata.segments_size(); i++) {
         FileMetaPB file_meta;
         file_meta.set_name(rowset_metadata.segments(i));
-        if (rowset_metadata.shared_segments_size() > 0) {
-            file_meta.set_shared(rowset_metadata.shared_segments(i));
-        }
+        file_meta.set_shared(is_shared_segment(rowset_metadata, i));
         _tablet_meta->mutable_orphan_files()->Add(std::move(file_meta));
     }
 }
