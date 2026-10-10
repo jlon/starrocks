@@ -3774,6 +3774,7 @@ public abstract class FileSystem extends Configured
 
         private final Map<Key, FileSystem> map = new HashMap<>();
         private final Set<Key> toAutoClose = new HashSet<>();
+        private final ThreadLocal<Set<Key>> initializingKeys = ThreadLocal.withInitial(HashSet::new);
 
         /**
          * Semaphore used to serialize creation of new FS instances.
@@ -3843,13 +3844,20 @@ public abstract class FileSystem extends Configured
             if (fs != null) {
                 return fs;
             }
-            // fs not yet created, acquire lock
-            // to construct an instance.
-            try (DurationInfo d = new DurationInfo(LOGGER, false,
-                    "Acquiring creator semaphore for %s", uri)) {
-                creatorPermits.acquireUninterruptibly();
+            Set<Key> activeKeys = initializingKeys.get();
+            if (activeKeys.contains(key)) {
+                throw new IOException("Recursive filesystem initialization");
+            }
+            // Initializers can synchronously create a different credential-store filesystem.
+            boolean nestedCreation = !activeKeys.isEmpty();
+            if (!nestedCreation) {
+                try (DurationInfo d = new DurationInfo(LOGGER, false,
+                        "Acquiring creator semaphore for %s", uri)) {
+                    creatorPermits.acquireUninterruptibly();
+                }
             }
             FileSystem fsToClose = null;
+            boolean keyAdded = false;
             try {
                 // See if FS was instantiated by another thread while waiting
                 // for the permit.
@@ -3861,6 +3869,7 @@ public abstract class FileSystem extends Configured
                     return fs;
                 }
                 // create the filesystem
+                keyAdded = activeKeys.add(key);
                 fs = createFileSystem(uri, conf);
                 final long timeout = conf.getTimeDuration(SERVICE_SHUTDOWN_TIMEOUT,
                         SERVICE_SHUTDOWN_TIMEOUT_DEFAULT,
@@ -3896,8 +3905,15 @@ public abstract class FileSystem extends Configured
                     }
                 } // end of synchronized block
             } finally {
-                // release the creator permit.
-                creatorPermits.release();
+                if (keyAdded) {
+                    activeKeys.remove(key);
+                }
+                if (activeKeys.isEmpty()) {
+                    initializingKeys.remove();
+                }
+                if (!nestedCreation) {
+                    creatorPermits.release();
+                }
             }
             if (fsToClose != null) {
                 LOGGER.debug("Duplicate FS created for {}; discarding {}",
