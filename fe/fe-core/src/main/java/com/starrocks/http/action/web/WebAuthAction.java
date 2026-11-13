@@ -17,8 +17,6 @@ package com.starrocks.http.action.web;
 import com.google.gson.JsonSyntaxException;
 import com.starrocks.authentication.AuthenticationException;
 import com.starrocks.authentication.AuthenticationHandler;
-import com.starrocks.authorization.AccessDeniedException;
-import com.starrocks.authorization.PrivilegeType;
 import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
@@ -29,7 +27,6 @@ import com.starrocks.http.HttpAuthManager;
 import com.starrocks.http.IllegalArgException;
 import com.starrocks.http.action.WebBaseAction;
 import com.starrocks.qe.ConnectContext;
-import com.starrocks.sql.analyzer.Authorizer;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.cookie.CookieHeaderNames;
@@ -144,23 +141,6 @@ public class WebAuthAction extends WebApiAction {
                 Map.of("user", value.currentUser.getUser(), "canAdmin", true));
     }
 
-    boolean hasNodePrivilege(UserIdentity user) {
-        try {
-            ConnectContext context = new ConnectContext();
-            context.setCurrentUserIdentity(user);
-            context.setCurrentRoleIds(user);
-            Authorizer.checkSystemAction(context, PrivilegeType.NODE);
-            return true;
-        } catch (AccessDeniedException e) {
-            try {
-                checkUserOwnsAdminRole(user);
-                return true;
-            } catch (AccessDeniedException ignored) {
-                return false;
-            }
-        }
-    }
-
     private DefaultCookie cookie(String value, long maxAge) {
         DefaultCookie cookie = new DefaultCookie(WebBaseAction.STARROCKS_SESSION_ID, value);
         cookie.setPath("/");
@@ -171,10 +151,6 @@ public class WebAuthAction extends WebApiAction {
             cookie.setSecure(true);
         }
         return cookie;
-    }
-
-    private static String path(BaseRequest request) {
-        return request.getRequest().uri().split("\\?", 2)[0];
     }
 
     private static class LoginRequest {

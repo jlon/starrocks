@@ -11,6 +11,10 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/index'
+import { Route as AuthenticatedSessionsRouteImport } from './routes/_authenticated/sessions'
+import { Route as AuthenticatedQueryProfileRouteImport } from './routes/_authenticated/query-profile'
+import { Route as AuthenticatedQueriesRouteImport } from './routes/_authenticated/queries'
+import { Route as AuthenticatedBackendsRouteImport } from './routes/_authenticated/backends'
 import { Route as errors503RouteImport } from './routes/(errors)/503'
 import { Route as errors500RouteImport } from './routes/(errors)/500'
 import { Route as errors404RouteImport } from './routes/(errors)/404'
@@ -25,6 +29,27 @@ const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
 const AuthenticatedIndexRoute = AuthenticatedIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedSessionsRoute = AuthenticatedSessionsRouteImport.update({
+  id: '/sessions',
+  path: '/sessions',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedQueryProfileRoute =
+  AuthenticatedQueryProfileRouteImport.update({
+    id: '/query-profile',
+    path: '/query-profile',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedQueriesRoute = AuthenticatedQueriesRouteImport.update({
+  id: '/queries',
+  path: '/queries',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedBackendsRoute = AuthenticatedBackendsRouteImport.update({
+  id: '/backends',
+  path: '/backends',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const errors503Route = errors503RouteImport.update({
@@ -66,6 +91,10 @@ export interface FileRoutesByFullPath {
   '/404': typeof errors404Route
   '/500': typeof errors500Route
   '/503': typeof errors503Route
+  '/backends': typeof AuthenticatedBackendsRoute
+  '/queries': typeof AuthenticatedQueriesRoute
+  '/query-profile': typeof AuthenticatedQueryProfileRoute
+  '/sessions': typeof AuthenticatedSessionsRoute
 }
 export interface FileRoutesByTo {
   '/sign-in': typeof authSignInRoute
@@ -74,6 +103,10 @@ export interface FileRoutesByTo {
   '/404': typeof errors404Route
   '/500': typeof errors500Route
   '/503': typeof errors503Route
+  '/backends': typeof AuthenticatedBackendsRoute
+  '/queries': typeof AuthenticatedQueriesRoute
+  '/query-profile': typeof AuthenticatedQueryProfileRoute
+  '/sessions': typeof AuthenticatedSessionsRoute
   '/': typeof AuthenticatedIndexRoute
 }
 export interface FileRoutesById {
@@ -85,13 +118,39 @@ export interface FileRoutesById {
   '/(errors)/404': typeof errors404Route
   '/(errors)/500': typeof errors500Route
   '/(errors)/503': typeof errors503Route
+  '/_authenticated/backends': typeof AuthenticatedBackendsRoute
+  '/_authenticated/queries': typeof AuthenticatedQueriesRoute
+  '/_authenticated/query-profile': typeof AuthenticatedQueryProfileRoute
+  '/_authenticated/sessions': typeof AuthenticatedSessionsRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/sign-in' | '/401' | '/403' | '/404' | '/500' | '/503'
+  fullPaths:
+    | '/'
+    | '/sign-in'
+    | '/401'
+    | '/403'
+    | '/404'
+    | '/500'
+    | '/503'
+    | '/backends'
+    | '/queries'
+    | '/query-profile'
+    | '/sessions'
   fileRoutesByTo: FileRoutesByTo
-  to: '/sign-in' | '/401' | '/403' | '/404' | '/500' | '/503' | '/'
+  to:
+    | '/sign-in'
+    | '/401'
+    | '/403'
+    | '/404'
+    | '/500'
+    | '/503'
+    | '/backends'
+    | '/queries'
+    | '/query-profile'
+    | '/sessions'
+    | '/'
   id:
     | '__root__'
     | '/_authenticated'
@@ -101,6 +160,10 @@ export interface FileRouteTypes {
     | '/(errors)/404'
     | '/(errors)/500'
     | '/(errors)/503'
+    | '/_authenticated/backends'
+    | '/_authenticated/queries'
+    | '/_authenticated/query-profile'
+    | '/_authenticated/sessions'
     | '/_authenticated/'
   fileRoutesById: FileRoutesById
 }
@@ -128,6 +191,34 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AuthenticatedIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/sessions': {
+      id: '/_authenticated/sessions'
+      path: '/sessions'
+      fullPath: '/sessions'
+      preLoaderRoute: typeof AuthenticatedSessionsRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/query-profile': {
+      id: '/_authenticated/query-profile'
+      path: '/query-profile'
+      fullPath: '/query-profile'
+      preLoaderRoute: typeof AuthenticatedQueryProfileRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/queries': {
+      id: '/_authenticated/queries'
+      path: '/queries'
+      fullPath: '/queries'
+      preLoaderRoute: typeof AuthenticatedQueriesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/backends': {
+      id: '/_authenticated/backends'
+      path: '/backends'
+      fullPath: '/backends'
+      preLoaderRoute: typeof AuthenticatedBackendsRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/(errors)/503': {
@@ -176,10 +267,18 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedBackendsRoute: typeof AuthenticatedBackendsRoute
+  AuthenticatedQueriesRoute: typeof AuthenticatedQueriesRoute
+  AuthenticatedQueryProfileRoute: typeof AuthenticatedQueryProfileRoute
+  AuthenticatedSessionsRoute: typeof AuthenticatedSessionsRoute
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedBackendsRoute: AuthenticatedBackendsRoute,
+  AuthenticatedQueriesRoute: AuthenticatedQueriesRoute,
+  AuthenticatedQueryProfileRoute: AuthenticatedQueryProfileRoute,
+  AuthenticatedSessionsRoute: AuthenticatedSessionsRoute,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
 }
 
