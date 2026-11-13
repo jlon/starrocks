@@ -54,6 +54,11 @@ public class WebApiAction extends WebBaseAction {
                         Map.of("message", "content type must be application/json"));
                 return;
             }
+            if (!checkOrigin(request)) {
+                writeJson(request, response, HttpResponseStatus.FORBIDDEN,
+                        Map.of("message", "invalid origin"));
+                return;
+            }
             executePost(request, response);
         } else if (method.equals(HttpMethod.OPTIONS)) {
             writeResponse(request, response, HttpResponseStatus.OK);

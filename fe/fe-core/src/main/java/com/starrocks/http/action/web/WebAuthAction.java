@@ -74,11 +74,6 @@ public class WebAuthAction extends WebApiAction {
     }
 
     private void login(BaseRequest request, BaseResponse response) {
-        if (!checkOrigin(request)) {
-            writeJson(request, response, HttpResponseStatus.FORBIDDEN, Map.of("message", "invalid origin"));
-            return;
-        }
-
         LoginRequest login;
         try {
             login = GSON.fromJson(request.getContent(), LoginRequest.class);
@@ -119,11 +114,6 @@ public class WebAuthAction extends WebApiAction {
     }
 
     private void logout(BaseRequest request, BaseResponse response) {
-        if (!checkOrigin(request)) {
-            writeJson(request, response, HttpResponseStatus.FORBIDDEN, Map.of("message", "invalid origin"));
-            return;
-        }
-
         String sessionId = request.getCookieValue(WebBaseAction.STARROCKS_SESSION_ID);
         HttpAuthManager.getInstance().removeSessionValue(sessionId);
         response.addCookie(cookie(request, "", 0));
