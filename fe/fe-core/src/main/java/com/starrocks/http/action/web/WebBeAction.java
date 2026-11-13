@@ -50,7 +50,8 @@ public class WebBeAction extends WebApiAction {
     private static final String BASE = "/api/web/v1/be";
     private static final Pattern PRE = Pattern.compile("<pre>(.*?)</pre>", Pattern.DOTALL);
     private static final Pattern ROW = Pattern.compile("<tr[^>]*>(.*?)</tr>", Pattern.DOTALL);
-    private static final Pattern CELL = Pattern.compile("<t[dh][^>]*>(.*?)</t[dh]>", Pattern.DOTALL);
+    private static final Pattern TH = Pattern.compile("<th[^>]*>(.*?)</th>", Pattern.DOTALL);
+    private static final Pattern TD = Pattern.compile("<td[^>]*>(.*?)</td>", Pattern.DOTALL);
     private static final Pattern TAG = Pattern.compile("<[^>]+>");
 
     public WebBeAction(ActionController controller) {
@@ -79,11 +80,13 @@ public class WebBeAction extends WebApiAction {
         }
 
         String page = path(request).substring(BASE.length());
+        // UI routes use kebab-case; the BE handlers use snake_case paths.
+        String bePage = page.replace("-", "_");
         String raw;
         try {
-            raw = fetch(node, page, request.getSingleParameter("upper_level"));
+            raw = fetch(node, bePage, request.getSingleParameter("upper_level"));
         } catch (IOException e) {
-            LOG.warn("failed to fetch BE page {} from {}:{}", page, node.host(), node.port(), e);
+            LOG.warn("failed to fetch BE page {} from {}:{}", bePage, node.host(), node.port(), e);
             writeJson(request, response, HttpResponseStatus.BAD_GATEWAY,
                     Map.of("message", "failed to reach backend"));
             return;
@@ -107,8 +110,8 @@ public class WebBeAction extends WebApiAction {
     }
 
     private static String fetch(BeNode node, String page, String upperLevel) throws IOException {
-        String query = "?raw";
-        if ("/mem-tracker".equals(page)) {
+        String query = "?raw=1";
+        if ("/mem_tracker".equals(page)) {
             int level = 2;
             if (upperLevel != null) {
                 try {
@@ -163,18 +166,17 @@ public class WebBeAction extends WebApiAction {
         List<List<String>> rows = new ArrayList<>();
         Matcher rowMatcher = ROW.matcher(html);
         while (rowMatcher.find()) {
-            List<String> cells = new ArrayList<>();
-            Matcher cellMatcher = CELL.matcher(rowMatcher.group(1));
-            while (cellMatcher.find()) {
-                cells.add(htmlToText(cellMatcher.group(1)).trim());
+            String rowHtml = rowMatcher.group(1);
+            // BE's mem_tracker page closes the header row implicitly (no </tr>
+            // before <tbody>), so a row can carry both <th> and <td> cells. Split
+            // them by tag instead of treating the whole capture as one kind.
+            List<String> headerCells = cells(rowHtml, TH);
+            List<String> dataCells = cells(rowHtml, TD);
+            if (headers.isEmpty() && !headerCells.isEmpty()) {
+                headers = headerCells;
             }
-            if (cells.isEmpty()) {
-                continue;
-            }
-            if (headers.isEmpty()) {
-                headers = cells;
-            } else {
-                rows.add(cells);
+            if (!dataCells.isEmpty()) {
+                rows.add(dataCells);
             }
         }
 
@@ -182,6 +184,15 @@ public class WebBeAction extends WebApiAction {
         table.put("headers", headers);
         table.put("rows", rows);
         return table;
+    }
+
+    private static List<String> cells(String html, Pattern cellPattern) {
+        List<String> cells = new ArrayList<>();
+        Matcher cellMatcher = cellPattern.matcher(html);
+        while (cellMatcher.find()) {
+            cells.add(htmlToText(cellMatcher.group(1)).trim());
+        }
+        return cells;
     }
 
     static String htmlToText(String html) {

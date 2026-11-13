@@ -23,6 +23,7 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Objects;
 
 /**
  * Serves the built SPA from {@code webroot/ui}. All unknown extension-less paths fall back to
@@ -33,12 +34,21 @@ public class UiResourceAction extends BaseAction {
     private final Path rootDir;
 
     public UiResourceAction(ActionController controller) {
-        this(controller, Paths.get(System.getProperty("starrocks.home", "."), DEFAULT_ROOT));
+        this(controller, defaultRoot());
+    }
+
+    private static Path defaultRoot() {
+        String starrocksHome = System.getenv("STARROCKS_HOME");
+        if (starrocksHome != null && !starrocksHome.isEmpty()) {
+            return Paths.get(starrocksHome, DEFAULT_ROOT);
+        }
+        String home = System.getProperty("starrocks.home");
+        return Paths.get(home == null || home.isEmpty() ? "." : home, DEFAULT_ROOT);
     }
 
     UiResourceAction(ActionController controller, Path rootDir) {
         super(controller);
-        this.rootDir = rootDir.toAbsolutePath().normalize();
+        this.rootDir = Objects.requireNonNull(rootDir).toAbsolutePath().normalize();
     }
 
     @Override

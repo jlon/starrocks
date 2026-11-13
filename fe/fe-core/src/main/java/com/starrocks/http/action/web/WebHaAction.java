@@ -14,6 +14,7 @@
 
 package com.starrocks.http.action.web;
 
+import com.starrocks.catalog.Database;
 import com.starrocks.ha.HAProtocol;
 import com.starrocks.http.ActionController;
 import com.starrocks.http.BaseRequest;
@@ -60,12 +61,21 @@ public class WebHaAction extends WebApiAction {
         body.put("journalId", journal == null ? 0
                 : state.isLeader() ? state.getMaxJournalId() : state.getReplayedJournalId());
         body.put("canRead", state.canRead());
-        body.put("databases", journal == null ? List.of() : journal.getDatabaseNames());
+        body.put("databases", journal == null ? List.of() : databaseNames(journal.getDatabaseNames()));
         body.put("checkpoint", checkpoint());
         body.put("nodes", nodes(state.getHaProtocol()));
         body.put("frontends", frontends());
         body.put("removedFrontends", state.getNodeMgr().getRemovedFrontendNames());
         writeJson(request, response, HttpResponseStatus.OK, body);
+    }
+
+    private static List<String> databaseNames(List<Long> dbIds) {
+        List<String> names = new ArrayList<>();
+        for (Long dbId : dbIds) {
+            Database database = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
+            names.add(database == null ? String.valueOf(dbId) : database.getFullName());
+        }
+        return names;
     }
 
     private static Map<String, Object> checkpoint() {

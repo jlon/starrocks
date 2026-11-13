@@ -97,7 +97,7 @@ export type HaInfo = {
   leader: boolean
   journalId: number
   canRead: boolean
-  databases: number[] | null
+  databases: string[] | null
   checkpoint: { version: number; time: number } | null
   nodes: {
     electable: { host: string; port: number }[]

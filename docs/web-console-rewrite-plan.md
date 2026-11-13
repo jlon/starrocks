@@ -276,3 +276,32 @@ Profile 树重写：按行首缩进算 depth，渲染扁平列表；折叠时隐
   - follower 转发、BE 60s 超时只有代码路径，没有独立集成测试；未做真实多 BE/TLS 代理 E2E。
   - 通用 `use-table-url-state.ts` 未用于所有表；backends 已手动同步 URL，queries/sessions 没有筛选参数。
 - 本轮 review 提交：`fdc267e80d`、`115e2dcff1`；`git status` 干净。
+
+## 13. 端到端验证（2026-11-14）
+
+在已有 1FE+1BE docker 集群（`sr-cluster`，镜像 `starrocks/fe-ubuntu:4.1.7` / `be-ubuntu:4.1.7`，arm64）上，用新构建的 `fe-core-main.jar` + `fe/ui/dist` 替换 FE 容器（复用 meta，BE 无需重注册），Playwright 逐页验证：
+
+| 检查项 | 结果 |
+| --- | --- |
+| 登录/登出 | `POST /api/web/v1/login` 返回 cookie；登录页、登出、`/`/`/system` 等旧路由 302 → `/ui/*` |
+| Overview | FE 角色/BE 数/查询/会话/硬件卡/版本正常 |
+| System | proc 树目录列表，`/dbs` 钻取返回库名/表数 |
+| Backends | `starrocks-be` 行数据齐全（alive/state/cpu/mem/disk/版本） |
+| HA | Role/Journal/CanRead/Checkpoint/Frontends/Electable；Databases 显示 journal db id（与旧页一致，见下） |
+| Sessions/Queries | 会话与查询列表渲染；Query Profile 页可搜索并显示 profile/sql/analyze |
+| Variables | Config/Variables Tabs + 搜索 |
+| Logs | 文件列表 + 1MB tail + 下载；verbose 名增删 |
+| Proc Profiles | FE/BE Tabs + 文件列表 + View 新窗口 |
+| BE Console | Configs/Memory/Mem Tracker/Logs 全通（下方 3 个修复） |
+| 登录后路由 | `/ui/sign-in` 深链、刷新、旧路由 302 正常；console 仅预期 401/abort，无 JS 异常 |
+
+E2E 中修复并回归的 bug：
+
+1. `WebBeAction` 裸 `?raw` 被 BE `evhttp_parse_query_str` 拒绝（返回 “Empty reply”），改 `?raw=1`。
+2. UI 路由 `/mem-tracker` 直接代理到 BE 404，BE 处理路径是 `/mem_tracker`（snake_case），加 `page.replace("-", "_")`。
+3. BE `mem_tracker` 的 header `<tr>` 未在 `<tbody>` 前闭合，`parseTable` 把表头与首行合并；改为按 `<th>`/`<td>` 分别提取。
+4. `UiResourceAction` 用 `starrocks.home` 属性（未设置）→ CWD 相对路径 404；改为优先 `STARROCKS_HOME`，再 `starrocks.home`，再 `.`。
+5. `WebHaAction` `databases` 由 `journal.getDatabaseNames()`（db id）映射为 `LocalMetastore.getDb(id).getFullName()`，未命中保留 id（BDB journal 内部 db id 无业务库名）。
+
+验证提交：E2E 修复 commit 见下（`UiResourceAction`、`WebBeAction`、`WebHaAction`、`types.ts`）。
+- Java `:fe-core:compileJava`/`checkstyleMain`/`checkstyleTest` 与 web/legacy action 测试全绿；前端 `tsc`/`eslint`/`vitest` 68 例通过。
