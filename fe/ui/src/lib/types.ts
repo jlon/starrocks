@@ -127,3 +127,15 @@ export type LogContent = {
   truncated: boolean
   content: string
 }
+
+export type ProcProfileFile = {
+  type: string
+  timestamp: string
+  size: number
+  filename: string
+}
+
+export type ProcProfileList = {
+  node: string
+  files: ProcProfileFile[]
+}

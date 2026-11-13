@@ -16,6 +16,7 @@ import { Route as AuthenticatedSystemRouteImport } from './routes/_authenticated
 import { Route as AuthenticatedSessionsRouteImport } from './routes/_authenticated/sessions'
 import { Route as AuthenticatedQueryProfileRouteImport } from './routes/_authenticated/query-profile'
 import { Route as AuthenticatedQueriesRouteImport } from './routes/_authenticated/queries'
+import { Route as AuthenticatedProcProfilesRouteImport } from './routes/_authenticated/proc-profiles'
 import { Route as AuthenticatedLogsRouteImport } from './routes/_authenticated/logs'
 import { Route as AuthenticatedHaRouteImport } from './routes/_authenticated/ha'
 import { Route as AuthenticatedBackendsRouteImport } from './routes/_authenticated/backends'
@@ -61,6 +62,12 @@ const AuthenticatedQueriesRoute = AuthenticatedQueriesRouteImport.update({
   path: '/queries',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedProcProfilesRoute =
+  AuthenticatedProcProfilesRouteImport.update({
+    id: '/proc-profiles',
+    path: '/proc-profiles',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedLogsRoute = AuthenticatedLogsRouteImport.update({
   id: '/logs',
   path: '/logs',
@@ -118,6 +125,7 @@ export interface FileRoutesByFullPath {
   '/backends': typeof AuthenticatedBackendsRoute
   '/ha': typeof AuthenticatedHaRoute
   '/logs': typeof AuthenticatedLogsRoute
+  '/proc-profiles': typeof AuthenticatedProcProfilesRoute
   '/queries': typeof AuthenticatedQueriesRoute
   '/query-profile': typeof AuthenticatedQueryProfileRoute
   '/sessions': typeof AuthenticatedSessionsRoute
@@ -134,6 +142,7 @@ export interface FileRoutesByTo {
   '/backends': typeof AuthenticatedBackendsRoute
   '/ha': typeof AuthenticatedHaRoute
   '/logs': typeof AuthenticatedLogsRoute
+  '/proc-profiles': typeof AuthenticatedProcProfilesRoute
   '/queries': typeof AuthenticatedQueriesRoute
   '/query-profile': typeof AuthenticatedQueryProfileRoute
   '/sessions': typeof AuthenticatedSessionsRoute
@@ -153,6 +162,7 @@ export interface FileRoutesById {
   '/_authenticated/backends': typeof AuthenticatedBackendsRoute
   '/_authenticated/ha': typeof AuthenticatedHaRoute
   '/_authenticated/logs': typeof AuthenticatedLogsRoute
+  '/_authenticated/proc-profiles': typeof AuthenticatedProcProfilesRoute
   '/_authenticated/queries': typeof AuthenticatedQueriesRoute
   '/_authenticated/query-profile': typeof AuthenticatedQueryProfileRoute
   '/_authenticated/sessions': typeof AuthenticatedSessionsRoute
@@ -173,6 +183,7 @@ export interface FileRouteTypes {
     | '/backends'
     | '/ha'
     | '/logs'
+    | '/proc-profiles'
     | '/queries'
     | '/query-profile'
     | '/sessions'
@@ -189,6 +200,7 @@ export interface FileRouteTypes {
     | '/backends'
     | '/ha'
     | '/logs'
+    | '/proc-profiles'
     | '/queries'
     | '/query-profile'
     | '/sessions'
@@ -207,6 +219,7 @@ export interface FileRouteTypes {
     | '/_authenticated/backends'
     | '/_authenticated/ha'
     | '/_authenticated/logs'
+    | '/_authenticated/proc-profiles'
     | '/_authenticated/queries'
     | '/_authenticated/query-profile'
     | '/_authenticated/sessions'
@@ -274,6 +287,13 @@ declare module '@tanstack/react-router' {
       path: '/queries'
       fullPath: '/queries'
       preLoaderRoute: typeof AuthenticatedQueriesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/proc-profiles': {
+      id: '/_authenticated/proc-profiles'
+      path: '/proc-profiles'
+      fullPath: '/proc-profiles'
+      preLoaderRoute: typeof AuthenticatedProcProfilesRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/logs': {
@@ -346,6 +366,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedBackendsRoute: typeof AuthenticatedBackendsRoute
   AuthenticatedHaRoute: typeof AuthenticatedHaRoute
   AuthenticatedLogsRoute: typeof AuthenticatedLogsRoute
+  AuthenticatedProcProfilesRoute: typeof AuthenticatedProcProfilesRoute
   AuthenticatedQueriesRoute: typeof AuthenticatedQueriesRoute
   AuthenticatedQueryProfileRoute: typeof AuthenticatedQueryProfileRoute
   AuthenticatedSessionsRoute: typeof AuthenticatedSessionsRoute
@@ -358,6 +379,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedBackendsRoute: AuthenticatedBackendsRoute,
   AuthenticatedHaRoute: AuthenticatedHaRoute,
   AuthenticatedLogsRoute: AuthenticatedLogsRoute,
+  AuthenticatedProcProfilesRoute: AuthenticatedProcProfilesRoute,
   AuthenticatedQueriesRoute: AuthenticatedQueriesRoute,
   AuthenticatedQueryProfileRoute: AuthenticatedQueryProfileRoute,
   AuthenticatedSessionsRoute: AuthenticatedSessionsRoute,
