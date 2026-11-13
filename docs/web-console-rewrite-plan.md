@@ -213,6 +213,7 @@ Profile 树重写：按行首缩进算 depth，渲染扁平列表；折叠时隐
 ## 10. 实施状态（2026-11-13）
 
 - M0 脚手架、M1 登录/会话/`/ui` 静态服务、M2 集群/查询/会话、M3 系统/变量/HA/日志、M4 proc profile、M5 BE 诊断、M6 构建/文档均已完成。
-- 关键提交：`4e6cdbd082`（脚手架）、`a65a4ffee2`（登录）、`67ae60af4c`（M2）、`5024776ca4`（M3）、`fe2176302b`（M4）、`4fec2bb14e`（M5）。
-- 测试：`fe/fe-core/src/test/java/com/starrocks/http/action/web/` 下 34 个用例全绿；M1–M5 的 `checkstyleMain/checkstyleTest` 通过。
+- 关键提交：`4e6cdbd082`（脚手架）、`a65a4ffee2`（登录）、`67ae60af4c`（M2）、`5024776ca4`（M3）、`fe2176302b`（M4）、`4fec2bb14e`（M5）、`17206ae628`/`3a6b11481d`（构建与根跳转）、`cf50fd0487`（登录/命令面板测试）。
+- 测试：Web 控制台相关 36 个 Java 用例全绿；前端 `pnpm test` 64 个用例全绿；M1–M6 的 `checkstyleMain/checkstyleTest` 通过。
+- 旧 HTML 路由（`/system`、`/backend`、`/query`、`/session`、`/variable`、`/ha`、`/log`、`/proc_profile`、`/query_profile`）对浏览器 `Accept: text/html` 且无 `Authorization` 的请求 302 到对应的 `/ui/*`；带 Basic 的请求仍返回旧页面，避免破坏脚本和存量测试。
 - 已知限制：BE 页面通过 FE 解析其 `?raw` HTML 提供；BE 自身的 Logs handler 仍输出 “Couldn't open INFO log file”，因此 BE Console 的 Logs 标签只显示该提示。BE 端 JSON 接口留待后续版本。

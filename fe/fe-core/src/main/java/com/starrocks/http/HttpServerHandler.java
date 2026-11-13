@@ -252,12 +252,15 @@ public class HttpServerHandler extends ChannelInboundHandlerAdapter {
         if (baseUri.equals("/favicon.ico")) {
             return NotFoundAction.getNotFoundAction();
         } else if (baseUri.equals("/")) {
-            String accept = request.getRequest().headers().get("Accept");
-            if (accept != null && accept.contains("text/html")
-                    && !request.getRequest().headers().contains("Authorization")) {
+            if (isBrowserRequest(request)) {
                 return new WebUiRedirectAction(controller, "/ui/");
             }
             return new IndexAction(controller);
+        }
+
+        String legacyUiPath = legacyUiPath(baseUri);
+        if (legacyUiPath != null && isBrowserRequest(request)) {
+            return new WebUiRedirectAction(controller, legacyUiPath);
         }
 
         // Map<String, String> params = Maps.newHashMap();
@@ -267,6 +270,38 @@ public class HttpServerHandler extends ChannelInboundHandlerAdapter {
         }
 
         return action;
+    }
+
+
+    private boolean isBrowserRequest(BaseRequest request) {
+        String accept = request.getRequest().headers().get("Accept");
+        return accept != null && accept.contains("text/html")
+                && !request.getRequest().headers().contains("Authorization");
+    }
+
+    private String legacyUiPath(String baseUri) {
+        switch (baseUri) {
+            case "/system":
+                return "/ui/system";
+            case "/backend":
+                return "/ui/backends";
+            case "/log":
+                return "/ui/logs";
+            case "/query":
+                return "/ui/queries";
+            case "/session":
+                return "/ui/sessions";
+            case "/variable":
+                return "/ui/variables";
+            case "/ha":
+                return "/ui/ha";
+            case "/proc_profile":
+                return "/ui/proc-profiles";
+            case "/query_profile":
+                return "/ui/query-profile";
+            default:
+                return null;
+        }
     }
 
     private static class RequestHandlingWatch {

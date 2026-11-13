@@ -17,6 +17,7 @@ package com.starrocks.http.action.web;
 import com.google.gson.JsonSyntaxException;
 import com.starrocks.authentication.AuthenticationException;
 import com.starrocks.authentication.AuthenticationHandler;
+import com.starrocks.authorization.AccessDeniedException;
 import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
@@ -114,7 +115,7 @@ public class WebAuthAction extends WebApiAction {
         response.addCookie(cookie(key, WebBaseAction.STARROCKS_SESSION_EXPIRED_TIME));
 
         writeJson(request, response, HttpResponseStatus.OK,
-                Map.of("user", user.getUser(), "canAdmin", true));
+                Map.of("user", user.getUser(), "canAdmin", isAdmin(user)));
     }
 
     private void logout(BaseRequest request, BaseResponse response) {
@@ -138,7 +139,16 @@ public class WebAuthAction extends WebApiAction {
             return;
         }
         writeJson(request, response, HttpResponseStatus.OK,
-                Map.of("user", value.currentUser.getUser(), "canAdmin", true));
+                Map.of("user", value.currentUser.getUser(), "canAdmin", isAdmin(value.currentUser)));
+    }
+
+    private boolean isAdmin(UserIdentity user) {
+        try {
+            checkUserOwnsAdminRole(user);
+            return true;
+        } catch (AccessDeniedException e) {
+            return false;
+        }
     }
 
     private DefaultCookie cookie(String value, long maxAge) {
