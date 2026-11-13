@@ -252,10 +252,12 @@ public class HttpServerHandler extends ChannelInboundHandlerAdapter {
         if (baseUri.equals("/favicon.ico")) {
             return NotFoundAction.getNotFoundAction();
         } else if (baseUri.equals("/")) {
-            if (request.getRequest().headers().contains("Authorization")) {
-                return new IndexAction(controller);
+            String accept = request.getRequest().headers().get("Accept");
+            if (accept != null && accept.contains("text/html")
+                    && !request.getRequest().headers().contains("Authorization")) {
+                return new WebUiRedirectAction(controller, "/ui/");
             }
-            return new WebUiRedirectAction(controller, "/ui/");
+            return new IndexAction(controller);
         }
 
         // Map<String, String> params = Maps.newHashMap();

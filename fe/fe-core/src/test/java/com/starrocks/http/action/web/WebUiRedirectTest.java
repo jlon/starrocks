@@ -29,7 +29,7 @@ public class WebUiRedirectTest extends StarRocksHttpTestCase {
     @Test
     public void redirectsBrowserToSpa() throws IOException {
         OkHttpClient client = networkClient.newBuilder().followRedirects(false).build();
-        Request request = new Request.Builder().url(BASE_URL + "/").get().build();
+        Request request = new Request.Builder().url(BASE_URL + "/").header("Accept", "text/html").get().build();
         try (Response response = client.newCall(request).execute()) {
             assertEquals(302, response.code());
             assertEquals("/ui/", response.header("Location"));
