@@ -34,7 +34,7 @@ const queryClient = new QueryClient({
         if (s === 401) {
           toast.error('Session expired!')
           const redirect = window.location.href
-          window.location.href = `/sign-in?redirect=${encodeURIComponent(redirect)}`
+          window.location.href = `${import.meta.env.BASE_URL}sign-in?redirect=${encodeURIComponent(redirect)}`
         }
       }
     },
@@ -43,6 +43,7 @@ const queryClient = new QueryClient({
 
 const router = createRouter({
   routeTree,
+  basepath: '/ui',
   context: { queryClient },
   defaultPreload: 'intent',
 })

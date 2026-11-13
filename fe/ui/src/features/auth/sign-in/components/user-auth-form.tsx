@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -30,8 +29,6 @@ interface UserAuthFormProps extends React.HTMLAttributes<HTMLFormElement> {
 
 export function UserAuthForm({ className, redirectTo, ...props }: UserAuthFormProps) {
   const [isLoading, setIsLoading] = useState(false)
-  const navigate = useNavigate()
-
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: { username: '', password: '' },
@@ -46,7 +43,10 @@ export function UserAuthForm({ className, redirectTo, ...props }: UserAuthFormPr
         body: JSON.stringify(data),
       })
       toast.success('Signed in')
-      navigate({ to: redirectTo || '/', replace: true })
+      const target = redirectTo ? new URL(redirectTo, window.location.origin) : null
+      window.location.replace(
+        target ? target.pathname + target.search : import.meta.env.BASE_URL
+      )
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Sign in failed'
       toast.error(msg)

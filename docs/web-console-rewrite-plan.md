@@ -4,9 +4,9 @@
 
 ## 0. 基线
 
-- 工作分支：`branch-4.1.4`（基于 `origin/branch-4.1.4`，commit 0e030a1130）。
-- 旧 HTML 页面（`/system`、`/backend`、`/log`、`/query`、`/session`、`/variable`、`/ha`、`/proc_profile`、`/query_profile`、`/`）本期**全部重写**为 SPA，不使用 iframe 过渡；旧路由在重写完成前保留作回退，完成后下版本移除。
-- 不在本期改 `/` 的行为；验证通过后的下个版本再把 `/` 302 到 `/ui/`。
+- 工作分支：`feat/web-console`（基于 `branch-4.1.4`，commit 0e030a1130）。
+- 旧 HTML 页面（`/system`、`/backend`、`/log`、`/query`、`/session`、`/variable`、`/ha`、`/proc_profile`、`/query_profile`、`/`）本期**全部重写**为 SPA，不使用 iframe 过渡；旧路由保留一个版本作回退。
+- SPA 挂 `/ui/`；浏览器访问 `/` 302 到 `/ui/`，带 `Authorization` 的请求仍返回旧首页一个版本。
 - 全面登录：新 UI 必须登录才能访问（用户要求）。
 
 ## 1. 范围
@@ -28,13 +28,13 @@
 
 | 决策 | 方案 | 理由 |
 |---|---|---|
-| SPA 位置 | `/`，Vite `base: '/'`，TanStack Router `basepath: '/'` | 直接挂 `/`，替换原 `IndexAction`；旧 HTML 全部重写，不使用 iframe |
+| SPA 位置 | `/ui/`，Vite `base: '/ui/'`，TanStack Router `basepath: '/ui'` | 避开旧 HTML 路由冲突；浏览器访问 `/` 302 到 `/ui/`，下个版本移除旧页面 |
 | 静态服务 | 新增 `UiResourceAction`，在 `HttpServerHandler.getAction` 对 `/ui` 前缀直接分派 | PathTrie 的 `*` 只按段匹配，多级资源路径不能只靠 `/ui/*` |
 | 鉴权 | 新 `WebApiAction` 基类：cookie 优先，Basic 兼容 | 复用 `HttpAuthManager` 会话，curl/测试仍可用 Basic |
 | 登录 | `POST /api/web/v1/login`，JSON body，成功后种 `STARROCKS_SESSION_ID` | 不存密码到 localStorage；支持 LDAP（复用 `AuthenticationHandler.authenticateWithClearPassword`） |
 | 登出 | 新增 `HttpAuthManager.removeSessionValue`，清 cookie + 清 react-query 缓存 | 现在没有服务端登出，必须补 |
 | CSRF | 依赖现有 `ServerCookieEncoder.LAX`（SameSite=Lax）+ POST 必须 `application/json` + 校验 `Origin` | cookie 已经是 Lax，无需再引入 token |
-| BE 统一入口 | FE 代理，显式节点白名单，复用 `ProcProfileFileAction.validateNodeExists` | 避免 CORS；已有防 SSRF 先例 |
+| BE 统一入口 | FE 代理，显式节点白名单，解析 BE `?raw` 页面为 JSON | 避免 CORS/SSRF；BE 是 C++，本期不在 macOS 上改 BE |
 | 构建 | 提交 `fe/ui/dist`；`build.sh` 拷贝到 `output/fe/webroot/ui`；不把 Node 加进发布链 | 发布镜像无 Node；与现有 `webroot/` 提交方式一致 |
 
 ## 3. 登录设计（重点）
@@ -42,7 +42,7 @@
 ### 3.1 流程
 
 ```
-/ui/login (公开)
+/ui/sign-in (公开)
    └─ POST /api/web/v1/login {username,password}
         ├─ 401 用户名/密码错误（统一文案，不区分用户是否存在）
         ├─ 403 认证成功但没有 NODE 权限
@@ -51,8 +51,8 @@
 ```
 
 - 登录成功后 `queryClient.clear()`，防止上一个会话的缓存串到新用户。
-- 路由守卫：`_authenticated` 的 `beforeLoad` 调 `/api/web/v1/session`；401 时 `redirect({ to: '/login', search: { redirect: location.href } })`。
-- 任意 API 返回 401：清会话状态、跳登录页；已在 `/login` 时不重复跳转。
+- 路由守卫：`_authenticated` 的 `beforeLoad` 调 `/api/web/v1/session`；401 时 `redirect({ to: '/sign-in', search: { redirect: location.href } })`。
+- 任意 API 返回 401：清会话状态、跳登录页；已在 `/ui/sign-in` 时不重复跳转。
 - 登出：`POST /api/web/v1/logout` → 服务端删 session、cookie `Max-Age=0`、清缓存、跳登录。
 
 ### 3.2 权限
@@ -75,7 +75,7 @@
 - 居中 Card + shadcn `Form`/`Input`/`Button`/`Alert`；Logo + “StarRocks Web Console”。
 - 字段：username、password；`autocomplete="username"` / `"current-password"`。
 - 状态：提交中禁用按钮；401/403 显示对应错误；网络错误单独提示。
-- 已登录访问 `/ui/login` 直接跳 `/ui/`。
+- 已登录访问 `/ui/sign-in` 直接跳 `/ui/`。
 
 ## 4. API 契约
 
@@ -110,7 +110,7 @@
 - 从 shadcn-admin 只复制约 5.1k 行：`components/ui`、`components/layout`、`components/data-table`、`context/theme-provider`、`hooks/use-table-url-state.ts`、主题 CSS。
 - 删除：`features/{dashboard,apps,chats,tasks,users,settings,auth}`、`routes/clerk`、`stores/auth-store`、Clerk、faker、react-day-picker、input-otp、recharts（现有 UI 没有图表）、Google Fonts、RTL/font 切换、demo 图片。
 - 字体改为 system font stack 或自托管 Inter，禁止 CDN。
-- 路由：`/login` 公开；其余在 `_authenticated` 下。
+- 路由：`/sign-in` 公开；其余在 `_authenticated` 下。
 
 ### 5.2 页面
 
@@ -155,7 +155,7 @@ Profile 树重写：按行首缩进算 depth，渲染扁平列表；折叠时隐
   cp -r -p ${STARROCKS_HOME}/fe/ui/dist/* ${STARROCKS_OUTPUT}/fe/webroot/ui/
   ```
 - 不把 Node 写进 `dev-env` 镜像；本地/CI 用固定 `node:22.12` 容器构建。
-- 新增 CI job：`pnpm install --frozen-lockfile && pnpm build`，并校验 `git diff --exit-code fe/ui/dist`，防止产物漂移。
+- 本地修改 `fe/ui/src` 后必须执行 `pnpm exec vite build`（刷新 `routeTree.gen.ts`）再 `pnpm build`，并提交 `fe/ui/dist`。
 - License：`pnpm licenses list --prod` 作为门禁，禁止 GPL/AGPL；保留 shadcn-admin 的 MIT 版权声明；补 NOTICE。
 - 打包体积门禁：初始 JS gzip < 400KB；路由级自动拆包。
 
@@ -208,3 +208,11 @@ Profile 树重写：按行首缩进算 depth，渲染扁平列表；折叠时隐
 - 会话上限保持 100（默认：保持，不在本期改）。
 
 确认后从 M0 开始，先切 `feat/web-console` 并搭空壳。
+
+
+## 10. 实施状态（2026-11-13）
+
+- M0 脚手架、M1 登录/会话/`/ui` 静态服务、M2 集群/查询/会话、M3 系统/变量/HA/日志、M4 proc profile、M5 BE 诊断、M6 构建/文档均已完成。
+- 关键提交：`4e6cdbd082`（脚手架）、`a65a4ffee2`（登录）、`67ae60af4c`（M2）、`5024776ca4`（M3）、`fe2176302b`（M4）、`4fec2bb14e`（M5）。
+- 测试：`fe/fe-core/src/test/java/com/starrocks/http/action/web/` 下 34 个用例全绿；M1–M5 的 `checkstyleMain/checkstyleTest` 通过。
+- 已知限制：BE 页面通过 FE 解析其 `?raw` HTML 提供；BE 自身的 Logs handler 仍输出 “Couldn't open INFO log file”，因此 BE Console 的 Logs 标签只显示该提示。BE 端 JSON 接口留待后续版本。

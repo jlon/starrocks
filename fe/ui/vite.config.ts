@@ -8,7 +8,7 @@ import { playwright } from '@vitest/browser-playwright'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/',
+  base: '/ui/',
   plugins: [
     tanstackRouter({
       target: 'react',
@@ -17,6 +17,11 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  server: {
+    proxy: {
+      '/api': 'http://localhost:8030',
+    },
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

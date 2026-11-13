@@ -38,6 +38,7 @@ import com.starrocks.common.Config;
 import com.starrocks.http.action.IndexAction;
 import com.starrocks.http.action.NotFoundAction;
 import com.starrocks.http.action.web.UiResourceAction;
+import com.starrocks.http.action.web.WebUiRedirectAction;
 import com.starrocks.service.ExecuteEnv;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
@@ -251,7 +252,10 @@ public class HttpServerHandler extends ChannelInboundHandlerAdapter {
         if (baseUri.equals("/favicon.ico")) {
             return NotFoundAction.getNotFoundAction();
         } else if (baseUri.equals("/")) {
-            return new IndexAction(controller);
+            if (request.getRequest().headers().contains("Authorization")) {
+                return new IndexAction(controller);
+            }
+            return new WebUiRedirectAction(controller, "/ui/");
         }
 
         // Map<String, String> params = Maps.newHashMap();

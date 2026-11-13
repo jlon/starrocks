@@ -1,0 +1,1 @@
+import{t as e}from"./not-found-error-CxfF6k6g.js";var t=e;export{t as component};
