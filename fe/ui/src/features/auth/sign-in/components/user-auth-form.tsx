@@ -2,10 +2,11 @@ import { useState } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
 import { toast } from 'sonner'
-import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -27,8 +28,13 @@ interface UserAuthFormProps extends React.HTMLAttributes<HTMLFormElement> {
   redirectTo?: string
 }
 
-export function UserAuthForm({ className, redirectTo, ...props }: UserAuthFormProps) {
+export function UserAuthForm({
+  className,
+  redirectTo,
+  ...props
+}: UserAuthFormProps) {
   const [isLoading, setIsLoading] = useState(false)
+  const navigate = useNavigate()
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: { username: '', password: '' },
@@ -43,10 +49,15 @@ export function UserAuthForm({ className, redirectTo, ...props }: UserAuthFormPr
         body: JSON.stringify(data),
       })
       toast.success('Signed in')
-      const target = redirectTo ? new URL(redirectTo, window.location.origin) : null
-      window.location.replace(
-        target ? target.pathname + target.search : import.meta.env.BASE_URL
-      )
+      const target = redirectTo
+        ? new URL(redirectTo, window.location.origin)
+        : null
+      const base = import.meta.env.BASE_URL.replace(/\/$/, '')
+      let path = target ? target.pathname + target.search : '/'
+      if (path.startsWith(base)) {
+        path = path.slice(base.length) || '/'
+      }
+      navigate({ to: path, replace: true })
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Sign in failed'
       toast.error(msg)
@@ -57,7 +68,11 @@ export function UserAuthForm({ className, redirectTo, ...props }: UserAuthFormPr
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className={cn('grid gap-3', className)} {...props}>
+      <form
+        onSubmit={form.handleSubmit(onSubmit)}
+        className={cn('grid gap-3', className)}
+        {...props}
+      >
         <FormField
           control={form.control}
           name='username'
@@ -78,7 +93,11 @@ export function UserAuthForm({ className, redirectTo, ...props }: UserAuthFormPr
             <FormItem>
               <FormLabel>Password</FormLabel>
               <FormControl>
-                <PasswordInput autoComplete='current-password' placeholder='********' {...field} />
+                <PasswordInput
+                  autoComplete='current-password'
+                  placeholder='********'
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>

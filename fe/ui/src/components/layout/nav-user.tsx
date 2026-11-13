@@ -1,6 +1,6 @@
 import { ChevronsUpDown, LogOut } from 'lucide-react'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { apiFetch } from '@/lib/api'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -70,8 +70,12 @@ export function NavUser({ user }: NavUserProps) {
               <DropdownMenuItem
                 variant='destructive'
                 onClick={() => {
-                  void apiFetch('/api/web/v1/logout', { method: 'POST' }).finally(() => {
-                    window.location.replace(`${import.meta.env.BASE_URL}sign-in`)
+                  void apiFetch('/api/web/v1/logout', {
+                    method: 'POST',
+                  }).finally(() => {
+                    window.location.replace(
+                      `${import.meta.env.BASE_URL}sign-in`
+                    )
                   })
                 }}
               >
@@ -82,7 +86,6 @@ export function NavUser({ user }: NavUserProps) {
           </DropdownMenu>
         </SidebarMenuItem>
       </SidebarMenu>
-
     </>
   )
 }

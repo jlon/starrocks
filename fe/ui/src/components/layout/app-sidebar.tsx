@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { apiFetch } from '@/lib/api'
 import { useLayout } from '@/context/layout-provider'
 import {
   Sidebar,
@@ -12,13 +13,13 @@ import { sidebarData } from './data/sidebar-data'
 import { NavGroup } from './nav-group'
 import { NavUser } from './nav-user'
 import { TeamSwitcher } from './team-switcher'
-import { apiFetch } from '@/lib/api'
 
 export function AppSidebar() {
   const { collapsible, variant } = useLayout()
   const { data: session } = useQuery({
     queryKey: ['session'],
-    queryFn: () => apiFetch<{ user: string; canAdmin: boolean }>('/api/web/v1/session'),
+    queryFn: () =>
+      apiFetch<{ user: string; canAdmin: boolean }>('/api/web/v1/session'),
   })
   return (
     <Sidebar collapsible={collapsible} variant={variant}>
