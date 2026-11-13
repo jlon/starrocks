@@ -37,6 +37,7 @@ package com.starrocks.http;
 import com.starrocks.common.Config;
 import com.starrocks.http.action.IndexAction;
 import com.starrocks.http.action.NotFoundAction;
+import com.starrocks.http.action.web.UiResourceAction;
 import com.starrocks.service.ExecuteEnv;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
@@ -68,6 +69,7 @@ public class HttpServerHandler extends ChannelInboundHandlerAdapter {
     private final ActionController controller;
     private final Executor executor;
     private BaseAction action = null;
+    private UiResourceAction uiResourceAction;
 
     public HttpServerHandler(ActionController controller, Executor executor) {
         super();
@@ -239,8 +241,14 @@ public class HttpServerHandler extends ChannelInboundHandlerAdapter {
     private BaseAction getAction(BaseRequest request) {
         String uri = request.getRequest().uri();
         String baseUri = URI.create(uri).getPath();
+        if (baseUri.equals("/ui") || baseUri.startsWith("/ui/")) {
+            if (uiResourceAction == null) {
+                uiResourceAction = new UiResourceAction(controller);
+            }
+            return uiResourceAction;
+        }
         // ignore this request, which is a default request from client's browser.
-        if (baseUri.endsWith("/favicon.ico")) {
+        if (baseUri.equals("/favicon.ico")) {
             return NotFoundAction.getNotFoundAction();
         } else if (baseUri.equals("/")) {
             return new IndexAction(controller);

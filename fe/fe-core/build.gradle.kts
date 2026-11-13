@@ -81,6 +81,10 @@ dependencies {
         exclude(group = "junit", module = "junit")
     }
     implementation("com.baidu:jprotobuf-rpc-common")
+    implementation("com.baidu:jprotobuf-rpc-core") {
+        exclude(group = "com.baidu", module = "jprotobuf")
+        exclude(group = "junit", module = "junit")
+    }
     implementation("com.clickhouse:clickhouse-jdbc")
     implementation("com.fasterxml.jackson.core:jackson-annotations")
     implementation("com.fasterxml.jackson.core:jackson-core")
@@ -93,7 +97,6 @@ dependencies {
     implementation("com.github.oshi:oshi-core")
     implementation("com.github.seancfoley:ipaddress")
     implementation("com.google.cloud.bigdataoss:gcs-connector")
-    implementation("com.google.code.findbugs:jsr305")
     implementation("com.google.code.gson:gson")
     implementation("com.google.guava:guava")
     implementation("com.google.protobuf:protobuf-java")
@@ -110,9 +113,6 @@ dependencies {
     implementation("com.qcloud:chdfs_hadoop_plugin_network")
     implementation("com.squareup.okhttp3:okhttp")
     implementation("com.squareup.okio:okio")
-    implementation("com.starrocks:jprotobuf-rpc-core") {
-        exclude(group = "junit", module = "junit")
-    }
     implementation("com.starrocks:spark-dpp")
     implementation("com.starrocks:starclient")
     implementation("com.starrocks:starmanager")
@@ -234,24 +234,11 @@ dependencies {
     implementation("org.apache.parquet:parquet-column")
     implementation("org.apache.parquet:parquet-common")
     implementation("org.apache.parquet:parquet-hadoop")
-    implementation("org.apache.ranger:ranger-audit-dest-solr") {
-        exclude(group = "org.elasticsearch", module = "*")
-        exclude(group = "org.elasticsearch.client", module = "*")
-        // jetty-client resolves to the banned 9.4.58 (ban-vulnerable-dependencies); Solr audit
-        // uses the Apache HttpClient path, not the Jetty HTTP/2 client, so this is runtime-safe.
-        exclude(group = "org.eclipse.jetty", module = "*")
-    }
-    // ZooKeeper classes that solr-solrj needs on every Solr audit send; see fe/pom.xml.
-    implementation("org.apache.zookeeper:zookeeper") {
-        isTransitive = false
-    }
     implementation("org.apache.ranger:ranger-plugins-common") {
         exclude(group = "org.elasticsearch", module = "*")
         exclude(group = "org.elasticsearch.client", module = "*")
         exclude(group = "com.nimbusds", module = "nimbus-jose-jwt")
         exclude(group = "com.sun.jersey", module = "jersey-bundle")
-        // Ranger 2.9.0 declares jsr311-api (JAX-RS 1.1) directly; it shadows jakarta.ws.rs-api 2.1.6
-        exclude(group = "javax.ws.rs", module = "jsr311-api")
     }
     compileOnly("org.apache.spark:spark-catalyst_2.12")
     implementation("org.apache.spark:spark-core_2.12") {
@@ -288,8 +275,7 @@ dependencies {
     implementation("org.jdom:jdom2")
     implementation("org.json:json")
     testImplementation("org.junit.jupiter:junit-jupiter")
-    // for HangingTestWatchdog, a TestExecutionListener
-    testImplementation("org.junit.platform:junit-platform-launcher")
+    testImplementation("junit:junit:4.13.2")
     implementation("org.mariadb.jdbc:mariadb-java-client")
     testImplementation("org.mockito:mockito-inline:4.11.0")
     testImplementation("org.openjdk.jmh:jmh-core:1.37")
@@ -415,6 +401,36 @@ tasks.register<Task>("generateThriftSources") {
             args = allArgs
         }
     }
+    doLast {
+        // thrift 0.24.0 generated ProcessFunction<I, X_args> lacks result type params
+        // required by libthrift's ProcessFunction<I, T, A> and AsyncProcessFunction<I, T, R, A>.
+        fileTree(outputDir) { include("**/*.java") }.forEach { f ->
+            val text = f.readText()
+            var patched = text.replace(Regex("ProcessFunction<I, (\\w+)_args>")) { mr ->
+                "ProcessFunction<I, ${mr.groupValues[1]}_args, ${mr.groupValues[1]}_result>"
+            }
+            patched = patched.replace(Regex("AsyncProcessFunction<I, (\\w+)_args, (\\w+)>")) { mr ->
+                "AsyncProcessFunction<I, ${mr.groupValues[1]}_args, ${mr.groupValues[2]}, ${mr.groupValues[1]}_result>"
+            }
+            patched = patched.replace(Regex("AsyncProcessFunction<I, (\\w+)_args, ([A-Za-z0-9_.<>]+)>")) { mr ->
+                "AsyncProcessFunction<I, ${mr.groupValues[1]}_args, ${mr.groupValues[2]}, ${mr.groupValues[1]}_result>"
+            }
+            // fix wildcard ProcessFunction/AsyncProcessFunction in super()/getProcessMap declarations
+            patched = patched.replace("org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?>", "org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("org.apache.thrift.AsyncProcessFunction<I, ? extends  org.apache.thrift.TBase,?>", "org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?, ? extends org.apache.thrift.TBase>")
+            // 0.24.0 AsyncProcessFunction requires getEmptyResultInstance(); generated (0.20.0) lacks it.
+            patched = patched.replace(Regex("public (\\w+)_args getEmptyArgsInstance\\(\\) \\{\n  return new \\1_args\\(\\);\n\\}"), { mr ->
+                "${mr.value}\n\n      @Override\npublic ${mr.groupValues[1]}_result getEmptyResultInstance() {\n  return new ${mr.groupValues[1]}_result();\n}"
+            })
+            patched = patched.replace("org.apache.thrift.ProcessFunction<I, ? extends org.apache.thrift.TBase>", "org.apache.thrift.ProcessFunction<I, ? extends org.apache.thrift.TBase, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("org.apache.thrift.ProcessFunction<I, ? extends  org.apache.thrift.TBase>", "org.apache.thrift.ProcessFunction<I, ? extends org.apache.thrift.TBase, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("org.apache.thrift.AsyncProcessFunction<I, ? extends  org.apache.thrift.TBase, ?>", "org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?>", "org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("org.apache.thrift.AsyncProcessFunction<I, ? extends  org.apache.thrift.TBase,?>", "org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("protected boolean isOneway() {", "public boolean isOneway() {")
+            if (patched != text) f.writeText(patched)
+        }
+    }
 }
 
 
@@ -486,26 +502,7 @@ tasks.test {
         showCauses = false // Show underlying causes for exceptions
     }
 
-    // HangingTestWatchdog prints the thread stacks of a hung test JVM to stderr. The test output streams are not
-    // shown above, and the report is written only when a test class finishes, which a hung one never does, so
-    // forward the watchdog's lines (each starts with this prefix) to the build log as they come.
-    addTestOutputListener(object : TestOutputListener {
-        override fun onOutput(testDescriptor: TestDescriptor, outputEvent: TestOutputEvent) {
-            if (outputEvent.destination == TestOutputEvent.Destination.StdErr &&
-                    outputEvent.message.contains("[HangingTestWatchdog]")) {
-                logger.lifecycle(outputEvent.message.trimEnd())
-            }
-        }
-    })
-
     systemProperty("starrocks.home", project.ext["starrocks.home"] as String)
-
-    // Unlike Maven surefire, Gradle does not pass the build's system properties to the test JVM, so forward the
-    // HangingTestWatchdog threshold, e.g. -Dstarrocks.ut.hang.dump.seconds=0 to disable it (-P works as well).
-    providers.systemProperty("starrocks.ut.hang.dump.seconds")
-        .orElse(providers.gradleProperty("starrocks.ut.hang.dump.seconds"))
-        .orNull
-        ?.let { systemProperty("starrocks.ut.hang.dump.seconds", it) }
 
     // Add JMockit Java agent to JVM arguments
     jvmArgs(

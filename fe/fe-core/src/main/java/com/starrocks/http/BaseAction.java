@@ -287,7 +287,6 @@ public abstract class BaseAction implements IAction {
         public String toString() {
             StringBuilder sb = new StringBuilder();
             sb.append("user: ").append(fullUserName).append(", remote ip: ").append(remoteIp);
-            sb.append(", password: ").append(password);
             return sb.toString();
         }
 
@@ -336,7 +335,6 @@ public abstract class BaseAction implements IAction {
                 LOG.info("parse auth info failed, url {}", WebUtils.sanitizeHttpReqUriForLog(request.getRequest().uri()));
                 throw new AccessDeniedException("Need auth information.");
             }
-            LOG.debug("get auth info: {}", authInfo);
             return authInfo;
         } catch (Exception e) {
             throw new AccessDeniedException(e.getMessage());

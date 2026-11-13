@@ -49,6 +49,7 @@ import com.starrocks.http.action.SessionAction;
 import com.starrocks.http.action.StaticResourceAction;
 import com.starrocks.http.action.SystemAction;
 import com.starrocks.http.action.VariableAction;
+import com.starrocks.http.action.web.WebAuthAction;
 import com.starrocks.http.common.StarRocksHttpPostObjectAggregator;
 import com.starrocks.http.meta.ColocateMetaService;
 import com.starrocks.http.meta.GlobalDictMetaService;
@@ -257,6 +258,7 @@ public class HttpServer {
 
         // proc profile actions
         ProcProfileAction.registerAction(controller);
+        WebAuthAction.registerAction(controller);
         ProcProfileFileAction.registerAction(controller);
 
         // meta service action

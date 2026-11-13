@@ -50,11 +50,20 @@ public final class HttpAuthManager {
     }
 
     public SessionValue getSessionValue(String sessionId) {
+        if (sessionId == null || sessionId.isEmpty()) {
+            return null;
+        }
         return authSessions.getIfPresent(sessionId);
     }
 
     public void addSessionValue(String key, SessionValue value) {
         authSessions.put(key, value);
+    }
+
+    public void removeSessionValue(String key) {
+        if (key != null) {
+            authSessions.invalidate(key);
+        }
     }
 
     public Cache<String, SessionValue> getAuthSessions() {
