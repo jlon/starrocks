@@ -4,7 +4,6 @@ import { useNavigate, useSearch } from '@tanstack/react-router'
 import { apiFetch } from '@/lib/api'
 import { formatBytes, formatCpu, formatPercent } from '@/lib/format'
 import type { Backend } from '@/lib/types'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -16,6 +15,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { stateTone } from '@/lib/states'
+import { StateBadge } from '@/components/state-badge'
 import { AutoRefresh } from '@/components/auto-refresh'
 import { PageHeader } from '@/components/page-header'
 
@@ -131,9 +132,10 @@ function BackendsPage() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Badge variant={backend.alive ? 'default' : 'destructive'}>
-                      {backend.state}
-                    </Badge>
+                    <StateBadge
+                      state={backend.state}
+                      tone={backend.alive ? stateTone(backend.state) : 'red'}
+                    />
                   </TableCell>
                   <TableCell className='text-xs text-muted-foreground'>
                     <div>heartbeat {backend.heartbeatPort}</div>

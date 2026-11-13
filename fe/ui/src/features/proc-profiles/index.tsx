@@ -21,6 +21,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { StateChip } from '@/components/state-badge'
 import { PageHeader } from '@/components/page-header'
 
 function formatProfileTime(value: string): string {
@@ -155,7 +156,11 @@ function ProfileTable({
           <TableBody>
             {(profiles?.files ?? []).map((file: ProcProfileFile) => (
               <TableRow key={file.filename}>
-                <TableCell>{file.type}</TableCell>
+                <TableCell>
+                  <StateChip tone={file.type === 'CPU' ? 'sky' : 'violet'}>
+                    {file.type}
+                  </StateChip>
+                </TableCell>
                 <TableCell>{formatProfileTime(file.timestamp)}</TableCell>
                 <TableCell>{formatBytes(file.size)}</TableCell>
                 <TableCell className='text-right'>

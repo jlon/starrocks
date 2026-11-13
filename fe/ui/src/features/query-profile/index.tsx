@@ -125,12 +125,12 @@ export function QueryProfilePage({
             />
           </TabsContent>
           <TabsContent value='sql' className='rounded-xl border'>
-            <pre className='max-h-[70vh] overflow-auto p-4 text-xs leading-relaxed'>
+            <pre className='max-h-[70vh] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300'>
               {data.content}
             </pre>
           </TabsContent>
           <TabsContent value='analyze' className='rounded-xl border'>
-            <pre className='max-h-[70vh] overflow-auto p-4 text-xs leading-relaxed'>
+            <pre className='max-h-[70vh] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300'>
               {data.content}
             </pre>
           </TabsContent>

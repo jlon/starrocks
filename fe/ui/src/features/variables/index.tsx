@@ -92,9 +92,11 @@ function VariablesPage() {
                 <TableBody>
                   {config.map(([key, value]) => (
                     <TableRow key={key}>
-                      <TableCell className='font-mono text-xs'>{key}</TableCell>
+                      <TableCell className='font-mono text-xs'>
+                        <Highlight text={key} needle={needle} />
+                      </TableCell>
                       <TableCell className='font-mono text-xs break-all'>
-                        {value}
+                        <Highlight text={value} needle={needle} />
                       </TableCell>
                     </TableRow>
                   ))}
@@ -116,10 +118,10 @@ function VariablesPage() {
                   {variables.map((variable) => (
                     <TableRow key={variable.name}>
                       <TableCell className='font-mono text-xs'>
-                        {variable.name}
+                        <Highlight text={variable.name} needle={needle} />
                       </TableCell>
                       <TableCell className='font-mono text-xs break-all'>
-                        {variable.value}
+                        <Highlight text={variable.value} needle={needle} />
                       </TableCell>
                     </TableRow>
                   ))}
@@ -130,6 +132,21 @@ function VariablesPage() {
         </Tabs>
       )}
     </div>
+  )
+}
+
+function Highlight({ text, needle }: { text: string; needle: string }) {
+  if (!needle) return <>{text}</>
+  const index = text.toLowerCase().indexOf(needle)
+  if (index < 0) return <>{text}</>
+  return (
+    <>
+      {text.slice(0, index)}
+      <mark className='rounded-sm bg-amber-200/60 px-0.5 dark:bg-amber-400/25'>
+        {text.slice(index, index + needle.length)}
+      </mark>
+      {text.slice(index + needle.length)}
+    </>
   )
 }
 

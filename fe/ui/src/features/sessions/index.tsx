@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import type { SessionRow } from '@/lib/types'
-import { Badge } from '@/components/ui/badge'
+import { StateBadge } from '@/components/state-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
@@ -78,9 +78,10 @@ function SessionsPage() {
                     {session.time}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={session.running ? 'default' : 'secondary'}>
-                      {session.state || '-'}
-                    </Badge>
+                    <StateBadge
+                      state={session.state}
+                      tone={session.running ? 'sky' : 'neutral'}
+                    />
                   </TableCell>
                   <TableCell
                     className='max-w-[420px] truncate font-mono text-xs'

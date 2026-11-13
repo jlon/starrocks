@@ -7,6 +7,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from '@/components/ui/sidebar'
+import { AppMark } from '@/components/app-mark'
 import { Button } from '../ui/button'
 
 export function AppTitle() {
@@ -20,13 +21,16 @@ export function AppTitle() {
           asChild
         >
           <div>
+            <AppMark />
             <Link
               to='/'
               onClick={() => setOpenMobile(false)}
               className='grid flex-1 text-start text-sm leading-tight'
             >
               <span className='truncate font-bold'>StarRocks</span>
-              <span className='truncate text-xs'>Web Console</span>
+              <span className='truncate text-xs text-muted-foreground'>
+                Web Console
+              </span>
             </Link>
             <ToggleSidebar />
           </div>

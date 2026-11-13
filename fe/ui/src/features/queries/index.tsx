@@ -6,7 +6,8 @@ import { apiFetch } from '@/lib/api'
 import { downloadCsv } from '@/lib/csv'
 import { formatDuration, formatTimestamp } from '@/lib/format'
 import type { QueryList, QueryRow } from '@/lib/types'
-import { Badge } from '@/components/ui/badge'
+import { queryTypeTone, stateTone } from '@/lib/states'
+import { StateBadge, StateChip } from '@/components/state-badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -44,6 +45,7 @@ function QueriesPage() {
               row.user,
               row.db,
               row.sql,
+              row.queryType,
               row.state,
               row.execTime,
               row.startTime,
@@ -53,6 +55,7 @@ function QueriesPage() {
               row.user,
               row.db,
               row.sql,
+              row.queryType,
               row.state,
               row.totalTime,
               row.warehouse,
@@ -111,8 +114,26 @@ function QueriesPage() {
 
 function runningHeaders(tab: string): string[] {
   return tab === 'running'
-    ? ['Query ID', 'User', 'Database', 'SQL', 'State', 'Elapsed', 'Started']
-    : ['Query ID', 'User', 'Database', 'SQL', 'State', 'Total', 'Warehouse']
+    ? [
+        'Query ID',
+        'User',
+        'Database',
+        'SQL',
+        'Type',
+        'State',
+        'Elapsed',
+        'Started',
+      ]
+    : [
+        'Query ID',
+        'User',
+        'Database',
+        'SQL',
+        'Type',
+        'State',
+        'Total',
+        'Warehouse',
+      ]
 }
 
 type QueryTableProps = {
@@ -130,6 +151,7 @@ function QueryTable({ rows, running }: QueryTableProps) {
             <TableHead>User</TableHead>
             <TableHead>Database</TableHead>
             <TableHead>SQL</TableHead>
+            <TableHead>Type</TableHead>
             <TableHead>State</TableHead>
             <TableHead>{running ? 'Elapsed' : 'Total'}</TableHead>
             <TableHead>{running ? 'Started' : 'Warehouse'}</TableHead>
@@ -158,7 +180,12 @@ function QueryTable({ rows, running }: QueryTableProps) {
                 {row.sql || '-'}
               </TableCell>
               <TableCell>
-                <Badge variant='outline'>{row.state || '-'}</Badge>
+                <StateChip tone={queryTypeTone(row.queryType)}>
+                  {row.queryType || '-'}
+                </StateChip>
+              </TableCell>
+              <TableCell>
+                <StateBadge state={row.state} tone={stateTone(row.state)} />
               </TableCell>
               <TableCell className='text-xs text-muted-foreground'>
                 {running ? formatDuration(row.execTime) : row.totalTime || '-'}

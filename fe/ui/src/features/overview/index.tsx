@@ -1,18 +1,17 @@
-import { type ReactNode, useState } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
-  CheckCircle2,
+  Crown,
   Cpu,
   Database,
   Server,
   Users,
-  XCircle,
 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { formatBytes } from '@/lib/format'
+import { roleTone } from '@/lib/states'
 import type { Overview } from '@/lib/types'
-import { Badge } from '@/components/ui/badge'
 import {
   Card,
   CardContent,
@@ -21,6 +20,8 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { StateBadge } from '@/components/state-badge'
+import { StatCard } from '@/components/stat-card'
 import { AutoRefresh } from '@/components/auto-refresh'
 import { PageHeader } from '@/components/page-header'
 
@@ -40,9 +41,7 @@ function OverviewPage() {
         actions={
           <div className='flex items-center gap-2'>
             {data && (
-              <Badge variant={data.fe.leader ? 'default' : 'secondary'}>
-                {data.fe.type}
-              </Badge>
+              <StateBadge state={data.fe.type} tone={roleTone(data.fe.type)} />
             )}
             <AutoRefresh
               enabled={auto}
@@ -69,13 +68,8 @@ function OverviewPage() {
           <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
             <StatCard
               title='Frontend'
-              icon={
-                data.fe.leader ? (
-                  <CheckCircle2 className='text-emerald-500' />
-                ) : (
-                  <XCircle className='text-amber-500' />
-                )
-              }
+              icon={<Crown />}
+              tone={roleTone(data.fe.type)}
               value={data.fe.type}
               detail={
                 data.fe.leader ? 'Leader is serving metadata' : 'Follower'
@@ -84,30 +78,47 @@ function OverviewPage() {
             <StatCard
               title='Backends'
               icon={<Server />}
+              tone={
+                data.backends.total === 0
+                  ? 'neutral'
+                  : data.backends.alive === data.backends.total
+                    ? 'green'
+                    : 'amber'
+              }
               value={`${data.backends.alive} / ${data.backends.total}`}
               detail={`${data.backends.total - data.backends.alive} not alive`}
             />
             <StatCard
               title='Compute nodes'
               icon={<Cpu />}
+              tone={
+                data.computeNodes.total === 0
+                  ? 'neutral'
+                  : data.computeNodes.alive === data.computeNodes.total
+                    ? 'green'
+                    : 'amber'
+              }
               value={`${data.computeNodes.alive} / ${data.computeNodes.total}`}
               detail={`${data.computeNodes.total - data.computeNodes.alive} not alive`}
             />
             <StatCard
               title='Sessions'
               icon={<Users />}
+              tone='blue'
               value={String(data.sessions.total)}
               detail='Connected clients'
             />
             <StatCard
               title='Running queries'
               icon={<Activity />}
+              tone={data.queries.running > 0 ? 'sky' : 'neutral'}
               value={String(data.queries.running)}
               detail='Currently executing'
             />
             <StatCard
               title='Finished queries'
               icon={<Database />}
+              tone='teal'
               value={String(data.queries.finished)}
               detail='Retained in profile manager'
             />
@@ -183,30 +194,6 @@ function OverviewPage() {
         </>
       )}
     </div>
-  )
-}
-
-type StatCardProps = {
-  title: string
-  icon: ReactNode
-  value: string
-  detail: string
-}
-
-function StatCard({ title, icon, value, detail }: StatCardProps) {
-  return (
-    <Card>
-      <CardHeader className='pb-2'>
-        <CardDescription className='flex items-center gap-2'>
-          <span className='[&>svg]:size-4'>{icon}</span>
-          {title}
-        </CardDescription>
-        <CardTitle className='text-2xl'>{value}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className='text-xs text-muted-foreground'>{detail}</p>
-      </CardContent>
-    </Card>
   )
 }
 

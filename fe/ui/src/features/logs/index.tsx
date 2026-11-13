@@ -211,7 +211,7 @@ function LogsPage() {
                     {content.data.truncated && ' · showing last 1 MiB'}
                   </span>
                 </div>
-                <pre className='max-h-[65vh] overflow-auto p-4 text-xs leading-relaxed'>
+                <pre className='max-h-[65vh] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300'>
                   {content.data.content}
                 </pre>
               </div>

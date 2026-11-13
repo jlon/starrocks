@@ -203,7 +203,7 @@ function BeConsolePage() {
           {isLoading ? (
             <Skeleton className='h-64 w-full rounded-xl' />
           ) : (
-            <pre className='max-h-[calc(100vh-280px)] overflow-auto rounded-xl border p-4 text-xs whitespace-pre-wrap'>
+            <pre className='max-h-[calc(100vh-280px)] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs whitespace-pre-wrap text-zinc-300'>
               {data?.text || 'No data'}
             </pre>
           )}
@@ -242,7 +242,7 @@ function BeConsolePage() {
           {isLoading ? (
             <Skeleton className='h-64 w-full rounded-xl' />
           ) : (
-            <pre className='max-h-[calc(100vh-280px)] overflow-auto rounded-xl border p-4 text-xs whitespace-pre-wrap'>
+            <pre className='max-h-[calc(100vh-280px)] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs whitespace-pre-wrap text-zinc-300'>
               {data?.text || 'No data'}
             </pre>
           )}

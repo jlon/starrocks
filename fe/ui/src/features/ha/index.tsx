@@ -3,7 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
 import type { HaInfo } from '@/lib/types'
-import { Badge } from '@/components/ui/badge'
+import { BookMarked, BookOpenCheck, Crown, History } from 'lucide-react'
+import { roleTone } from '@/lib/states'
+import { StateBadge, StateChip } from '@/components/state-badge'
+import { StatCard } from '@/components/stat-card'
 import {
   Card,
   CardContent,
@@ -55,15 +58,37 @@ function HaPage() {
       ) : (
         <div className='space-y-4'>
           <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
-            <Metric title='Role' value={data.feType} />
-            <Metric title='Journal ID' value={String(data.journalId)} />
-            <Metric title='Can read' value={data.canRead ? 'Yes' : 'No'} />
-            <Metric
+            <StatCard
+              title='Role'
+              value={data.feType}
+              icon={<Crown />}
+              tone={roleTone(data.feType)}
+              detail={data.leader ? 'Serving metadata' : 'Replay only'}
+            />
+            <StatCard
+              title='Journal ID'
+              value={String(data.journalId)}
+              icon={<BookMarked />}
+              tone='blue'
+              detail={data.canRead ? 'Journal readable' : 'Journal not readable'}
+            />
+            <StatCard
+              title='Can read'
+              value={data.canRead ? 'Yes' : 'No'}
+              icon={<BookOpenCheck />}
+              tone={data.canRead ? 'green' : 'amber'}
+            />
+            <StatCard
               title='Last checkpoint'
+              icon={<History />}
+              tone='neutral'
               value={
+                data.checkpoint ? String(data.checkpoint.version) : '–'
+              }
+              detail={
                 data.checkpoint
-                  ? `${data.checkpoint.version} · ${formatTimestamp(data.checkpoint.time)}`
-                  : 'Unavailable'
+                  ? formatTimestamp(data.checkpoint.time)
+                  : 'No checkpoint recorded'
               }
             />
           </div>
@@ -100,13 +125,16 @@ function HaPage() {
                         <TableCell className='font-mono text-xs'>
                           {frontend.host}
                         </TableCell>
-                        <TableCell>{frontend.role}</TableCell>
                         <TableCell>
-                          <Badge
-                            variant={frontend.alive ? 'default' : 'destructive'}
-                          >
-                            {frontend.alive ? 'Alive' : 'Dead'}
-                          </Badge>
+                          <StateChip tone={roleTone(frontend.role)}>
+                            {frontend.role}
+                          </StateChip>
+                        </TableCell>
+                        <TableCell>
+                          <StateBadge
+                            state={frontend.alive ? 'alive' : 'dead'}
+                            tone={frontend.alive ? 'green' : 'red'}
+                          />
                         </TableCell>
                         <TableCell>{frontend.queryPort}</TableCell>
                         <TableCell>{frontend.rpcPort}</TableCell>
@@ -140,9 +168,9 @@ function HaPage() {
               </CardHeader>
               <CardContent className='flex flex-wrap gap-2'>
                 {(data.databases ?? []).map((name) => (
-                  <Badge key={name} variant='secondary'>
+                  <StateChip key={name} tone='blue'>
                     {name}
-                  </Badge>
+                  </StateChip>
                 ))}
                 {(data.databases ?? []).length === 0 && (
                   <span className='text-sm text-muted-foreground'>None</span>
@@ -158,9 +186,9 @@ function HaPage() {
               </CardHeader>
               <CardContent className='flex flex-wrap gap-2'>
                 {(data.removedFrontends ?? []).map((name) => (
-                  <Badge key={name} variant='secondary'>
+                  <StateChip key={name} tone='amber'>
                     {name}
-                  </Badge>
+                  </StateChip>
                 ))}
                 {(data.removedFrontends ?? []).length === 0 && (
                   <span className='text-sm text-muted-foreground'>None</span>
@@ -171,17 +199,6 @@ function HaPage() {
         </div>
       )}
     </div>
-  )
-}
-
-function Metric({ title, value }: { title: string; value: string }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardDescription>{title}</CardDescription>
-        <CardTitle className='text-xl'>{value}</CardTitle>
-      </CardHeader>
-    </Card>
   )
 }
 
@@ -197,11 +214,11 @@ function NodeCard({
       <CardHeader>
         <CardTitle>{title}</CardTitle>
       </CardHeader>
-      <CardContent className='space-y-1'>
+      <CardContent className='flex flex-wrap gap-2'>
         {nodes.map((node) => (
-          <p key={`${node.host}:${node.port}`} className='font-mono text-sm'>
+          <StateChip key={`${node.host}:${node.port}`} tone='violet'>
             {node.host}:{node.port}
-          </p>
+          </StateChip>
         ))}
         {nodes.length === 0 && (
           <p className='text-sm text-muted-foreground'>None</p>
