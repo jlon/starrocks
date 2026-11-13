@@ -21,7 +21,7 @@ export function AppTitle() {
           asChild
         >
           <div>
-            <AppMark />
+            <AppMark className='mr-2' />
             <Link
               to='/'
               onClick={() => setOpenMobile(false)}
