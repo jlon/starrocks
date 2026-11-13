@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Folder, RefreshCw } from 'lucide-react'
-import { PageHeader } from '@/components/page-header'
+import { apiFetch } from '@/lib/api'
+import type { SystemInfo } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -12,8 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { apiFetch } from '@/lib/api'
-import type { SystemInfo } from '@/lib/types'
+import { PageHeader } from '@/components/page-header'
 
 function SystemPage() {
   const [path, setPath] = useState('/')
@@ -47,11 +47,44 @@ function SystemPage() {
         >
           <ArrowUp />
         </Button>
-        <code className='bg-muted rounded-md px-2 py-1 text-xs'>{path}</code>
+        <nav
+          className='flex flex-wrap items-center gap-1 text-xs'
+          aria-label='Breadcrumb'
+        >
+          <button
+            type='button'
+            className='text-muted-foreground hover:text-foreground'
+            onClick={() => setPath('/')}
+          >
+            root
+          </button>
+          {path
+            .split('/')
+            .filter(Boolean)
+            .map((segment, index, segments) => {
+              const target = `/${segments.slice(0, index + 1).join('/')}`
+              return (
+                <span key={target} className='flex items-center gap-1'>
+                  <span className='text-muted-foreground'>/</span>
+                  <button
+                    type='button'
+                    className={
+                      index === segments.length - 1
+                        ? 'font-medium'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }
+                    onClick={() => setPath(target)}
+                  >
+                    {segment}
+                  </button>
+                </span>
+              )
+            })}
+        </nav>
       </div>
 
       {error && (
-        <p className='text-destructive mb-4 text-sm'>{error.message}</p>
+        <p className='mb-4 text-sm text-destructive'>{error.message}</p>
       )}
 
       {isLoading ? (
@@ -107,7 +140,7 @@ function SystemPage() {
                 <TableRow>
                   <TableCell
                     colSpan={data?.columns.length ?? 1}
-                    className='text-muted-foreground h-24 text-center'
+                    className='h-24 text-center text-muted-foreground'
                   >
                     Empty directory.
                   </TableCell>

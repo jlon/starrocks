@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Search } from 'lucide-react'
-import { PageHeader } from '@/components/page-header'
+import { apiFetch } from '@/lib/api'
+import type { VariableData } from '@/lib/types'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -13,8 +14,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { apiFetch } from '@/lib/api'
-import type { VariableData } from '@/lib/types'
+import { PageHeader } from '@/components/page-header'
 
 function VariablesPage() {
   const [search, setSearch] = useState('')
@@ -53,7 +53,7 @@ function VariablesPage() {
       />
 
       <div className='relative mb-4 max-w-sm'>
-        <Search className='text-muted-foreground absolute top-2.5 left-2.5 size-4' />
+        <Search className='absolute top-2.5 left-2.5 size-4 text-muted-foreground' />
         <Input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
@@ -63,10 +63,10 @@ function VariablesPage() {
       </div>
 
       {error && (
-        <p className='text-destructive mb-4 text-sm'>{error.message}</p>
+        <p className='mb-4 text-sm text-destructive'>{error.message}</p>
       )}
       {data?.configError && (
-        <p className='text-destructive mb-4 text-sm'>{data.configError}</p>
+        <p className='mb-4 text-sm text-destructive'>{data.configError}</p>
       )}
 
       {isLoading ? (
@@ -74,9 +74,7 @@ function VariablesPage() {
       ) : (
         <Tabs defaultValue='config'>
           <TabsList>
-            <TabsTrigger value='config'>
-              Config ({config.length})
-            </TabsTrigger>
+            <TabsTrigger value='config'>Config ({config.length})</TabsTrigger>
             <TabsTrigger value='variables'>
               Variables ({variables.length})
             </TabsTrigger>
@@ -85,7 +83,7 @@ function VariablesPage() {
           <TabsContent value='config'>
             <div className='max-h-[70vh] overflow-auto rounded-xl border'>
               <Table>
-                <TableHeader className='bg-background sticky top-0'>
+                <TableHeader className='sticky top-0 bg-background'>
                   <TableRow>
                     <TableHead className='w-1/3'>Name</TableHead>
                     <TableHead>Value</TableHead>
@@ -108,7 +106,7 @@ function VariablesPage() {
           <TabsContent value='variables'>
             <div className='max-h-[70vh] overflow-auto rounded-xl border'>
               <Table>
-                <TableHeader className='bg-background sticky top-0'>
+                <TableHeader className='sticky top-0 bg-background'>
                   <TableRow>
                     <TableHead className='w-1/3'>Name</TableHead>
                     <TableHead>Value</TableHead>

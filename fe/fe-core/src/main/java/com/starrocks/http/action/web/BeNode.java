@@ -31,12 +31,13 @@ final class BeNode {
         if (value == null || !value.startsWith("BE:")) {
             return null;
         }
-        String[] parts = value.substring(3).split(":");
-        if (parts.length != 2) {
+        int separator = value.lastIndexOf(':');
+        if (separator <= 3 || separator == value.length() - 1) {
             return null;
         }
+        String host = value.substring(3, separator);
         try {
-            return new BeNode(parts[0], Integer.parseInt(parts[1]));
+            return new BeNode(host, Integer.parseInt(value.substring(separator + 1)));
         } catch (NumberFormatException e) {
             return null;
         }
@@ -54,6 +55,11 @@ final class BeNode {
             }
         }
         return false;
+    }
+
+    String url(String path) {
+        String authority = host.indexOf(':') >= 0 ? "[" + host + "]" : host;
+        return "http://" + authority + ":" + port + path;
     }
 
     String host() {

@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw, X } from 'lucide-react'
+import { Download, Plus, RefreshCw, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { PageHeader } from '@/components/page-header'
+import { apiFetch } from '@/lib/api'
+import { formatBytes, formatTimestamp } from '@/lib/format'
+import type { LogConfig, LogContent, LogsInfo } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,9 +16,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { apiFetch } from '@/lib/api'
-import { formatBytes, formatTimestamp } from '@/lib/format'
-import type { LogContent, LogsInfo } from '@/lib/types'
+import { PageHeader } from '@/components/page-header'
 
 function LogsPage() {
   const queryClient = useQueryClient()
@@ -27,26 +27,44 @@ function LogsPage() {
     queryKey: ['logs'],
     queryFn: () => apiFetch<LogsInfo>('/api/web/v1/logs'),
   })
+  const config = useQuery({
+    queryKey: ['log-config'],
+    queryFn: () => apiFetch<LogConfig>('/api/web/v1/log-config'),
+  })
+  const session = useQuery({
+    queryKey: ['session'],
+    queryFn: () =>
+      apiFetch<{ user: string; canAdmin: boolean }>('/api/web/v1/session'),
+  })
   const name = selected || logs.data?.files[0]?.name || ''
   const content = useQuery({
     queryKey: ['log', name],
     queryFn: () =>
-      apiFetch<LogContent>(
-        `/api/web/v1/logs/${encodeURIComponent(name)}`
-      ),
+      apiFetch<LogContent>(`/api/web/v1/logs/${encodeURIComponent(name)}`),
     enabled: name.length > 0,
   })
 
   const updateVerbose = useMutation({
-    mutationFn: ({ action, value }: { action: 'add' | 'remove'; value: string }) =>
-      apiFetch('/api/web/v1/logs/verbose', {
+    mutationFn: ({
+      action,
+      value,
+    }: {
+      action: 'add' | 'remove'
+      value: string
+    }) =>
+      apiFetch('/api/web/v1/log-config/verbose', {
         method: 'POST',
-        body: JSON.stringify({ action, name: value }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          action === 'add'
+            ? { add: [value], remove: [] }
+            : { add: [], remove: [value] }
+        ),
       }),
     onSuccess: () => {
       setVerbose('')
       toast.success('Verbose configuration updated')
-      queryClient.invalidateQueries({ queryKey: ['logs'] })
+      queryClient.invalidateQueries({ queryKey: ['log-config'] })
     },
   })
 
@@ -56,14 +74,39 @@ function LogsPage() {
         title='Logs'
         description='Frontend log configuration and recent log contents.'
         actions={
-          <Button variant='outline' size='sm' onClick={() => logs.refetch()}>
-            <RefreshCw /> Refresh
-          </Button>
+          <div className='flex items-center gap-2'>
+            {content.data && (
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => {
+                  const blob = new Blob([content.data!.content], {
+                    type: 'text/plain;charset=utf-8;',
+                  })
+                  const url = URL.createObjectURL(blob)
+                  const link = document.createElement('a')
+                  link.href = url
+                  link.download = content.data!.name
+                  link.click()
+                  URL.revokeObjectURL(url)
+                }}
+              >
+                <Download /> Download
+              </Button>
+            )}
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() => void logs.refetch()}
+            >
+              <RefreshCw /> Refresh
+            </Button>
+          </div>
         }
       />
 
       {logs.error && (
-        <p className='text-destructive mb-4 text-sm'>{logs.error.message}</p>
+        <p className='mb-4 text-sm text-destructive'>{logs.error.message}</p>
       )}
 
       {logs.isLoading ? (
@@ -83,63 +126,73 @@ function LogsPage() {
                 ))}
               </SelectContent>
             </Select>
-            <span className='text-muted-foreground text-sm'>
-              Level: <strong>{logs.data?.level}</strong>
+            <span className='text-sm text-muted-foreground'>
+              Level: <strong>{config.data?.level ?? logs.data?.level}</strong>
             </span>
-            <span className='text-muted-foreground text-sm'>
+            <span className='text-sm text-muted-foreground'>
               Directory: <code className='text-xs'>{logs.data?.dir}</code>
             </span>
           </div>
 
-          <div className='space-y-2'>
-            <p className='text-sm font-medium'>Verbose names</p>
-            <div className='flex flex-wrap items-center gap-2'>
-              {(logs.data?.verboseNames ?? []).map((item) => (
-                <Badge key={item} variant='secondary' className='gap-1'>
-                  {item}
-                  <button
-                    type='button'
-                    aria-label={`Remove ${item}`}
-                    onClick={() =>
-                      updateVerbose.mutate({ action: 'remove', value: item })
+          {session.data?.canAdmin ? (
+            <div className='space-y-2'>
+              <p className='text-sm font-medium'>Verbose names</p>
+              <div className='flex flex-wrap items-center gap-2'>
+                {(
+                  config.data?.verboseNames ??
+                  logs.data?.verboseNames ??
+                  []
+                ).map((item) => (
+                  <Badge key={item} variant='secondary' className='gap-1'>
+                    {item}
+                    <button
+                      type='button'
+                      aria-label={`Remove ${item}`}
+                      onClick={() =>
+                        updateVerbose.mutate({ action: 'remove', value: item })
+                      }
+                    >
+                      <X className='size-3' />
+                    </button>
+                  </Badge>
+                ))}
+                <form
+                  className='flex gap-2'
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (verbose.trim()) {
+                      updateVerbose.mutate({
+                        action: 'add',
+                        value: verbose.trim(),
+                      })
                     }
-                  >
-                    <X className='size-3' />
-                  </button>
-                </Badge>
-              ))}
-              <form
-                className='flex gap-2'
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  if (verbose.trim()) {
-                    updateVerbose.mutate({
-                      action: 'add',
-                      value: verbose.trim(),
-                    })
-                  }
-                }}
-              >
-                <Input
-                  value={verbose}
-                  onChange={(event) => setVerbose(event.target.value)}
-                  placeholder='com.example'
-                  className='h-8 w-48'
-                />
-                <Button
-                  type='submit'
-                  size='sm'
-                  variant='outline'
-                  disabled={!verbose.trim() || updateVerbose.isPending}
+                  }}
                 >
-                  <Plus /> Add
-                </Button>
-              </form>
+                  <Input
+                    value={verbose}
+                    onChange={(event) => setVerbose(event.target.value)}
+                    placeholder='com.example'
+                    className='h-8 w-48'
+                  />
+                  <Button
+                    type='submit'
+                    size='sm'
+                    variant='outline'
+                    disabled={!verbose.trim() || updateVerbose.isPending}
+                  >
+                    <Plus /> Add
+                  </Button>
+                </form>
+              </div>
             </div>
-          </div>
+          ) : (
+            <p className='text-sm text-muted-foreground'>
+              Admin role is required to change verbose logging.
+            </p>
+          )}
 
           {content.error && (
-            <p className='text-destructive text-sm'>{content.error.message}</p>
+            <p className='text-sm text-destructive'>{content.error.message}</p>
           )}
 
           {content.isLoading ? (
@@ -147,7 +200,7 @@ function LogsPage() {
           ) : (
             content.data && (
               <div className='rounded-xl border'>
-                <div className='text-muted-foreground flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2 text-xs'>
+                <div className='flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2 text-xs text-muted-foreground'>
                   <span className='font-mono'>{content.data.name}</span>
                   <span>
                     {formatBytes(content.data.size)} ·{' '}

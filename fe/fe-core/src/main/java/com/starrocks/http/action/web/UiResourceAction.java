@@ -56,12 +56,21 @@ public class UiResourceAction extends BaseAction {
         String name = file.getFileName().toString();
         response.updateHeader("Content-Type", mimeFor(name));
         response.updateHeader("X-Content-Type-Options", "nosniff");
-        if ("index.html".equals(name)) {
-            response.updateHeader("Cache-Control", "no-cache");
-        } else if (name.matches(".*\\.[0-9a-f]{8,}\\.(js|css|woff2|png|svg|ico)$")) {
-            response.updateHeader("Cache-Control", "public, max-age=31536000, immutable");
+        String cacheControl = cacheControlFor(name);
+        if (cacheControl != null) {
+            response.updateHeader("Cache-Control", cacheControl);
         }
         writeObjectResponse(request, response, HttpResponseStatus.OK, file.toFile(), name, false);
+    }
+
+    static String cacheControlFor(String name) {
+        if ("index.html".equals(name)) {
+            return "no-cache";
+        }
+        if (name.matches(".*[.-][A-Za-z0-9_-]{6,}\\.(js|css|woff2|png|svg|ico)$")) {
+            return "public, max-age=31536000, immutable";
+        }
+        return null;
     }
 
     static Path resolve(Path root, String uri) {

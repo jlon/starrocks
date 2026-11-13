@@ -14,18 +14,6 @@ import {
 import { type SidebarData } from '../types'
 
 export const sidebarData: SidebarData = {
-  user: {
-    name: 'admin',
-    email: 'admin@starrocks',
-    avatar: '',
-  },
-  teams: [
-    {
-      name: 'StarRocks',
-      logo: LayoutDashboard,
-      plan: 'Web Console',
-    },
-  ],
   navGroups: [
     {
       title: 'Cluster',

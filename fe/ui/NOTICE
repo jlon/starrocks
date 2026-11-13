@@ -1,0 +1,4 @@
+StarRocks Web Console includes code derived from shadcn-admin
+(https://github.com/satnaing/shadcn-admin), Copyright (c) 2024 Sat Naing,
+licensed under the MIT License. The full license text is in
+fe/ui/LICENSE-shadcn-admin.

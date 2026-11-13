@@ -1,6 +1,12 @@
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { PageHeader } from '@/components/page-header'
+import { useNavigate, useSearch } from '@tanstack/react-router'
+import { apiFetch } from '@/lib/api'
+import { formatBytes, formatCpu, formatPercent } from '@/lib/format'
+import type { Backend } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
@@ -10,27 +16,93 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { apiFetch } from '@/lib/api'
-import { formatBytes, formatCpu, formatPercent } from '@/lib/format'
-import type { Backend } from '@/lib/types'
+import { AutoRefresh } from '@/components/auto-refresh'
+import { PageHeader } from '@/components/page-header'
+
+const PAGE_SIZE = 50
 
 function BackendsPage() {
-  const { data, isLoading, error } = useQuery({
+  const [auto, setAuto] = useState(false)
+  const navigate = useNavigate() as unknown as (options: {
+    search: (previous: Record<string, unknown>) => Record<string, unknown>
+    replace?: boolean
+  }) => void
+  const search = useSearch({ strict: false }) as {
+    filter?: string
+    page?: number
+  }
+  const filter = search.filter ?? ''
+  const page = Math.max(0, Number(search.page ?? 0))
+  const setFilter = (value: string) => {
+    void navigate({
+      search: (previous) => ({
+        ...previous,
+        filter: value || undefined,
+        page: undefined,
+      }),
+      replace: true,
+    })
+  }
+  const setPage = (value: number) => {
+    void navigate({
+      search: (previous) => ({
+        ...previous,
+        page: value > 0 ? value : undefined,
+      }),
+      replace: true,
+    })
+  }
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['backends'],
     queryFn: () => apiFetch<{ backends: Backend[] }>('/api/web/v1/backends'),
-    refetchInterval: 5000,
+    refetchInterval: auto ? 10000 : false,
   })
+
+  const filtered = useMemo(() => {
+    const keyword = filter.trim().toLowerCase()
+    const rows = data?.backends ?? []
+    if (!keyword) return rows
+    return rows.filter((backend) =>
+      [String(backend.id), backend.host, backend.state, backend.version]
+        .join(' ')
+        .toLowerCase()
+        .includes(keyword)
+    )
+  }, [data, filter])
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const current = Math.min(page, pageCount - 1)
+  const rows = filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE)
 
   return (
     <div className='p-4 md:p-6'>
       <PageHeader
         title='Backends'
         description='Storage and compute backends registered in the cluster.'
+        actions={
+          <AutoRefresh
+            enabled={auto}
+            onChange={setAuto}
+            onRefresh={() => void refetch()}
+            pending={isFetching}
+          />
+        }
       />
 
       {error && (
-        <p className='text-destructive mb-4 text-sm'>{error.message}</p>
+        <p className='mb-4 text-sm text-destructive'>{error.message}</p>
       )}
+
+      <div className='mb-3 flex flex-wrap items-center justify-between gap-2'>
+        <Input
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder='Filter by host, id, state or version'
+          className='max-w-sm'
+        />
+        <p className='text-xs text-muted-foreground'>
+          {filtered.length} backends
+        </p>
+      </div>
 
       {isLoading ? (
         <Skeleton className='h-64 w-full rounded-xl' />
@@ -50,11 +122,11 @@ function BackendsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(data?.backends ?? []).map((backend) => (
+              {rows.map((backend) => (
                 <TableRow key={backend.id}>
                   <TableCell>
                     <div className='font-medium'>{backend.host}</div>
-                    <div className='text-muted-foreground text-xs'>
+                    <div className='text-xs text-muted-foreground'>
                       id {backend.id} · started {backend.startTime}
                     </div>
                   </TableCell>
@@ -63,7 +135,7 @@ function BackendsPage() {
                       {backend.state}
                     </Badge>
                   </TableCell>
-                  <TableCell className='text-muted-foreground text-xs'>
+                  <TableCell className='text-xs text-muted-foreground'>
                     <div>heartbeat {backend.heartbeatPort}</div>
                     <div>
                       be {backend.bePort} · http {backend.httpPort}
@@ -72,7 +144,7 @@ function BackendsPage() {
                   </TableCell>
                   <TableCell>
                     <div>{formatCpu(backend.cpuUsedPermille)}</div>
-                    <div className='text-muted-foreground text-xs'>
+                    <div className='text-xs text-muted-foreground'>
                       {backend.cpuCores} cores
                     </div>
                   </TableCell>
@@ -81,30 +153,30 @@ function BackendsPage() {
                       {formatBytes(backend.memUsedBytes)} /{' '}
                       {formatBytes(backend.memLimitBytes)}
                     </div>
-                    <div className='text-muted-foreground text-xs'>
+                    <div className='text-xs text-muted-foreground'>
                       {formatPercent(backend.memUsedPct)}
                     </div>
                   </TableCell>
                   <TableCell>
                     <div>{formatBytes(backend.dataUsedCapacityB)} used</div>
-                    <div className='text-muted-foreground text-xs'>
+                    <div className='text-xs text-muted-foreground'>
                       {formatBytes(backend.availableCapacityB)} free · max{' '}
                       {formatPercent(backend.maxDiskUsedPct)}
                     </div>
                   </TableCell>
-                  <TableCell className='text-muted-foreground text-xs'>
+                  <TableCell className='text-xs text-muted-foreground'>
                     {backend.version || '-'}
                   </TableCell>
-                  <TableCell className='text-muted-foreground text-xs'>
+                  <TableCell className='text-xs text-muted-foreground'>
                     {backend.lastSuccessReportTabletsTime || '-'}
                   </TableCell>
                 </TableRow>
               ))}
-              {(data?.backends ?? []).length === 0 && (
+              {rows.length === 0 && (
                 <TableRow>
                   <TableCell
                     colSpan={8}
-                    className='text-muted-foreground h-24 text-center'
+                    className='h-24 text-center text-muted-foreground'
                   >
                     No backends registered.
                   </TableCell>
@@ -112,6 +184,30 @@ function BackendsPage() {
               )}
             </TableBody>
           </Table>
+        </div>
+      )}
+
+      {filtered.length > PAGE_SIZE && (
+        <div className='mt-3 flex items-center justify-end gap-2'>
+          <span className='text-xs text-muted-foreground'>
+            Page {current + 1} of {pageCount}
+          </span>
+          <Button
+            variant='outline'
+            size='sm'
+            disabled={current === 0}
+            onClick={() => setPage(current - 1)}
+          >
+            Previous
+          </Button>
+          <Button
+            variant='outline'
+            size='sm'
+            disabled={current >= pageCount - 1}
+            onClick={() => setPage(current + 1)}
+          >
+            Next
+          </Button>
         </div>
       )}
     </div>

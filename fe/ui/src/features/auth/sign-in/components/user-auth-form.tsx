@@ -2,10 +2,11 @@ import { useState } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
 import { toast } from 'sonner'
-import { apiFetch } from '@/lib/api'
+import { ApiError, apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -34,7 +35,12 @@ export function UserAuthForm({
   ...props
 }: UserAuthFormProps) {
   const [isLoading, setIsLoading] = useState(false)
-  const navigate = useNavigate()
+  const navigate = useNavigate() as unknown as (options: {
+    to: string
+    search?: Record<string, string>
+    replace?: boolean
+  }) => void
+  const queryClient = useQueryClient()
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: { username: '', password: '' },
@@ -48,19 +54,35 @@ export function UserAuthForm({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
+      queryClient.clear()
       toast.success('Signed in')
       const target = redirectTo
         ? new URL(redirectTo, window.location.origin)
         : null
       const base = import.meta.env.BASE_URL.replace(/\/$/, '')
-      let path = target ? target.pathname + target.search : '/'
-      if (path.startsWith(base)) {
-        path = path.slice(base.length) || '/'
+      let path = target ? target.pathname : '/'
+      for (const prefix of [base, '/ui']) {
+        if (prefix && (path === prefix || path.startsWith(`${prefix}/`))) {
+          path = path.slice(prefix.length) || '/'
+          break
+        }
       }
-      navigate({ to: path, replace: true })
+      const search = target
+        ? Object.fromEntries(target.searchParams)
+        : undefined
+      if (search && Object.keys(search).length > 0) {
+        navigate({ to: path, search, replace: true })
+      } else {
+        navigate({ to: path, replace: true })
+      }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Sign in failed'
-      toast.error(msg)
+      if (e instanceof ApiError && e.status === 401) {
+        toast.error('Invalid username or password')
+      } else if (e instanceof ApiError && e.status === 403) {
+        toast.error('This user does not have NODE privilege')
+      } else {
+        toast.error(e instanceof Error ? e.message : 'Sign in failed')
+      }
     } finally {
       setIsLoading(false)
     }

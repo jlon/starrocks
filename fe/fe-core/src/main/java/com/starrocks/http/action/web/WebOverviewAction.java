@@ -14,6 +14,7 @@
 
 package com.starrocks.http.action.web;
 
+import com.starrocks.common.Config;
 import com.starrocks.common.Version;
 import com.starrocks.common.util.ProfileManager;
 import com.starrocks.http.ActionController;
@@ -28,12 +29,23 @@ import com.starrocks.service.ExecuteEnv;
 import com.starrocks.system.SystemInfoService;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import oshi.SystemInfo;
+import oshi.hardware.CentralProcessor;
+import oshi.hardware.GlobalMemory;
+import oshi.hardware.HardwareAbstractionLayer;
+import oshi.software.os.OSFileStore;
+import oshi.software.os.OperatingSystem;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public class WebOverviewAction extends WebApiAction {
     private static final String PATH = "/api/web/v1/overview";
+    private static final long HARDWARE_CACHE_MILLIS = 60_000;
+    private static volatile Map<String, Object> hardwareCache;
+    private static volatile long hardwareCacheAt;
 
     public WebOverviewAction(ActionController controller) {
         super(controller);
@@ -84,6 +96,78 @@ public class WebOverviewAction extends WebApiAction {
         body.put("computeNodes", computeNodes);
         body.put("queries", queries);
         body.put("sessions", sessions);
+        body.put("hardware", hardware());
         writeJson(request, response, HttpResponseStatus.OK, body);
+    }
+
+    private static Map<String, Object> hardware() {
+        Map<String, Object> cached = hardwareCache;
+        if (cached != null && System.currentTimeMillis() - hardwareCacheAt < HARDWARE_CACHE_MILLIS) {
+            return cached;
+        }
+        synchronized (WebOverviewAction.class) {
+            if (hardwareCache != null && System.currentTimeMillis() - hardwareCacheAt < HARDWARE_CACHE_MILLIS) {
+                return hardwareCache;
+            }
+            hardwareCache = loadHardware();
+            hardwareCacheAt = System.currentTimeMillis();
+            return hardwareCache;
+        }
+    }
+
+    private static Map<String, Object> loadHardware() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("enabled", Config.http_web_page_display_hardware);
+        if (!Config.http_web_page_display_hardware) {
+            return result;
+        }
+        try {
+            SystemInfo systemInfo = new SystemInfo();
+            OperatingSystem os = systemInfo.getOperatingSystem();
+            HardwareAbstractionLayer hal = systemInfo.getHardware();
+            CentralProcessor cpu = hal.getProcessor();
+            GlobalMemory memory = hal.getMemory();
+
+            Map<String, Object> osInfo = new LinkedHashMap<>();
+            osInfo.put("family", os.getFamily());
+            osInfo.put("version", os.getVersionInfo().getVersion());
+            osInfo.put("manufacturer", os.getManufacturer());
+            result.put("os", osInfo);
+
+            Map<String, Object> cpuInfo = new LinkedHashMap<>();
+            cpuInfo.put("name", cpu.getProcessorIdentifier().getName());
+            cpuInfo.put("physicalCores", cpu.getPhysicalProcessorCount());
+            cpuInfo.put("logicalCores", cpu.getLogicalProcessorCount());
+            result.put("cpu", cpuInfo);
+
+            Map<String, Object> memoryInfo = new LinkedHashMap<>();
+            memoryInfo.put("total", memory.getTotal());
+            memoryInfo.put("available", memory.getAvailable());
+            result.put("memory", memoryInfo);
+
+            List<Map<String, Object>> disks = new ArrayList<>();
+            for (OSFileStore store : os.getFileSystem().getFileStores()) {
+                Map<String, Object> disk = new LinkedHashMap<>();
+                disk.put("name", store.getName());
+                disk.put("mount", store.getMount());
+                disk.put("total", store.getTotalSpace());
+                disk.put("usable", store.getUsableSpace());
+                disks.add(disk);
+            }
+            result.put("disks", disks);
+
+            List<Map<String, Object>> networks = new ArrayList<>();
+            hal.getNetworkIFs().forEach(network -> {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("name", network.getDisplayName());
+                item.put("ipv4", network.getIPv4addr());
+                item.put("speed", network.getSpeed());
+                networks.add(item);
+            });
+            result.put("networks", networks);
+        } catch (Exception | LinkageError t) {
+            result.put("error", t.getMessage());
+        }
+        return result;
     }
 }

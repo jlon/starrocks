@@ -159,9 +159,9 @@ public class WebProcProfileAction extends WebApiAction {
     }
 
     private void proxyFile(BaseRequest request, BaseResponse response, String node, String filename) {
-        if (filename == null || filename.isEmpty()) {
+        if (!isValidFeFilename(filename)) {
             writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
-                    Map.of("message", "filename is required"));
+                    Map.of("message", "invalid filename"));
             return;
         }
 
@@ -175,7 +175,7 @@ public class WebProcProfileAction extends WebApiAction {
         String encoded = java.net.URLEncoder.encode(filename, StandardCharsets.UTF_8);
         String host = beNode.host();
         int port = beNode.port();
-        String url = "http://" + host + ":" + port + "/proc_profile/file?filename=" + encoded;
+        String url = beNode.url("/proc_profile/file?filename=" + encoded);
         RequestConfig config = RequestConfig.custom()
                 .setCookieSpec(CookieSpecs.IGNORE_COOKIES)
                 .setExpectContinueEnabled(Boolean.TRUE)
@@ -184,7 +184,7 @@ public class WebProcProfileAction extends WebApiAction {
                 .setConnectTimeout(10000)
                 .setSocketTimeout(60000)
                 .setConnectionRequestTimeout(10000)
-                .setRedirectsEnabled(true)
+                .setRedirectsEnabled(false)
                 .build();
 
         try (CloseableHttpClient client = HttpClients.custom().setDefaultRequestConfig(config).build();
@@ -246,7 +246,7 @@ public class WebProcProfileAction extends WebApiAction {
         String host = beNode.host();
         int port = beNode.port();
         try {
-            String url = "http://" + host + ":" + port + "/api/proc_profile/list";
+            String url = beNode.url("/api/proc_profile/list");
             JsonObject json = JsonParser.parseString(HttpUtils.get(url, null)).getAsJsonObject();
             if (json.has("error")) {
                 LOG.warn("backend {}:{} returned error: {}", host, port, json.get("error").getAsString());
@@ -283,11 +283,9 @@ public class WebProcProfileAction extends WebApiAction {
 
     private static boolean isValidFeFilename(String filename) {
         return filename != null
-                && filename.endsWith(".tar.gz")
+                && filename.matches("[A-Za-z0-9._-]+\\.tar\\.gz")
                 && (filename.startsWith(CPU_FILE_NAME_PREFIX) || filename.startsWith(MEM_FILE_NAME_PREFIX))
-                && !filename.contains("..")
-                && !filename.contains("/")
-                && !filename.contains("\\");
+                && !filename.contains("..");
     }
 
     private static String fileType(String filename) {

@@ -35,13 +35,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 public class WebLogAction extends WebApiAction {
-    private static final String PATH = "/api/web/v1/logs";
-    private static final String VERBOSE_PATH = "/api/web/v1/logs/verbose";
+    private static final String LOGS_PATH = "/api/web/v1/logs";
+    private static final String LOG_CONFIG_PATH = "/api/web/v1/log-config";
+    private static final String VERBOSE_PATH = "/api/web/v1/log-config/verbose";
     private static final long MAX_LOG_BYTES = 1024L * 1024L;
     private static final Pattern LOG_NAME = Pattern.compile("[A-Za-z0-9._-]+\\.log");
     private static final Pattern VERBOSE_NAME = Pattern.compile("[A-Za-z0-9._-]+");
@@ -51,8 +54,9 @@ public class WebLogAction extends WebApiAction {
     }
 
     public static void registerAction(ActionController controller) throws IllegalArgException {
-        controller.registerHandler(HttpMethod.GET, PATH, new WebLogAction(controller));
-        controller.registerHandler(HttpMethod.GET, PATH + "/{name}", new WebLogAction(controller));
+        controller.registerHandler(HttpMethod.GET, LOGS_PATH, new WebLogAction(controller));
+        controller.registerHandler(HttpMethod.GET, LOGS_PATH + "/{name}", new WebLogAction(controller));
+        controller.registerHandler(HttpMethod.GET, LOG_CONFIG_PATH, new WebLogAction(controller));
         controller.registerHandler(HttpMethod.POST, VERBOSE_PATH, new WebLogAction(controller));
     }
 
@@ -61,7 +65,14 @@ public class WebLogAction extends WebApiAction {
         if (authenticate(request, response) == null) {
             return;
         }
+        if (path(request).equals(LOG_CONFIG_PATH)) {
+            writeJson(request, response, HttpResponseStatus.OK, config());
+            return;
+        }
         String name = request.getParams().get("name");
+        if (name == null) {
+            name = request.getSingleParameter("type");
+        }
         if (name == null) {
             list(request, response);
         } else {
@@ -77,10 +88,7 @@ public class WebLogAction extends WebApiAction {
             return;
         }
         UserIdentity user = authenticate(request, response);
-        if (user == null) {
-            return;
-        }
-        if (!requireOperate(request, response, user)) {
+        if (user == null || !requireAdmin(request, response, user)) {
             return;
         }
         if (!path(request).equals(VERBOSE_PATH)) {
@@ -91,16 +99,24 @@ public class WebLogAction extends WebApiAction {
         updateVerbose(request, response);
     }
 
-    private void list(BaseRequest request, BaseResponse response) {
-        Tuple3<String, String[], String[]> logging;
-        try {
-            logging = Log4jConfig.updateLogging(null, null, null);
-        } catch (IOException e) {
-            writeJson(request, response, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    Map.of("message", "failed to read log configuration"));
-            return;
-        }
+    private static Map<String, Object> config() {
+        Tuple3<String, String[], String[]> logging = readLogging();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("level", logging.getV1() == null ? "UNKNOWN" : logging.getV1());
+        body.put("verboseNames", logging.getV2() == null ? new String[0] : logging.getV2());
+        body.put("auditNames", logging.getV3() == null ? new String[0] : logging.getV3());
+        return body;
+    }
 
+    private static Tuple3<String, String[], String[]> readLogging() {
+        try {
+            return Log4jConfig.updateLogging(null, null, null);
+        } catch (IOException e) {
+            return new Tuple3<>("UNKNOWN", new String[0], new String[0]);
+        }
+    }
+
+    private void list(BaseRequest request, BaseResponse response) {
         File dir = new File(Config.sys_log_dir);
         File[] files = dir.listFiles(file -> file.isFile() && file.getName().endsWith(".log"));
         if (files == null) {
@@ -117,11 +133,8 @@ public class WebLogAction extends WebApiAction {
             entries.add(entry);
         }
 
-        Map<String, Object> body = new LinkedHashMap<>();
+        Map<String, Object> body = new LinkedHashMap<>(config());
         body.put("dir", Config.sys_log_dir);
-        body.put("level", logging.getV1() == null ? "UNKNOWN" : logging.getV1());
-        body.put("verboseNames", logging.getV2() == null ? new String[0] : logging.getV2());
-        body.put("auditNames", logging.getV3() == null ? new String[0] : logging.getV3());
         body.put("files", entries);
         writeJson(request, response, HttpResponseStatus.OK, body);
     }
@@ -161,38 +174,42 @@ public class WebLogAction extends WebApiAction {
     }
 
     private void updateVerbose(BaseRequest request, BaseResponse response) {
-        VerboseRequest update;
+        VerboseUpdate update;
         try {
-            update = GSON.fromJson(request.getContent(), VerboseRequest.class);
+            update = GSON.fromJson(request.getContent(), VerboseUpdate.class);
         } catch (DdlException | JsonSyntaxException e) {
             writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
                     Map.of("message", "invalid json"));
             return;
         }
-        if (update == null || update.name == null || !VERBOSE_NAME.matcher(update.name).matches()) {
+        if (update == null) {
             writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
-                    Map.of("message", "invalid verbose name"));
-            return;
-        }
-        if (!"add".equals(update.action) && !"remove".equals(update.action)) {
-            writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
-                    Map.of("message", "action must be add or remove"));
+                    Map.of("message", "invalid json"));
             return;
         }
 
-        Tuple3<String, String[], String[]> current;
+        String[] currentNames = readLogging().getV2();
+        Set<String> names = new LinkedHashSet<>(Arrays.asList(
+                currentNames == null ? new String[0] : currentNames));
+        for (String name : update.add == null ? List.<String>of() : update.add) {
+            if (name == null || !VERBOSE_NAME.matcher(name).matches()) {
+                writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
+                        Map.of("message", "invalid verbose name"));
+                return;
+            }
+            names.add(name);
+        }
+        for (String name : update.remove == null ? List.<String>of() : update.remove) {
+            if (name == null || !VERBOSE_NAME.matcher(name).matches()) {
+                writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
+                        Map.of("message", "invalid verbose name"));
+                return;
+            }
+            names.remove(name);
+        }
+
         Tuple3<String, String[], String[]> updated;
         try {
-            current = Log4jConfig.updateLogging(null, null, null);
-            List<String> names = new ArrayList<>(
-                    Arrays.asList(current.getV2() == null ? new String[0] : current.getV2()));
-            if ("add".equals(update.action)) {
-                if (!names.contains(update.name)) {
-                    names.add(update.name);
-                }
-            } else {
-                names.remove(update.name);
-            }
             updated = Log4jConfig.updateLogging(null, names.toArray(new String[0]), null);
         } catch (IOException e) {
             writeJson(request, response, HttpResponseStatus.INTERNAL_SERVER_ERROR,
@@ -207,8 +224,8 @@ public class WebLogAction extends WebApiAction {
         writeJson(request, response, HttpResponseStatus.OK, body);
     }
 
-    private static class VerboseRequest {
-        private String action;
-        private String name;
+    private static class VerboseUpdate {
+        private List<String> add;
+        private List<String> remove;
     }
 }

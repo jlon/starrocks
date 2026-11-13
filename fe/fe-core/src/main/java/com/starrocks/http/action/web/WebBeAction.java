@@ -122,12 +122,12 @@ public class WebBeAction extends WebApiAction {
 
         RequestConfig config = RequestConfig.custom()
                 .setConnectTimeout(10000)
-                .setSocketTimeout(30000)
+                .setSocketTimeout(60000)
                 .setConnectionRequestTimeout(10000)
                 .setRedirectsEnabled(false)
                 .build();
 
-        String url = "http://" + node.host() + ":" + node.port() + page + query;
+        String url = node.url(page + query);
         try (CloseableHttpClient client = HttpClients.custom().setDefaultRequestConfig(config).build();
                 CloseableHttpResponse beResponse = client.execute(new HttpGet(url))) {
             int code = beResponse.getStatusLine().getStatusCode();

@@ -112,7 +112,7 @@ public class WebAuthAction extends WebApiAction {
         value.currentUser = user;
         String key = UUID.randomUUID().toString();
         HttpAuthManager.getInstance().addSessionValue(key, value);
-        response.addCookie(cookie(key, WebBaseAction.STARROCKS_SESSION_EXPIRED_TIME));
+        response.addCookie(cookie(request, key, WebBaseAction.STARROCKS_SESSION_EXPIRED_TIME));
 
         writeJson(request, response, HttpResponseStatus.OK,
                 Map.of("user", user.getUser(), "canAdmin", isAdmin(user)));
@@ -126,7 +126,7 @@ public class WebAuthAction extends WebApiAction {
 
         String sessionId = request.getCookieValue(WebBaseAction.STARROCKS_SESSION_ID);
         HttpAuthManager.getInstance().removeSessionValue(sessionId);
-        response.addCookie(cookie("", 0));
+        response.addCookie(cookie(request, "", 0));
         writeJson(request, response, HttpResponseStatus.OK, Map.of("message", "logged out"));
     }
 
@@ -151,13 +151,13 @@ public class WebAuthAction extends WebApiAction {
         }
     }
 
-    private DefaultCookie cookie(String value, long maxAge) {
+    private DefaultCookie cookie(BaseRequest request, String value, long maxAge) {
         DefaultCookie cookie = new DefaultCookie(WebBaseAction.STARROCKS_SESSION_ID, value);
         cookie.setPath("/");
         cookie.setHttpOnly(true);
         cookie.setMaxAge(maxAge);
         cookie.setSameSite(CookieHeaderNames.SameSite.Lax);
-        if (Config.enable_https) {
+        if (Config.enable_https || isSecureRequest(request)) {
             cookie.setSecure(true);
         }
         return cookie;

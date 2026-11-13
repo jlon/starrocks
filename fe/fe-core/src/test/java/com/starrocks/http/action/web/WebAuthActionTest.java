@@ -24,6 +24,7 @@ import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.analyzer.Authorizer;
 import mockit.Mock;
 import mockit.MockUp;
+import okhttp3.MediaType;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
@@ -63,6 +64,7 @@ class WebAuthActionTest extends StarRocksHttpTestCase {
         assertTrue(lower.contains("httponly"));
         assertTrue(lower.contains("samesite=lax"));
         assertTrue(lower.contains("max-age=86400"));
+        assertFalse(lower.contains("secure"));
 
         String cookie = setCookie.split(";", 2)[0];
         Response session = get(SESSION, cookie);
@@ -75,6 +77,30 @@ class WebAuthActionTest extends StarRocksHttpTestCase {
 
         Response afterLogout = get(SESSION, cookie);
         assertEquals(401, afterLogout.code());
+    }
+
+    @Test
+    void setsSecureCookieBehindTlsProxy() throws IOException {
+        Request request = new Request.Builder()
+                .url(BASE_URL + LOGIN)
+                .header("X-Forwarded-Proto", "https")
+                .post(RequestBody.create("{\"username\":\"root\",\"password\":\"\"}", JSON))
+                .build();
+        try (Response response = networkClient.newCall(request).execute()) {
+            assertEquals(200, response.code());
+            assertTrue(response.header("Set-Cookie").toLowerCase(Locale.ROOT).contains("secure"));
+        }
+    }
+
+    @Test
+    void rejectsNonJsonPost() throws IOException {
+        Request request = new Request.Builder()
+                .url(BASE_URL + LOGIN)
+                .post(RequestBody.create("{\"username\":\"root\",\"password\":\"\"}", MediaType.parse("text/plain")))
+                .build();
+        try (Response response = networkClient.newCall(request).execute()) {
+            assertEquals(415, response.code());
+        }
     }
 
     @Test

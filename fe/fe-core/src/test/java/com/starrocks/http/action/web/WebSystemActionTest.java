@@ -100,16 +100,33 @@ class WebSystemActionTest extends StarRocksHttpTestCase {
             }
         };
 
-        String add = "{\"action\":\"add\",\"name\":\"com.starrocks.test\"}";
-        try (Response response = post("/api/web/v1/logs/verbose", add, true)) {
+        String add = "{\"add\":[\"com.starrocks.test\"],\"remove\":[]}";
+        try (Response response = post("/api/web/v1/log-config/verbose", add, true)) {
             assertEquals(200, response.code());
             assertTrue(verboseNames(response).contains("com.starrocks.test"));
         }
 
-        String remove = "{\"action\":\"remove\",\"name\":\"com.starrocks.test\"}";
-        try (Response response = post("/api/web/v1/logs/verbose", remove, true)) {
+        String remove = "{\"add\":[],\"remove\":[\"com.starrocks.test\"]}";
+        try (Response response = post("/api/web/v1/log-config/verbose", remove, true)) {
             assertEquals(200, response.code());
             assertFalse(verboseNames(response).contains("com.starrocks.test"));
+        }
+    }
+
+    @Test
+    void logConfig() throws IOException {
+        try (Response response = get("/api/web/v1/log-config", true)) {
+            assertEquals(200, response.code());
+            Map<String, Object> body = parseResponseBody(response);
+            assertNotNull(body.get("level"));
+            assertTrue(body.get("verboseNames") instanceof List);
+        }
+    }
+
+    @Test
+    void rejectsInvalidSystemPath() throws IOException {
+        try (Response response = get("/api/web/v1/system?path=..%2Fetc", true)) {
+            assertEquals(400, response.code());
         }
     }
 

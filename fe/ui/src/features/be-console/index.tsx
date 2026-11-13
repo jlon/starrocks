@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { PageHeader } from '@/components/page-header'
-import { Skeleton } from '@/components/ui/skeleton'
+import { apiFetch } from '@/lib/api'
+import type { Backend, BeConfig, BeTable, BeText } from '@/lib/types'
+import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -9,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
   TableBody,
@@ -18,9 +20,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Input } from '@/components/ui/input'
-import { apiFetch } from '@/lib/api'
-import type { Backend, BeConfig, BeTable, BeText } from '@/lib/types'
+import { AutoRefresh } from '@/components/auto-refresh'
+import { PageHeader } from '@/components/page-header'
 
 type Tab = 'configs' | 'memory' | 'mem-tracker' | 'logs'
 
@@ -42,11 +43,11 @@ function BeConsolePage() {
   const [tab, setTab] = useState<Tab>('configs')
   const [level, setLevel] = useState('2')
   const [filter, setFilter] = useState('')
+  const [auto, setAuto] = useState(false)
 
   const { data: backends, isLoading: loadingBackends } = useQuery({
     queryKey: ['backends'],
     queryFn: () => apiFetch<{ backends: Backend[] }>('/api/web/v1/backends'),
-    refetchInterval: 10000,
   })
 
   const nodes = useMemo(
@@ -63,9 +64,10 @@ function BeConsolePage() {
   const selectedNode = node || nodes[0]?.value || ''
   const active = tabs.find((item) => item.value === tab) ?? tabs[0]
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['be', tab, selectedNode, level],
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
+    queryKey: ['be', tab, selectedNode, level, active.page],
     enabled: !!selectedNode,
+    refetchInterval: auto ? 10000 : false,
     queryFn: async (): Promise<BeData> => {
       const query = new URLSearchParams({ node: selectedNode })
       if (tab === 'mem-tracker') {
@@ -103,6 +105,14 @@ function BeConsolePage() {
       <PageHeader
         title='BE Console'
         description='Configuration, memory, tracker and log diagnostics from a backend.'
+        actions={
+          <AutoRefresh
+            enabled={auto}
+            onChange={setAuto}
+            onRefresh={() => void refetch()}
+            pending={isFetching}
+          />
+        }
       />
 
       <div className='mb-4 flex flex-wrap items-center gap-3'>
@@ -145,9 +155,11 @@ function BeConsolePage() {
       </div>
 
       {!loadingBackends && nodes.length === 0 && (
-        <p className='text-muted-foreground text-sm'>No alive backend found.</p>
+        <p className='text-sm text-muted-foreground'>No alive backend found.</p>
       )}
-      {error && <p className='text-destructive mb-4 text-sm'>{error.message}</p>}
+      {error && (
+        <p className='mb-4 text-sm text-destructive'>{error.message}</p>
+      )}
 
       <Tabs value={tab} onValueChange={(value) => setTab(value as Tab)}>
         <TabsList>

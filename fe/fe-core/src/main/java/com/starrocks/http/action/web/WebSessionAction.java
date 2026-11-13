@@ -14,7 +14,6 @@
 
 package com.starrocks.http.action.web;
 
-import com.starrocks.catalog.UserIdentity;
 import com.starrocks.http.ActionController;
 import com.starrocks.http.BaseRequest;
 import com.starrocks.http.BaseResponse;
@@ -32,7 +31,6 @@ import java.util.Map;
 
 public class WebSessionAction extends WebApiAction {
     private static final String LIST_PATH = "/api/web/v1/sessions";
-    private static final String KILL_PATH = "/api/web/v1/sessions/{connection_id}/kill";
 
     public WebSessionAction(ActionController controller) {
         super(controller);
@@ -40,7 +38,6 @@ public class WebSessionAction extends WebApiAction {
 
     public static void registerAction(ActionController controller) throws IllegalArgException {
         controller.registerHandler(HttpMethod.GET, LIST_PATH, new WebSessionAction(controller));
-        controller.registerHandler(HttpMethod.POST, KILL_PATH, new WebSessionAction(controller));
     }
 
     @Override
@@ -79,32 +76,6 @@ public class WebSessionAction extends WebApiAction {
         }
 
         writeJson(request, response, HttpResponseStatus.OK, Map.of("sessions", sessions));
-    }
-
-    @Override
-    public void executePost(BaseRequest request, BaseResponse response) {
-        UserIdentity user = authenticate(request, response);
-        if (user == null || !requireOperate(request, response, user)) {
-            return;
-        }
-
-        long connectionId;
-        try {
-            connectionId = Long.parseLong(request.getParams().get("connection_id"));
-        } catch (NumberFormatException e) {
-            writeJson(request, response, HttpResponseStatus.BAD_REQUEST, Map.of("message", "invalid connection id"));
-            return;
-        }
-
-        ConnectScheduler scheduler = ExecuteEnv.getInstance().getScheduler();
-        ConnectContext target = scheduler == null ? null : scheduler.getContext(connectionId);
-        if (target == null) {
-            writeJson(request, response, HttpResponseStatus.NOT_FOUND, Map.of("message", "session not found"));
-            return;
-        }
-
-        target.kill(true, "Killed by web console");
-        writeJson(request, response, HttpResponseStatus.OK, Map.of("message", "killed"));
     }
 
     private static String value(List<String> values, int index) {

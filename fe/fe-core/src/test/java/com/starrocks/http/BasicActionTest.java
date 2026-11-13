@@ -41,6 +41,16 @@ public class BasicActionTest {
     }
 
     @Test
+    public void testAuthorizationInfoDoesNotLeakPassword() {
+        BaseAction.ActionAuthorizationInfo authInfo =
+                BaseAction.ActionAuthorizationInfo.of("root", "secret-password", "127.0.0.1");
+        String text = authInfo.toString();
+        Assertions.assertFalse(text.contains("secret-password"));
+        Assertions.assertTrue(text.contains("root"));
+        Assertions.assertTrue(text.contains("127.0.0.1"));
+    }
+
+    @Test
     public void testSanitizeHttpReqUri() throws Exception {
         String uri = "/api/bootstrap?cluster_id=123124&token=98sdf-80sdf";
         String result = WebUtils.sanitizeHttpReqUri(uri);

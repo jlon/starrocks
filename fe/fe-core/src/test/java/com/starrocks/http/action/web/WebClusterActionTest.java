@@ -37,6 +37,7 @@ class WebClusterActionTest extends StarRocksHttpTestCase {
             assertNotNull(body.get("version"));
             assertNotNull(body.get("fe"));
             assertTrue(body.get("backends") instanceof Map);
+            assertTrue(body.get("hardware") instanceof Map);
             assertTrue(body.get("queries") instanceof Map);
             assertTrue(body.get("sessions") instanceof Map);
         }
@@ -61,12 +62,15 @@ class WebClusterActionTest extends StarRocksHttpTestCase {
     }
 
     @Test
-    void missingQueryProfileAndCancel() throws IOException {
+    void missingQueryProfile() throws IOException {
         try (Response response = get("/api/web/v1/queries/no-such-query/profile", true)) {
             assertEquals(404, response.code());
         }
-        try (Response response = post("/api/web/v1/queries/no-such-query/cancel", true)) {
+        try (Response response = get("/api/web/v1/queries/no-such-query/profile?type=sql", true)) {
             assertEquals(404, response.code());
+        }
+        try (Response response = get("/api/web/v1/queries/no-such-query/profile?type=bad", true)) {
+            assertEquals(400, response.code());
         }
     }
 
@@ -75,13 +79,6 @@ class WebClusterActionTest extends StarRocksHttpTestCase {
         try (Response response = get("/api/web/v1/sessions", true)) {
             assertEquals(200, response.code());
             assertTrue(parseResponseBody(response).get("sessions") instanceof List);
-        }
-    }
-
-    @Test
-    void invalidConnectionId() throws IOException {
-        try (Response response = post("/api/web/v1/sessions/not-a-number/kill", true)) {
-            assertEquals(400, response.code());
         }
     }
 

@@ -61,6 +61,14 @@ class UiResourceActionTest {
     }
 
     @Test
+    void setsCacheControlForViteAssets() {
+        assertEquals("public, max-age=31536000, immutable", UiResourceAction.cacheControlFor("index-C6tipSqc.js"));
+        assertEquals("public, max-age=31536000, immutable", UiResourceAction.cacheControlFor("logo-B4Q-83u.svg"));
+        assertEquals("no-cache", UiResourceAction.cacheControlFor("index.html"));
+        assertNull(UiResourceAction.cacheControlFor("favicon.ico"));
+    }
+
+    @Test
     void rejectsTraversalAndForeignPaths() {
         assertNull(UiResourceAction.resolve(root, "/ui/../secret"));
         assertNull(UiResourceAction.resolve(root, "/ui/assets/../../secret"));

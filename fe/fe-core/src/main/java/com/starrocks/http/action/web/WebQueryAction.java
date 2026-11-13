@@ -14,6 +14,7 @@
 
 package com.starrocks.http.action.web;
 
+import com.github.vertical_blank.sqlformatter.SqlFormatter;
 import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.Config;
 import com.starrocks.common.util.ProfileManager;
@@ -21,21 +22,30 @@ import com.starrocks.http.ActionController;
 import com.starrocks.http.BaseRequest;
 import com.starrocks.http.BaseResponse;
 import com.starrocks.http.IllegalArgException;
-import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.QeProcessorImpl;
 import com.starrocks.qe.QueryStatisticsItem;
+import com.starrocks.sql.ExplainAnalyzer;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static com.github.vertical_blank.sqlformatter.languages.Dialect.MySql;
+import static com.github.vertical_blank.sqlformatter.languages.Dialect.StandardSql;
+
 public class WebQueryAction extends WebApiAction {
+    private static final Logger LOG = LogManager.getLogger(WebQueryAction.class);
+    private static final String ANSI_REGEX = "\\u001B\\[[;?0-9]*[a-zA-Z]";
     private static final String LIST_PATH = "/api/web/v1/queries";
     private static final String PROFILE_PATH = "/api/web/v1/queries/{query_id}/profile";
-    private static final String CANCEL_PATH = "/api/web/v1/queries/{query_id}/cancel";
+    private static final SqlFormatter.Formatter MYSQL_FORMATTER = SqlFormatter.of(MySql);
+    private static final SqlFormatter.Formatter STANDARDSQL_FORMATTER = SqlFormatter.of(StandardSql);
 
     public WebQueryAction(ActionController controller) {
         super(controller);
@@ -44,7 +54,6 @@ public class WebQueryAction extends WebApiAction {
     public static void registerAction(ActionController controller) throws IllegalArgException {
         controller.registerHandler(HttpMethod.GET, LIST_PATH, new WebQueryAction(controller));
         controller.registerHandler(HttpMethod.GET, PROFILE_PATH, new WebQueryAction(controller));
-        controller.registerHandler(HttpMethod.POST, CANCEL_PATH, new WebQueryAction(controller));
     }
 
     @Override
@@ -54,11 +63,6 @@ public class WebQueryAction extends WebApiAction {
         } else {
             listQueries(request, response);
         }
-    }
-
-    @Override
-    public void executePost(BaseRequest request, BaseResponse response) {
-        cancelQuery(request, response);
     }
 
     private void listQueries(BaseRequest request, BaseResponse response) {
@@ -72,7 +76,7 @@ public class WebQueryAction extends WebApiAction {
             row.put("queryId", item.getQueryId());
             row.put("user", item.getUser());
             row.put("db", item.getDb());
-            row.put("sql", item.getSql());
+            row.put("sql", truncate(item.getSql()));
             row.put("queryType", item.getQueryType());
             row.put("startTime", item.getQueryStartTime());
             row.put("execTime", item.getQueryExecTime());
@@ -111,41 +115,74 @@ public class WebQueryAction extends WebApiAction {
     }
 
     private void getProfile(BaseRequest request, BaseResponse response) {
-        if (authenticate(request, response) == null) {
-            return;
-        }
-
-        String queryId = request.getParams().get("query_id");
-        String profile = ProfileManager.getInstance().getProfile(queryId);
-        if (profile == null) {
-            QueryStatisticsItem item = QeProcessorImpl.INSTANCE.getQueryStatistics().get(queryId);
-            if (item != null && item.getQueryProfile() != null) {
-                profile = item.getQueryProfile().toString();
-            }
-        }
-        if (profile == null) {
-            writeJson(request, response, HttpResponseStatus.NOT_FOUND, Map.of("message", "profile not found"));
-            return;
-        }
-
-        writeJson(request, response, HttpResponseStatus.OK, Map.of("queryId", queryId, "profile", profile));
-    }
-
-    private void cancelQuery(BaseRequest request, BaseResponse response) {
         UserIdentity user = authenticate(request, response);
         if (user == null || !requireOperate(request, response, user)) {
             return;
         }
 
         String queryId = request.getParams().get("query_id");
-        ConnectContext target = QeProcessorImpl.INSTANCE.getConnectContextByQueryId(queryId);
-        if (target == null) {
-            writeJson(request, response, HttpResponseStatus.NOT_FOUND, Map.of("message", "query not found"));
+        String type = request.getSingleParameter("type");
+        if (type == null || type.isEmpty()) {
+            type = "profile";
+        }
+        if (!"profile".equals(type) && !"sql".equals(type) && !"analyze".equals(type)) {
+            writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
+                    Map.of("message", "type must be profile, sql or analyze"));
             return;
         }
 
-        target.kill(true, "Cancelled by web console");
-        writeJson(request, response, HttpResponseStatus.OK, Map.of("message", "cancelled"));
+        ProfileManager.ProfileElement element = ProfileManager.getInstance().getProfileElement(queryId);
+        String content;
+        if ("profile".equals(type)) {
+            content = ProfileManager.getInstance().getProfile(queryId);
+            if (content == null) {
+                QueryStatisticsItem item = QeProcessorImpl.INSTANCE.getQueryStatistics().get(queryId);
+                if (item != null && item.getQueryProfile() != null) {
+                    content = item.getQueryProfile().toString();
+                }
+            }
+        } else if (element == null) {
+            content = null;
+        } else if ("sql".equals(type)) {
+            content = formattedSql(element);
+        } else {
+            content = analyze(element, queryId);
+        }
+
+        if (content == null) {
+            writeJson(request, response, HttpResponseStatus.NOT_FOUND, Map.of("message", "profile not found"));
+            return;
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("queryId", queryId);
+        body.put("type", type);
+        body.put("content", content);
+        writeJson(request, response, HttpResponseStatus.OK, body);
+    }
+
+    private static String formattedSql(ProfileManager.ProfileElement element) {
+        String sql = element.infoStrings.getOrDefault(ProfileManager.SQL_STATEMENT, "");
+        try {
+            if ("StarRocks".equalsIgnoreCase(element.infoStrings.get(ProfileManager.SQL_DIALECT))) {
+                return MYSQL_FORMATTER.format(sql);
+            }
+            return STANDARDSQL_FORMATTER.format(sql);
+        } catch (RuntimeException e) {
+            LOG.warn("Failed to format SQL for query profile", e);
+            return sql;
+        }
+    }
+
+    private static String analyze(ProfileManager.ProfileElement element, String queryId) {
+        try {
+            String analysis = ExplainAnalyzer.analyze(element.plan, element.getRuntimeProfile(),
+                    Collections.emptyList(), false);
+            return analysis.replaceAll(ANSI_REGEX, "");
+        } catch (Exception e) {
+            LOG.warn("Failed to analyze profile of {}", queryId, e);
+            return String.format("Failed to analyze profile of %s%n%s%n", queryId, e);
+        }
     }
 
     private static String value(List<String> values, Map<String, Integer> index, String column) {

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -9,7 +9,9 @@ import {
   Users,
   XCircle,
 } from 'lucide-react'
-import { PageHeader } from '@/components/page-header'
+import { apiFetch } from '@/lib/api'
+import { formatBytes } from '@/lib/format'
+import type { Overview } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import {
   Card,
@@ -19,14 +21,15 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import { apiFetch } from '@/lib/api'
-import type { Overview } from '@/lib/types'
+import { AutoRefresh } from '@/components/auto-refresh'
+import { PageHeader } from '@/components/page-header'
 
 function OverviewPage() {
-  const { data, isLoading, error } = useQuery({
+  const [auto, setAuto] = useState(false)
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['overview'],
     queryFn: () => apiFetch<Overview>('/api/web/v1/overview'),
-    refetchInterval: 5000,
+    refetchInterval: auto ? 10000 : false,
   })
 
   return (
@@ -35,16 +38,24 @@ function OverviewPage() {
         title='Overview'
         description='Cluster status and workload at a glance.'
         actions={
-          data && (
-            <Badge variant={data.fe.leader ? 'default' : 'secondary'}>
-              {data.fe.type}
-            </Badge>
-          )
+          <div className='flex items-center gap-2'>
+            {data && (
+              <Badge variant={data.fe.leader ? 'default' : 'secondary'}>
+                {data.fe.type}
+              </Badge>
+            )}
+            <AutoRefresh
+              enabled={auto}
+              onChange={setAuto}
+              onRefresh={() => void refetch()}
+              pending={isFetching}
+            />
+          </div>
         }
       />
 
       {error && (
-        <p className='text-destructive mb-4 text-sm'>{error.message}</p>
+        <p className='mb-4 text-sm text-destructive'>{error.message}</p>
       )}
 
       {isLoading || !data ? (
@@ -66,7 +77,9 @@ function OverviewPage() {
                 )
               }
               value={data.fe.type}
-              detail={data.fe.leader ? 'Leader is serving metadata' : 'Follower'}
+              detail={
+                data.fe.leader ? 'Leader is serving metadata' : 'Follower'
+              }
             />
             <StatCard
               title='Backends'
@@ -100,6 +113,51 @@ function OverviewPage() {
             />
           </div>
 
+          {data.hardware?.enabled && (
+            <Card className='mt-4'>
+              <CardHeader>
+                <CardTitle>Hardware</CardTitle>
+                <CardDescription>
+                  Host resources reported by the frontend.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className='grid gap-3 text-sm sm:grid-cols-3'>
+                <div>
+                  <p className='text-xs text-muted-foreground'>OS</p>
+                  <p>
+                    {data.hardware.os?.family} {data.hardware.os?.version}
+                  </p>
+                </div>
+                <div>
+                  <p className='text-xs text-muted-foreground'>CPU</p>
+                  <p>{data.hardware.cpu?.name}</p>
+                  <p className='text-xs text-muted-foreground'>
+                    {data.hardware.cpu?.physicalCores} physical /{' '}
+                    {data.hardware.cpu?.logicalCores} logical
+                  </p>
+                </div>
+                <div>
+                  <p className='text-xs text-muted-foreground'>Memory</p>
+                  <p>
+                    {formatBytes(data.hardware.memory?.available ?? 0)} free of{' '}
+                    {formatBytes(data.hardware.memory?.total ?? 0)}
+                  </p>
+                </div>
+                {(data.hardware.disks ?? []).map((disk) => (
+                  <div key={`${disk.mount}-${disk.name}`}>
+                    <p className='text-xs text-muted-foreground'>
+                      {disk.mount}
+                    </p>
+                    <p>
+                      {formatBytes(disk.usable)} free of{' '}
+                      {formatBytes(disk.total)}
+                    </p>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
           <Card className='mt-4'>
             <CardHeader>
               <CardTitle>Version</CardTitle>
@@ -107,17 +165,17 @@ function OverviewPage() {
                 Build information reported by the frontend.
               </CardDescription>
             </CardHeader>
-            <CardContent className='text-muted-foreground grid gap-1 text-sm'>
+            <CardContent className='grid gap-1 text-sm text-muted-foreground'>
               <p>
-                <span className='text-foreground font-medium'>Version:</span>{' '}
+                <span className='font-medium text-foreground'>Version:</span>{' '}
                 {data.version.version}
               </p>
               <p>
-                <span className='text-foreground font-medium'>Commit:</span>{' '}
+                <span className='font-medium text-foreground'>Commit:</span>{' '}
                 <code className='text-xs'>{data.version.commit}</code>
               </p>
               <p>
-                <span className='text-foreground font-medium'>Build time:</span>{' '}
+                <span className='font-medium text-foreground'>Build time:</span>{' '}
                 {data.version.buildTime}
               </p>
             </CardContent>
@@ -146,7 +204,7 @@ function StatCard({ title, icon, value, detail }: StatCardProps) {
         <CardTitle className='text-2xl'>{value}</CardTitle>
       </CardHeader>
       <CardContent>
-        <p className='text-muted-foreground text-xs'>{detail}</p>
+        <p className='text-xs text-muted-foreground'>{detail}</p>
       </CardContent>
     </Card>
   )

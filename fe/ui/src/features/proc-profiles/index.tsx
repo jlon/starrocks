@@ -1,8 +1,17 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { FileText } from 'lucide-react'
-import { useState } from 'react'
-import { PageHeader } from '@/components/page-header'
+import { apiFetch } from '@/lib/api'
+import { formatBytes } from '@/lib/format'
+import type { Backend, ProcProfileFile, ProcProfileList } from '@/lib/types'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -11,9 +20,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { apiFetch } from '@/lib/api'
-import { formatBytes } from '@/lib/format'
-import type { Backend, ProcProfileFile, ProcProfileList } from '@/lib/types'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { PageHeader } from '@/components/page-header'
 
 function formatProfileTime(value: string): string {
   const match = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(value)
@@ -34,49 +42,106 @@ function profileUrl(node: string, filename: string): string {
 }
 
 export default function ProcProfilesPage() {
-  const [node, setNode] = useState('FE')
+  const [mode, setMode] = useState<'FE' | 'BE'>('FE')
+  const [backendNode, setBackendNode] = useState('')
   const backends = useQuery({
     queryKey: ['backends'],
-    queryFn: () => apiFetch<Backend[]>('/api/web/v1/backends'),
+    queryFn: () => apiFetch<{ backends: Backend[] }>('/api/web/v1/backends'),
   })
+  const beNodes = (backends.data?.backends ?? []).filter(
+    (backend) => backend.alive
+  )
+  const activeBackend = beNodes.find(
+    (backend) => `BE:${backend.host}:${backend.httpPort}` === backendNode
+  )
+  const node =
+    mode === 'FE'
+      ? 'FE'
+      : activeBackend
+        ? `BE:${activeBackend.host}:${activeBackend.httpPort}`
+        : ''
   const profiles = useQuery({
     queryKey: ['proc-profiles', node],
     queryFn: () =>
       apiFetch<ProcProfileList>(
         `/api/web/v1/proc-profiles?node=${encodeURIComponent(node)}`
       ),
+    enabled: node.length > 0,
   })
 
-  const beNodes = (backends.data ?? []).filter((backend) => backend.alive)
-
   return (
-    <div className='space-y-4'>
+    <div className='space-y-4 p-4 md:p-6'>
       <PageHeader
         title='Proc Profiles'
         description='CPU and memory profiles captured on the frontend and backends.'
       />
 
-      <div className='flex flex-wrap gap-2'>
-        {['FE', ...beNodes.map((backend) => `BE:${backend.host}:${backend.httpPort}`)].map(
-          (candidate) => (
-            <Button
-              key={candidate}
-              variant={candidate === node ? 'default' : 'outline'}
-              size='sm'
-              onClick={() => setNode(candidate)}
-            >
-              {candidate === 'FE'
-                ? 'FE'
-                : `BE: ${candidate.slice(3)}`}
-            </Button>
-          )
-        )}
-      </div>
+      <Tabs
+        value={mode}
+        onValueChange={(value) => {
+          setMode(value as 'FE' | 'BE')
+          if (value === 'BE' && !backendNode && beNodes[0]) {
+            setBackendNode(`BE:${beNodes[0].host}:${beNodes[0].httpPort}`)
+          }
+        }}
+      >
+        <TabsList>
+          <TabsTrigger value='FE'>Frontend</TabsTrigger>
+          <TabsTrigger value='BE'>Backend</TabsTrigger>
+        </TabsList>
+        <TabsContent value='FE' className='mt-3'>
+          <ProfileTable
+            node='FE'
+            profiles={profiles.data}
+            error={profiles.error?.message}
+          />
+        </TabsContent>
+        <TabsContent value='BE' className='mt-3 space-y-3'>
+          <Select value={backendNode} onValueChange={setBackendNode}>
+            <SelectTrigger className='w-80'>
+              <SelectValue placeholder='Select a backend' />
+            </SelectTrigger>
+            <SelectContent>
+              {beNodes.map((backend) => {
+                const value = `BE:${backend.host}:${backend.httpPort}`
+                return (
+                  <SelectItem key={value} value={value}>
+                    {backend.host}:{backend.httpPort}
+                  </SelectItem>
+                )
+              })}
+            </SelectContent>
+          </Select>
+          {!backendNode && (
+            <p className='text-sm text-muted-foreground'>
+              Select an alive backend to list its profiles.
+            </p>
+          )}
+          {backendNode && (
+            <ProfileTable
+              node={backendNode}
+              profiles={profiles.data}
+              error={profiles.error?.message}
+            />
+          )}
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
 
-      {profiles.error && (
-        <p className='text-destructive text-sm'>{profiles.error.message}</p>
-      )}
-
+function ProfileTable({
+  node,
+  profiles,
+  error,
+}: {
+  node: string
+  profiles?: ProcProfileList
+  error?: string
+}) {
+  return (
+    <>
+      {error && <p className='mb-2 text-sm text-destructive'>{error}</p>}
       <div className='rounded-md border'>
         <Table>
           <TableHeader>
@@ -88,7 +153,7 @@ export default function ProcProfilesPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {profiles.data?.files.map((file: ProcProfileFile) => (
+            {(profiles?.files ?? []).map((file: ProcProfileFile) => (
               <TableRow key={file.filename}>
                 <TableCell>{file.type}</TableCell>
                 <TableCell>{formatProfileTime(file.timestamp)}</TableCell>
@@ -107,9 +172,12 @@ export default function ProcProfilesPage() {
                 </TableCell>
               </TableRow>
             ))}
-            {profiles.data?.files.length === 0 && (
+            {(profiles?.files ?? []).length === 0 && (
               <TableRow>
-                <TableCell colSpan={4} className='text-muted-foreground h-24 text-center'>
+                <TableCell
+                  colSpan={4}
+                  className='h-24 text-center text-muted-foreground'
+                >
                   No profile files found.
                 </TableCell>
               </TableRow>
@@ -117,6 +185,6 @@ export default function ProcProfilesPage() {
           </TableBody>
         </Table>
       </div>
-    </div>
+    </>
   )
 }

@@ -1,0 +1,1 @@
+import{t as e}from"./not-found-error-B3UCHCG2.js";var t=e;export{t as component};

@@ -1,5 +1,8 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { PageHeader } from '@/components/page-header'
+import { apiFetch } from '@/lib/api'
+import { formatTimestamp } from '@/lib/format'
+import type { HaInfo } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import {
   Card,
@@ -17,15 +20,15 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { apiFetch } from '@/lib/api'
-import { formatTimestamp } from '@/lib/format'
-import type { HaInfo } from '@/lib/types'
+import { AutoRefresh } from '@/components/auto-refresh'
+import { PageHeader } from '@/components/page-header'
 
 function HaPage() {
-  const { data, isLoading, error } = useQuery({
+  const [auto, setAuto] = useState(false)
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['ha'],
     queryFn: () => apiFetch<HaInfo>('/api/web/v1/ha'),
-    refetchInterval: 5000,
+    refetchInterval: auto ? 10000 : false,
   })
 
   return (
@@ -34,16 +37,17 @@ function HaPage() {
         title='High Availability'
         description='Frontend role, journal, checkpoint and cluster membership.'
         actions={
-          data && (
-            <Badge variant={data.leader ? 'default' : 'secondary'}>
-              {data.feType}
-            </Badge>
-          )
+          <AutoRefresh
+            enabled={auto}
+            onChange={setAuto}
+            onRefresh={() => void refetch()}
+            pending={isFetching}
+          />
         }
       />
 
       {error && (
-        <p className='text-destructive mb-4 text-sm'>{error.message}</p>
+        <p className='mb-4 text-sm text-destructive'>{error.message}</p>
       )}
 
       {isLoading || !data ? (
@@ -89,7 +93,9 @@ function HaPage() {
                   </TableHeader>
                   <TableBody>
                     {data.frontends.map((frontend) => (
-                      <TableRow key={`${frontend.host}:${frontend.editLogPort}`}>
+                      <TableRow
+                        key={`${frontend.host}:${frontend.editLogPort}`}
+                      >
                         <TableCell>{frontend.name}</TableCell>
                         <TableCell className='font-mono text-xs'>
                           {frontend.host}
@@ -106,7 +112,7 @@ function HaPage() {
                         <TableCell>{frontend.rpcPort}</TableCell>
                         <TableCell>{frontend.editLogPort}</TableCell>
                         <TableCell>{frontend.replayedJournalId}</TableCell>
-                        <TableCell className='text-muted-foreground text-xs'>
+                        <TableCell className='text-xs text-muted-foreground'>
                           {frontend.version}
                         </TableCell>
                         <TableCell>
@@ -139,14 +145,16 @@ function HaPage() {
                   </Badge>
                 ))}
                 {(data.databases ?? []).length === 0 && (
-                  <span className='text-muted-foreground text-sm'>None</span>
+                  <span className='text-sm text-muted-foreground'>None</span>
                 )}
               </CardContent>
             </Card>
             <Card>
               <CardHeader>
                 <CardTitle>Removed frontends</CardTitle>
-                <CardDescription>Frontends removed from the cluster.</CardDescription>
+                <CardDescription>
+                  Frontends removed from the cluster.
+                </CardDescription>
               </CardHeader>
               <CardContent className='flex flex-wrap gap-2'>
                 {(data.removedFrontends ?? []).map((name) => (
@@ -155,7 +163,7 @@ function HaPage() {
                   </Badge>
                 ))}
                 {(data.removedFrontends ?? []).length === 0 && (
-                  <span className='text-muted-foreground text-sm'>None</span>
+                  <span className='text-sm text-muted-foreground'>None</span>
                 )}
               </CardContent>
             </Card>
@@ -196,7 +204,7 @@ function NodeCard({
           </p>
         ))}
         {nodes.length === 0 && (
-          <p className='text-muted-foreground text-sm'>None</p>
+          <p className='text-sm text-muted-foreground'>None</p>
         )}
       </CardContent>
     </Card>

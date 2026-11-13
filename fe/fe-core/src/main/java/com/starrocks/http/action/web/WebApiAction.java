@@ -27,10 +27,13 @@ import com.starrocks.http.action.WebBaseAction;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.Authorizer;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.ssl.SslHandler;
 
 import java.net.URI;
+import java.util.Locale;
 import java.util.Map;
 
 public class WebApiAction extends WebBaseAction {
@@ -46,6 +49,11 @@ public class WebApiAction extends WebBaseAction {
         if (method.equals(HttpMethod.GET)) {
             executeGet(request, response);
         } else if (method.equals(HttpMethod.POST)) {
+            if (!isJson(request)) {
+                writeJson(request, response, HttpResponseStatus.UNSUPPORTED_MEDIA_TYPE,
+                        Map.of("message", "content type must be application/json"));
+                return;
+            }
             executePost(request, response);
         } else if (method.equals(HttpMethod.OPTIONS)) {
             writeResponse(request, response, HttpResponseStatus.OK);
@@ -82,6 +90,17 @@ public class WebApiAction extends WebBaseAction {
         request.setAuthorized(true);
         setThreadLocalContext(user, request.getHostString());
         return user;
+    }
+
+    protected boolean requireAdmin(BaseRequest request, BaseResponse response, UserIdentity user) {
+        try {
+            checkUserOwnsAdminRole(user);
+            return true;
+        } catch (AccessDeniedException e) {
+            writeJson(request, response, HttpResponseStatus.FORBIDDEN,
+                    Map.of("message", "admin role required"));
+            return false;
+        }
     }
 
     protected boolean requireOperate(BaseRequest request, BaseResponse response, UserIdentity user) {
@@ -148,6 +167,23 @@ public class WebApiAction extends WebBaseAction {
         response.setContentType("application/json");
         response.appendContent(GSON.toJson(body));
         writeResponse(request, response, status);
+    }
+
+    protected boolean isSecureRequest(BaseRequest request) {
+        if (request.getContext().pipeline().get(SslHandler.class) != null) {
+            return true;
+        }
+        String forwardedProto = request.getRequest().headers().get("X-Forwarded-Proto");
+        if (forwardedProto == null) {
+            return false;
+        }
+        return "https".equalsIgnoreCase(forwardedProto.split(",", 2)[0].trim());
+    }
+
+    private static boolean isJson(BaseRequest request) {
+        String contentType = request.getRequest().headers().get(HttpHeaderNames.CONTENT_TYPE);
+        return contentType != null
+                && contentType.toLowerCase(Locale.ROOT).startsWith("application/json");
     }
 
     protected boolean checkOrigin(BaseRequest request) {

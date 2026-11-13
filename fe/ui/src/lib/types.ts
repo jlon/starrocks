@@ -5,6 +5,15 @@ export type Overview = {
   computeNodes: { total: number; alive: number }
   queries: { running: number; finished: number }
   sessions: { total: number }
+  hardware?: {
+    enabled: boolean
+    error?: string
+    os?: { family: string; version: string; manufacturer: string }
+    cpu?: { name: string; physicalCores: number; logicalCores: number }
+    memory?: { total: number; available: number }
+    disks?: { name: string; mount: string; total: number; usable: number }[]
+    networks?: { name: string; ipv4: string[]; speed: number }[]
+  }
 }
 
 export type Backend = {
@@ -119,6 +128,12 @@ export type LogsInfo = {
   verboseNames: string[]
   auditNames: string[]
   files: { name: string; size: number; modified: number }[]
+}
+
+export type LogConfig = {
+  level: string
+  verboseNames: string[]
+  auditNames: string[]
 }
 
 export type LogContent = {

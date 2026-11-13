@@ -53,9 +53,11 @@ public class WebSystemAction extends WebApiAction {
             return;
         }
 
-        String path = request.getSingleParameter("path");
-        if (Strings.isNullOrEmpty(path)) {
-            path = "/";
+        String path = normalizePath(request.getSingleParameter("path"));
+        if (path == null) {
+            writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
+                    Map.of("message", "invalid proc path"));
+            return;
         }
         ProcNodeInterface node = getProcNode(path);
         if (node == null) {
@@ -107,20 +109,30 @@ public class WebSystemAction extends WebApiAction {
         return new ProcData(columns, resultSet.getResultRows());
     }
 
-    private static String parentPath(String path) {
-        int index = path.length() - 1;
-        while (index > 0) {
-            int slash = path.lastIndexOf('/', index);
-            if (slash > 0) {
-                if (slash == index) {
-                    index = slash - 1;
-                    continue;
-                }
-                return path.substring(0, slash);
-            }
-            break;
+    private static String normalizePath(String raw) {
+        if (Strings.isNullOrEmpty(raw)) {
+            return "/";
         }
-        return "/";
+        if (raw.indexOf('\0') >= 0 || raw.indexOf('\\') >= 0) {
+            return null;
+        }
+        String value = raw.startsWith("/") ? raw : "/" + raw;
+        StringBuilder normalized = new StringBuilder();
+        for (String segment : value.split("/")) {
+            if (segment.isEmpty() || ".".equals(segment)) {
+                continue;
+            }
+            if ("..".equals(segment)) {
+                return null;
+            }
+            normalized.append('/').append(segment);
+        }
+        return normalized.length() == 0 ? "/" : normalized.toString();
+    }
+
+    private static String parentPath(String path) {
+        int slash = path.lastIndexOf('/');
+        return slash <= 0 ? "/" : path.substring(0, slash);
     }
 
     private static class ProcData {

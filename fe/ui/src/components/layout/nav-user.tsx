@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { ChevronsUpDown, LogOut } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -26,6 +27,7 @@ type NavUserProps = {
 
 export function NavUser({ user }: NavUserProps) {
   const { isMobile } = useSidebar()
+  const queryClient = useQueryClient()
 
   return (
     <>
@@ -72,7 +74,9 @@ export function NavUser({ user }: NavUserProps) {
                 onClick={() => {
                   void apiFetch('/api/web/v1/logout', {
                     method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
                   }).finally(() => {
+                    queryClient.clear()
                     window.location.replace(
                       `${import.meta.env.BASE_URL}sign-in`
                     )
