@@ -143,7 +143,7 @@ type QueryTableProps = {
 
 function QueryTable({ rows, running }: QueryTableProps) {
   return (
-    <div className='mt-2 overflow-x-auto rounded-xl border'>
+    <div className='wc-fade mt-2 overflow-x-auto rounded-xl border'>
       <Table>
         <TableHeader>
           <TableRow>

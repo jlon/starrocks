@@ -118,18 +118,18 @@ export function QueryProfilePage({
             {data.queryId}
           </p>
 
-          <TabsContent value='profile' className='rounded-xl border'>
+          <TabsContent value='profile' className='wc-fade rounded-xl border'>
             <ProfileTree
               key={`${data.queryId}-${data.type}`}
               text={data.content}
             />
           </TabsContent>
-          <TabsContent value='sql' className='rounded-xl border'>
+          <TabsContent value='sql' className='wc-fade rounded-xl border'>
             <pre className='max-h-[70vh] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300'>
               {data.content}
             </pre>
           </TabsContent>
-          <TabsContent value='analyze' className='rounded-xl border'>
+          <TabsContent value='analyze' className='wc-fade rounded-xl border'>
             <pre className='max-h-[70vh] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300'>
               {data.content}
             </pre>

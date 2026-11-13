@@ -108,7 +108,7 @@ function BackendsPage() {
       {isLoading ? (
         <Skeleton className='h-64 w-full rounded-xl' />
       ) : (
-        <div className='overflow-x-auto rounded-xl border'>
+        <div className='wc-fade overflow-x-auto rounded-xl border'>
           <Table>
             <TableHeader>
               <TableRow>

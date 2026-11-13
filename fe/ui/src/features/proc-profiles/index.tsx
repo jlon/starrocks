@@ -143,7 +143,7 @@ function ProfileTable({
   return (
     <>
       {error && <p className='mb-2 text-sm text-destructive'>{error}</p>}
-      <div className='rounded-md border'>
+      <div className='wc-fade rounded-md border'>
         <Table>
           <TableHeader>
             <TableRow>

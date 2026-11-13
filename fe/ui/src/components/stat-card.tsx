@@ -19,7 +19,7 @@ export function StatCard({
   className?: string
 }) {
   return (
-    <Card className={className}>
+    <Card className={cn('wc-enter transition-shadow hover:shadow-md', className)}>
       <CardContent className='flex items-start gap-3 p-5'>
         {icon && (
           <span

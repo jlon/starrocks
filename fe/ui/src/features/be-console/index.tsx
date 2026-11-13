@@ -174,7 +174,7 @@ function BeConsolePage() {
           {isLoading ? (
             <Skeleton className='h-64 w-full rounded-xl' />
           ) : (
-            <div className='max-h-[calc(100vh-280px)] overflow-auto rounded-xl border'>
+            <div className='wc-fade max-h-[calc(100vh-280px)] overflow-auto rounded-xl border'>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -213,7 +213,7 @@ function BeConsolePage() {
           {isLoading ? (
             <Skeleton className='h-64 w-full rounded-xl' />
           ) : (
-            <div className='max-h-[calc(100vh-280px)] overflow-auto rounded-xl border'>
+            <div className='wc-fade max-h-[calc(100vh-280px)] overflow-auto rounded-xl border'>
               <Table>
                 <TableHeader>
                   <TableRow>

@@ -199,7 +199,7 @@ function LogsPage() {
             <Skeleton className='h-96 w-full rounded-xl' />
           ) : (
             content.data && (
-              <div className='rounded-xl border'>
+              <div className='wc-fade rounded-xl border'>
                 <div className='flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2 text-xs text-muted-foreground'>
                   <span className='font-mono'>{content.data.name}</span>
                   <span>

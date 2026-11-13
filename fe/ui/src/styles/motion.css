@@ -1,0 +1,76 @@
+/* Web console motion — short, eased, reduced-motion aware. */
+
+@keyframes wc-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes wc-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes wc-pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.wc-enter {
+  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.wc-enter-1 {
+  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both;
+}
+.wc-enter-2 {
+  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+}
+.wc-enter-3 {
+  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
+}
+.wc-enter-4 {
+  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
+}
+.wc-enter-5 {
+  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.25s both;
+}
+.wc-enter-6 {
+  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
+}
+
+.wc-fade {
+  animation: wc-fade-in 0.25s ease-out both;
+}
+
+.wc-pulse-dot {
+  animation: wc-pulse-dot 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wc-enter,
+  .wc-enter-1,
+  .wc-enter-2,
+  .wc-enter-3,
+  .wc-enter-4,
+  .wc-enter-5,
+  .wc-enter-6,
+  .wc-fade,
+  .wc-pulse-dot {
+    animation: none;
+  }
+}

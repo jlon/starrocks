@@ -11,11 +11,15 @@ export function AppMark({
   return (
     <span
       className={cn(
-        'inline-flex items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-sm',
+        'relative inline-flex items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-cyan-400 via-blue-500 to-indigo-600 text-white shadow-sm',
         className ?? 'size-9'
       )}
     >
       <Database className={cn('size-[45%]', iconClassName)} />
+      <span
+        className='absolute top-[12%] right-[12%] size-[10%] rounded-full bg-white/90'
+        aria-hidden='true'
+      />
     </span>
   )
 }

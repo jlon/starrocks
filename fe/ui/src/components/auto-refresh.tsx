@@ -33,6 +33,12 @@ export function AutoRefresh({
         aria-pressed={enabled}
         onClick={() => onChange(!enabled)}
       >
+        {enabled && (
+          <span
+            className='wc-pulse-dot size-1.5 rounded-full bg-emerald-500'
+            aria-hidden='true'
+          />
+        )}
         Auto 10s
       </Button>
     </div>
