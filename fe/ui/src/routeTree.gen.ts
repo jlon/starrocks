@@ -11,9 +11,13 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/index'
+import { Route as AuthenticatedVariablesRouteImport } from './routes/_authenticated/variables'
+import { Route as AuthenticatedSystemRouteImport } from './routes/_authenticated/system'
 import { Route as AuthenticatedSessionsRouteImport } from './routes/_authenticated/sessions'
 import { Route as AuthenticatedQueryProfileRouteImport } from './routes/_authenticated/query-profile'
 import { Route as AuthenticatedQueriesRouteImport } from './routes/_authenticated/queries'
+import { Route as AuthenticatedLogsRouteImport } from './routes/_authenticated/logs'
+import { Route as AuthenticatedHaRouteImport } from './routes/_authenticated/ha'
 import { Route as AuthenticatedBackendsRouteImport } from './routes/_authenticated/backends'
 import { Route as errors503RouteImport } from './routes/(errors)/503'
 import { Route as errors500RouteImport } from './routes/(errors)/500'
@@ -31,6 +35,16 @@ const AuthenticatedIndexRoute = AuthenticatedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedVariablesRoute = AuthenticatedVariablesRouteImport.update({
+  id: '/variables',
+  path: '/variables',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedSystemRoute = AuthenticatedSystemRouteImport.update({
+  id: '/system',
+  path: '/system',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedSessionsRoute = AuthenticatedSessionsRouteImport.update({
   id: '/sessions',
   path: '/sessions',
@@ -45,6 +59,16 @@ const AuthenticatedQueryProfileRoute =
 const AuthenticatedQueriesRoute = AuthenticatedQueriesRouteImport.update({
   id: '/queries',
   path: '/queries',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedLogsRoute = AuthenticatedLogsRouteImport.update({
+  id: '/logs',
+  path: '/logs',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedHaRoute = AuthenticatedHaRouteImport.update({
+  id: '/ha',
+  path: '/ha',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedBackendsRoute = AuthenticatedBackendsRouteImport.update({
@@ -92,9 +116,13 @@ export interface FileRoutesByFullPath {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/backends': typeof AuthenticatedBackendsRoute
+  '/ha': typeof AuthenticatedHaRoute
+  '/logs': typeof AuthenticatedLogsRoute
   '/queries': typeof AuthenticatedQueriesRoute
   '/query-profile': typeof AuthenticatedQueryProfileRoute
   '/sessions': typeof AuthenticatedSessionsRoute
+  '/system': typeof AuthenticatedSystemRoute
+  '/variables': typeof AuthenticatedVariablesRoute
 }
 export interface FileRoutesByTo {
   '/sign-in': typeof authSignInRoute
@@ -104,9 +132,13 @@ export interface FileRoutesByTo {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/backends': typeof AuthenticatedBackendsRoute
+  '/ha': typeof AuthenticatedHaRoute
+  '/logs': typeof AuthenticatedLogsRoute
   '/queries': typeof AuthenticatedQueriesRoute
   '/query-profile': typeof AuthenticatedQueryProfileRoute
   '/sessions': typeof AuthenticatedSessionsRoute
+  '/system': typeof AuthenticatedSystemRoute
+  '/variables': typeof AuthenticatedVariablesRoute
   '/': typeof AuthenticatedIndexRoute
 }
 export interface FileRoutesById {
@@ -119,9 +151,13 @@ export interface FileRoutesById {
   '/(errors)/500': typeof errors500Route
   '/(errors)/503': typeof errors503Route
   '/_authenticated/backends': typeof AuthenticatedBackendsRoute
+  '/_authenticated/ha': typeof AuthenticatedHaRoute
+  '/_authenticated/logs': typeof AuthenticatedLogsRoute
   '/_authenticated/queries': typeof AuthenticatedQueriesRoute
   '/_authenticated/query-profile': typeof AuthenticatedQueryProfileRoute
   '/_authenticated/sessions': typeof AuthenticatedSessionsRoute
+  '/_authenticated/system': typeof AuthenticatedSystemRoute
+  '/_authenticated/variables': typeof AuthenticatedVariablesRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
 }
 export interface FileRouteTypes {
@@ -135,9 +171,13 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/backends'
+    | '/ha'
+    | '/logs'
     | '/queries'
     | '/query-profile'
     | '/sessions'
+    | '/system'
+    | '/variables'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/sign-in'
@@ -147,9 +187,13 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/backends'
+    | '/ha'
+    | '/logs'
     | '/queries'
     | '/query-profile'
     | '/sessions'
+    | '/system'
+    | '/variables'
     | '/'
   id:
     | '__root__'
@@ -161,9 +205,13 @@ export interface FileRouteTypes {
     | '/(errors)/500'
     | '/(errors)/503'
     | '/_authenticated/backends'
+    | '/_authenticated/ha'
+    | '/_authenticated/logs'
     | '/_authenticated/queries'
     | '/_authenticated/query-profile'
     | '/_authenticated/sessions'
+    | '/_authenticated/system'
+    | '/_authenticated/variables'
     | '/_authenticated/'
   fileRoutesById: FileRoutesById
 }
@@ -193,6 +241,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/variables': {
+      id: '/_authenticated/variables'
+      path: '/variables'
+      fullPath: '/variables'
+      preLoaderRoute: typeof AuthenticatedVariablesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/system': {
+      id: '/_authenticated/system'
+      path: '/system'
+      fullPath: '/system'
+      preLoaderRoute: typeof AuthenticatedSystemRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/sessions': {
       id: '/_authenticated/sessions'
       path: '/sessions'
@@ -212,6 +274,20 @@ declare module '@tanstack/react-router' {
       path: '/queries'
       fullPath: '/queries'
       preLoaderRoute: typeof AuthenticatedQueriesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/logs': {
+      id: '/_authenticated/logs'
+      path: '/logs'
+      fullPath: '/logs'
+      preLoaderRoute: typeof AuthenticatedLogsRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/ha': {
+      id: '/_authenticated/ha'
+      path: '/ha'
+      fullPath: '/ha'
+      preLoaderRoute: typeof AuthenticatedHaRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/backends': {
@@ -268,17 +344,25 @@ declare module '@tanstack/react-router' {
 
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedBackendsRoute: typeof AuthenticatedBackendsRoute
+  AuthenticatedHaRoute: typeof AuthenticatedHaRoute
+  AuthenticatedLogsRoute: typeof AuthenticatedLogsRoute
   AuthenticatedQueriesRoute: typeof AuthenticatedQueriesRoute
   AuthenticatedQueryProfileRoute: typeof AuthenticatedQueryProfileRoute
   AuthenticatedSessionsRoute: typeof AuthenticatedSessionsRoute
+  AuthenticatedSystemRoute: typeof AuthenticatedSystemRoute
+  AuthenticatedVariablesRoute: typeof AuthenticatedVariablesRoute
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedBackendsRoute: AuthenticatedBackendsRoute,
+  AuthenticatedHaRoute: AuthenticatedHaRoute,
+  AuthenticatedLogsRoute: AuthenticatedLogsRoute,
   AuthenticatedQueriesRoute: AuthenticatedQueriesRoute,
   AuthenticatedQueryProfileRoute: AuthenticatedQueryProfileRoute,
   AuthenticatedSessionsRoute: AuthenticatedSessionsRoute,
+  AuthenticatedSystemRoute: AuthenticatedSystemRoute,
+  AuthenticatedVariablesRoute: AuthenticatedVariablesRoute,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
 }
 

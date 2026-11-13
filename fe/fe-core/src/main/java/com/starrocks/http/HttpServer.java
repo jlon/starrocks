@@ -51,9 +51,13 @@ import com.starrocks.http.action.SystemAction;
 import com.starrocks.http.action.VariableAction;
 import com.starrocks.http.action.web.WebAuthAction;
 import com.starrocks.http.action.web.WebBackendAction;
+import com.starrocks.http.action.web.WebHaAction;
+import com.starrocks.http.action.web.WebLogAction;
 import com.starrocks.http.action.web.WebOverviewAction;
 import com.starrocks.http.action.web.WebQueryAction;
 import com.starrocks.http.action.web.WebSessionAction;
+import com.starrocks.http.action.web.WebSystemAction;
+import com.starrocks.http.action.web.WebVariableAction;
 import com.starrocks.http.common.StarRocksHttpPostObjectAggregator;
 import com.starrocks.http.meta.ColocateMetaService;
 import com.starrocks.http.meta.GlobalDictMetaService;
@@ -267,6 +271,10 @@ public class HttpServer {
         WebBackendAction.registerAction(controller);
         WebQueryAction.registerAction(controller);
         WebSessionAction.registerAction(controller);
+        WebSystemAction.registerAction(controller);
+        WebVariableAction.registerAction(controller);
+        WebHaAction.registerAction(controller);
+        WebLogAction.registerAction(controller);
         ProcProfileFileAction.registerAction(controller);
 
         // meta service action

@@ -68,3 +68,62 @@ export type SessionRow = {
   queryId: string
   running: boolean
 }
+
+export type SystemInfo = {
+  path: string
+  parent: string
+  isDir: boolean
+  columns: string[]
+  rows: (string | null)[][]
+}
+
+export type VariableData = {
+  config: Record<string, string>
+  configError?: string
+  variables: { name: string; value: string }[]
+}
+
+export type HaInfo = {
+  feType: string
+  leader: boolean
+  journalId: number
+  canRead: boolean
+  databases: number[] | null
+  checkpoint: { version: number; time: number } | null
+  nodes: {
+    electable: { host: string; port: number }[]
+    observer: { host: string; port: number }[]
+  }
+  frontends: {
+    name: string
+    host: string
+    role: string
+    alive: boolean
+    queryPort: number
+    rpcPort: number
+    editLogPort: number
+    replayedJournalId: number
+    version: string
+    lastUpdateTime: number
+    startTime: number
+    heapUsedPercent: number
+    cpuCores: number
+    fid: number
+  }[]
+  removedFrontends: string[] | null
+}
+
+export type LogsInfo = {
+  dir: string
+  level: string
+  verboseNames: string[]
+  auditNames: string[]
+  files: { name: string; size: number; modified: number }[]
+}
+
+export type LogContent = {
+  name: string
+  size: number
+  truncated: boolean
+  content: string
+}
