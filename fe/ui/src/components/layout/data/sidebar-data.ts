@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   ScrollText,
   Cpu,
+  Terminal,
 } from 'lucide-react'
 import { type SidebarData } from '../types'
 
@@ -43,6 +44,7 @@ export const sidebarData: SidebarData = {
         { title: 'Queries', url: '/queries', icon: Activity },
         { title: 'Query Profile', url: '/query-profile', icon: ScrollText },
         { title: 'Proc Profiles', url: '/proc-profiles', icon: Cpu },
+        { title: 'BE Console', url: '/be-console', icon: Terminal },
         { title: 'Logs', url: '/logs', icon: FileText },
       ],
     },

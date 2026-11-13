@@ -139,3 +139,16 @@ export type ProcProfileList = {
   node: string
   files: ProcProfileFile[]
 }
+
+export type BeConfig = { name: string; value: string }
+
+export type BeTable = {
+  node: string
+  headers: string[]
+  rows: string[][]
+}
+
+export type BeText = {
+  node: string
+  text: string
+}

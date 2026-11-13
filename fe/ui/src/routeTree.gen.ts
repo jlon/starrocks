@@ -19,6 +19,7 @@ import { Route as AuthenticatedQueriesRouteImport } from './routes/_authenticate
 import { Route as AuthenticatedProcProfilesRouteImport } from './routes/_authenticated/proc-profiles'
 import { Route as AuthenticatedLogsRouteImport } from './routes/_authenticated/logs'
 import { Route as AuthenticatedHaRouteImport } from './routes/_authenticated/ha'
+import { Route as AuthenticatedBeConsoleRouteImport } from './routes/_authenticated/be-console'
 import { Route as AuthenticatedBackendsRouteImport } from './routes/_authenticated/backends'
 import { Route as errors503RouteImport } from './routes/(errors)/503'
 import { Route as errors500RouteImport } from './routes/(errors)/500'
@@ -78,6 +79,11 @@ const AuthenticatedHaRoute = AuthenticatedHaRouteImport.update({
   path: '/ha',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedBeConsoleRoute = AuthenticatedBeConsoleRouteImport.update({
+  id: '/be-console',
+  path: '/be-console',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedBackendsRoute = AuthenticatedBackendsRouteImport.update({
   id: '/backends',
   path: '/backends',
@@ -123,6 +129,7 @@ export interface FileRoutesByFullPath {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/backends': typeof AuthenticatedBackendsRoute
+  '/be-console': typeof AuthenticatedBeConsoleRoute
   '/ha': typeof AuthenticatedHaRoute
   '/logs': typeof AuthenticatedLogsRoute
   '/proc-profiles': typeof AuthenticatedProcProfilesRoute
@@ -140,6 +147,7 @@ export interface FileRoutesByTo {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/backends': typeof AuthenticatedBackendsRoute
+  '/be-console': typeof AuthenticatedBeConsoleRoute
   '/ha': typeof AuthenticatedHaRoute
   '/logs': typeof AuthenticatedLogsRoute
   '/proc-profiles': typeof AuthenticatedProcProfilesRoute
@@ -160,6 +168,7 @@ export interface FileRoutesById {
   '/(errors)/500': typeof errors500Route
   '/(errors)/503': typeof errors503Route
   '/_authenticated/backends': typeof AuthenticatedBackendsRoute
+  '/_authenticated/be-console': typeof AuthenticatedBeConsoleRoute
   '/_authenticated/ha': typeof AuthenticatedHaRoute
   '/_authenticated/logs': typeof AuthenticatedLogsRoute
   '/_authenticated/proc-profiles': typeof AuthenticatedProcProfilesRoute
@@ -181,6 +190,7 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/backends'
+    | '/be-console'
     | '/ha'
     | '/logs'
     | '/proc-profiles'
@@ -198,6 +208,7 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/backends'
+    | '/be-console'
     | '/ha'
     | '/logs'
     | '/proc-profiles'
@@ -217,6 +228,7 @@ export interface FileRouteTypes {
     | '/(errors)/500'
     | '/(errors)/503'
     | '/_authenticated/backends'
+    | '/_authenticated/be-console'
     | '/_authenticated/ha'
     | '/_authenticated/logs'
     | '/_authenticated/proc-profiles'
@@ -310,6 +322,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedHaRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/be-console': {
+      id: '/_authenticated/be-console'
+      path: '/be-console'
+      fullPath: '/be-console'
+      preLoaderRoute: typeof AuthenticatedBeConsoleRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/backends': {
       id: '/_authenticated/backends'
       path: '/backends'
@@ -364,6 +383,7 @@ declare module '@tanstack/react-router' {
 
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedBackendsRoute: typeof AuthenticatedBackendsRoute
+  AuthenticatedBeConsoleRoute: typeof AuthenticatedBeConsoleRoute
   AuthenticatedHaRoute: typeof AuthenticatedHaRoute
   AuthenticatedLogsRoute: typeof AuthenticatedLogsRoute
   AuthenticatedProcProfilesRoute: typeof AuthenticatedProcProfilesRoute
@@ -377,6 +397,7 @@ interface AuthenticatedRouteRouteChildren {
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedBackendsRoute: AuthenticatedBackendsRoute,
+  AuthenticatedBeConsoleRoute: AuthenticatedBeConsoleRoute,
   AuthenticatedHaRoute: AuthenticatedHaRoute,
   AuthenticatedLogsRoute: AuthenticatedLogsRoute,
   AuthenticatedProcProfilesRoute: AuthenticatedProcProfilesRoute,

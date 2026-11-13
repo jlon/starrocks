@@ -24,9 +24,6 @@ import com.starrocks.http.BaseRequest;
 import com.starrocks.http.BaseResponse;
 import com.starrocks.http.HttpUtils;
 import com.starrocks.http.IllegalArgException;
-import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.system.Backend;
-import com.starrocks.system.ComputeNode;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
@@ -168,30 +165,16 @@ public class WebProcProfileAction extends WebApiAction {
             return;
         }
 
-        String[] parts = node.substring(3).split(":");
-        if (parts.length != 2) {
+        BeNode beNode = BeNode.parse(node);
+        if (beNode == null || !beNode.exists()) {
             writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
                     Map.of("message", "invalid node"));
-            return;
-        }
-
-        String host = parts[0];
-        int port;
-        try {
-            port = Integer.parseInt(parts[1]);
-        } catch (NumberFormatException e) {
-            writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
-                    Map.of("message", "invalid node"));
-            return;
-        }
-
-        if (!nodeExists(host, port)) {
-            writeJson(request, response, HttpResponseStatus.BAD_REQUEST,
-                    Map.of("message", "node does not exist"));
             return;
         }
 
         String encoded = java.net.URLEncoder.encode(filename, StandardCharsets.UTF_8);
+        String host = beNode.host();
+        int port = beNode.port();
         String url = "http://" + host + ":" + port + "/proc_profile/file?filename=" + encoded;
         RequestConfig config = RequestConfig.custom()
                 .setCookieSpec(CookieSpecs.IGNORE_COOKIES)
@@ -255,23 +238,13 @@ public class WebProcProfileAction extends WebApiAction {
     }
 
     private List<Map<String, Object>> beFiles(String node) {
-        String[] parts = node.substring(3).split(":");
-        if (parts.length != 2) {
+        BeNode beNode = BeNode.parse(node);
+        if (beNode == null || !beNode.exists()) {
             return null;
         }
 
-        String host = parts[0];
-        int port;
-        try {
-            port = Integer.parseInt(parts[1]);
-        } catch (NumberFormatException e) {
-            return null;
-        }
-
-        if (!nodeExists(host, port)) {
-            return null;
-        }
-
+        String host = beNode.host();
+        int port = beNode.port();
         try {
             String url = "http://" + host + ":" + port + "/api/proc_profile/list";
             JsonObject json = JsonParser.parseString(HttpUtils.get(url, null)).getAsJsonObject();
@@ -306,20 +279,6 @@ public class WebProcProfileAction extends WebApiAction {
             LOG.warn("failed to list proc profiles from {}:{}", host, port, e);
             return List.of();
         }
-    }
-
-    private boolean nodeExists(String host, int httpPort) {
-        for (Backend backend : GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackends()) {
-            if (backend.getHost().equals(host) && backend.getHttpPort() == httpPort) {
-                return true;
-            }
-        }
-        for (ComputeNode node : GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getComputeNodes()) {
-            if (node.getHost().equals(host) && node.getHttpPort() == httpPort) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static boolean isValidFeFilename(String filename) {

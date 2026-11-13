@@ -51,6 +51,7 @@ import com.starrocks.http.action.SystemAction;
 import com.starrocks.http.action.VariableAction;
 import com.starrocks.http.action.web.WebAuthAction;
 import com.starrocks.http.action.web.WebBackendAction;
+import com.starrocks.http.action.web.WebBeAction;
 import com.starrocks.http.action.web.WebHaAction;
 import com.starrocks.http.action.web.WebLogAction;
 import com.starrocks.http.action.web.WebOverviewAction;
@@ -277,6 +278,7 @@ public class HttpServer {
         WebHaAction.registerAction(controller);
         WebLogAction.registerAction(controller);
         WebProcProfileAction.registerAction(controller);
+        WebBeAction.registerAction(controller);
         ProcProfileFileAction.registerAction(controller);
 
         // meta service action
