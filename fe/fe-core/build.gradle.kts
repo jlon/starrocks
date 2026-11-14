@@ -81,6 +81,9 @@ dependencies {
         exclude(group = "junit", module = "junit")
     }
     implementation("com.baidu:jprotobuf-rpc-common")
+    // LDAP tests use the in-memory UnboundID server; maven has it (fe-core/pom.xml:242) but
+    // the gradle dependency list misses it, breaking :fe-core:compileTestJava.
+    testImplementation("com.unboundid:unboundid-ldapsdk:7.0.5")
     implementation("com.clickhouse:clickhouse-jdbc")
     implementation("com.fasterxml.jackson.core:jackson-annotations")
     implementation("com.fasterxml.jackson.core:jackson-core")
@@ -413,6 +416,37 @@ tasks.register<Task>("generateThriftSources") {
                 allArgs.add(file.absolutePath)
             }
             args = allArgs
+        }
+    }
+
+    doLast {
+        // The decster compiler emits thrift-0.20-style ProcessFunction signatures
+        // while libthrift is 0.24.0: ProcessFunction<I, T, A> and
+        // AsyncProcessFunction<I, T, R, A> require the result type, and
+        // AsyncProcessFunction additionally requires getEmptyResultInstance().
+        // Patch the generated sources in place.
+        fileTree(outputDir) { include("**/*.java") }.forEach { f ->
+            val text = f.readText()
+            var patched = text.replace(Regex("ProcessFunction<I, (\\w+)_args>")) { mr ->
+                "ProcessFunction<I, ${mr.groupValues[1]}_args, ${mr.groupValues[1]}_result>"
+            }
+            patched = patched.replace(Regex("AsyncProcessFunction<I, (\\w+)_args, (\\w+)>")) { mr ->
+                "AsyncProcessFunction<I, ${mr.groupValues[1]}_args, ${mr.groupValues[2]}, ${mr.groupValues[1]}_result>"
+            }
+            patched = patched.replace(Regex("AsyncProcessFunction<I, (\\w+)_args, ([A-Za-z0-9_.<>]+)>")) { mr ->
+                "AsyncProcessFunction<I, ${mr.groupValues[1]}_args, ${mr.groupValues[2]}, ${mr.groupValues[1]}_result>"
+            }
+            patched = patched.replace("org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?>", "org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("org.apache.thrift.AsyncProcessFunction<I, ? extends  org.apache.thrift.TBase,?>", "org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace(Regex("public (\\w+)_args getEmptyArgsInstance\\(\\) \\{\n  return new \\1_args\\(\\);\n\\}")) { mr ->
+                "${mr.value}\n\n      @Override\npublic ${mr.groupValues[1]}_result getEmptyResultInstance() {\n  return new ${mr.groupValues[1]}_result();\n}"
+            }
+            patched = patched.replace("org.apache.thrift.ProcessFunction<I, ? extends org.apache.thrift.TBase>", "org.apache.thrift.ProcessFunction<I, ? extends org.apache.thrift.TBase, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("org.apache.thrift.ProcessFunction<I, ? extends  org.apache.thrift.TBase>", "org.apache.thrift.ProcessFunction<I, ? extends org.apache.thrift.TBase, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("org.apache.thrift.AsyncProcessFunction<I, ? extends  org.apache.thrift.TBase, ?>", "org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("org.apache.thrift.AsyncProcessFunction<I, ? extends  org.apache.thrift.TBase,?>", "org.apache.thrift.AsyncProcessFunction<I, ? extends org.apache.thrift.TBase, ?, ? extends org.apache.thrift.TBase>")
+            patched = patched.replace("protected boolean isOneway() {", "public boolean isOneway() {")
+            if (patched != text) f.writeText(patched)
         }
     }
 }

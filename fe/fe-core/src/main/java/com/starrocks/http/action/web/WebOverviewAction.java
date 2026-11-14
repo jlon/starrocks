@@ -14,6 +14,8 @@
 
 package com.starrocks.http.action.web;
 
+import com.google.common.base.Suppliers;
+import com.starrocks.authorization.PrivilegeType;
 import com.starrocks.common.Config;
 import com.starrocks.common.Version;
 import com.starrocks.common.util.ProfileManager;
@@ -22,6 +24,7 @@ import com.starrocks.http.BaseRequest;
 import com.starrocks.http.BaseResponse;
 import com.starrocks.http.IllegalArgException;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.sql.analyzer.Authorizer;
 import com.starrocks.qe.ConnectScheduler;
 import com.starrocks.qe.QeProcessorImpl;
 import com.starrocks.server.GlobalStateMgr;
@@ -39,6 +42,7 @@ import oshi.software.os.OperatingSystem;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.function.Supplier;
 import java.util.Map;
 
 public class WebOverviewAction extends WebApiAction {
@@ -83,7 +87,12 @@ public class WebOverviewAction extends WebApiAction {
 
         Map<String, Object> queries = new LinkedHashMap<>();
         queries.put("running", QeProcessorImpl.INSTANCE.getQueryStatistics().size());
-        queries.put("finished", ProfileManager.getInstance().getAllQueries().size());
+        ConnectContext ctx = ConnectContext.get();
+        boolean checkAccess = Config.authorization_enable_query_profile_access_check;
+        Supplier<Boolean> hasOperate =
+                Suppliers.memoize(() -> Authorizer.hasSystemAction(ctx, PrivilegeType.OPERATE));
+        queries.put("finished", ProfileManager.getInstance().getAllQueries(
+                element -> !checkAccess || Authorizer.canReadQueryProfile(ctx, element, hasOperate)).size());
 
         Map<String, Object> sessions = new LinkedHashMap<>();
         ConnectScheduler scheduler = ExecuteEnv.getInstance().getScheduler();

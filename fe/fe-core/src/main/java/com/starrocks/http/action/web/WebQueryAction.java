@@ -15,6 +15,8 @@
 package com.starrocks.http.action.web;
 
 import com.github.vertical_blank.sqlformatter.SqlFormatter;
+import com.google.common.base.Suppliers;
+import com.starrocks.authorization.PrivilegeType;
 import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.Config;
 import com.starrocks.common.util.ProfileManager;
@@ -22,15 +24,18 @@ import com.starrocks.http.ActionController;
 import com.starrocks.http.BaseRequest;
 import com.starrocks.http.BaseResponse;
 import com.starrocks.http.IllegalArgException;
+import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.QeProcessorImpl;
 import com.starrocks.qe.QueryStatisticsItem;
 import com.starrocks.sql.ExplainAnalyzer;
+import com.starrocks.sql.analyzer.Authorizer;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
+import java.util.function.Supplier;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -92,7 +97,12 @@ public class WebQueryAction extends WebApiAction {
         }
 
         List<Map<String, Object>> finished = new ArrayList<>();
-        for (List<String> values : ProfileManager.getInstance().getAllQueries()) {
+        ConnectContext ctx = ConnectContext.get();
+        boolean checkAccess = Config.authorization_enable_query_profile_access_check;
+        Supplier<Boolean> hasOperate =
+                Suppliers.memoize(() -> Authorizer.hasSystemAction(ctx, PrivilegeType.OPERATE));
+        for (List<String> values : ProfileManager.getInstance().getAllQueries(
+                element -> !checkAccess || Authorizer.canReadQueryProfile(ctx, element, hasOperate))) {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("queryId", value(values, index, "Query ID"));
             row.put("user", value(values, index, "User"));
