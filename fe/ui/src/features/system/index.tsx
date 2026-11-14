@@ -91,9 +91,9 @@ function SystemPage() {
       {isLoading ? (
         <Skeleton className='h-64 w-full rounded-xl' />
       ) : (
-        <div className='wc-fade max-h-[calc(100vh-320px)] overflow-auto rounded-xl border'>
+        <div className='wc-fade max-h-[calc(100vh-320px)] overflow-auto bg-card rounded-xl border'>
           <Table>
-            <TableHeader className='sticky top-0 z-10 bg-background'>
+            <TableHeader className='sticky top-0 z-10 bg-card'>
               <TableRow>
                 {(data?.columns ?? []).map((column) => (
                   <TableHead key={column}>{column}</TableHead>

@@ -81,9 +81,9 @@ function VariablesPage() {
           </TabsList>
 
           <TabsContent value='config'>
-            <div className='wc-fade max-h-[70vh] overflow-auto rounded-xl border'>
+            <div className='wc-fade max-h-[70vh] overflow-auto bg-card rounded-xl border'>
               <Table>
-                <TableHeader className='sticky top-0 bg-background'>
+                <TableHeader className='sticky top-0 bg-card'>
                   <TableRow>
                     <TableHead className='w-1/3'>Name</TableHead>
                     <TableHead>Value</TableHead>
@@ -106,9 +106,9 @@ function VariablesPage() {
           </TabsContent>
 
           <TabsContent value='variables'>
-            <div className='wc-fade max-h-[70vh] overflow-auto rounded-xl border'>
+            <div className='wc-fade max-h-[70vh] overflow-auto bg-card rounded-xl border'>
               <Table>
-                <TableHeader className='sticky top-0 bg-background'>
+                <TableHeader className='sticky top-0 bg-card'>
                   <TableRow>
                     <TableHead className='w-1/3'>Name</TableHead>
                     <TableHead>Value</TableHead>

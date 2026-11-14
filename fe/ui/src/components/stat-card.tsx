@@ -35,7 +35,7 @@ export function StatCard({
           <div className='text-xs font-medium tracking-wide text-muted-foreground uppercase'>
             {title}
           </div>
-          <div className='mt-1 text-2xl font-semibold tracking-tight'>
+          <div className='mt-1 text-2xl font-semibold tracking-tight tabular-nums'>
             {value}
           </div>
           {detail && (

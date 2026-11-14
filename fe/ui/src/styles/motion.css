@@ -31,30 +31,30 @@
 }
 
 .wc-enter {
-  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: wc-fade-up 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .wc-enter-1 {
-  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both;
+  animation: wc-fade-up 0.32s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both;
 }
 .wc-enter-2 {
-  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+  animation: wc-fade-up 0.32s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
 }
 .wc-enter-3 {
-  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
+  animation: wc-fade-up 0.32s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
 }
 .wc-enter-4 {
-  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
+  animation: wc-fade-up 0.32s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
 }
 .wc-enter-5 {
-  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.25s both;
+  animation: wc-fade-up 0.32s cubic-bezier(0.22, 1, 0.36, 1) 0.25s both;
 }
 .wc-enter-6 {
-  animation: wc-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
+  animation: wc-fade-up 0.32s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
 }
 
 .wc-fade {
-  animation: wc-fade-in 0.25s ease-out both;
+  animation: wc-fade-in 0.18s ease-out both;
 }
 
 .wc-pulse-dot {

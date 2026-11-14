@@ -11,6 +11,10 @@
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
   }
+
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 18%, transparent);
+  }
   html {
     @apply overflow-x-hidden;
   }

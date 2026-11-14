@@ -1,1 +1,0 @@
-import{o as e}from"./createLucideIcon-jhW-LXNE.js";import{t}from"./error-page-3l8F5dwO.js";var n=e();function r(){return(0,n.jsx)(t,{code:`401`,title:`Unauthorized access`,description:`Please sign in with an account that has access to this resource.`})}var i=r;export{i as component};

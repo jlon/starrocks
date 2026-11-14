@@ -1,0 +1,1 @@
+import{o as e}from"./createLucideIcon-jhW-LXNE.js";import{t}from"./error-page-Bu_EffpJ.js";var n=e();function r(){return(0,n.jsx)(t,{code:`403`,title:`Access forbidden`,description:`You do not have permission to view this resource.`})}var i=r;export{i as component};
