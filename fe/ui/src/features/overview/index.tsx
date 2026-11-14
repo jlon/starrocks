@@ -94,66 +94,78 @@ function OverviewPage() {
         </div>
       ) : (
         <>
-          <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-3'>
-            <StatCard
-              title='Frontend'
-              icon={<Crown />}
-              tone={roleTone(data.fe.type)}
-              value={data.fe.type}
-              detail={
-                data.fe.leader ? 'Leader is serving metadata' : 'Follower'
-              }
-            />
-            <StatCard
-              title='Backends'
-              icon={<Server />}
-              tone={
-                data.backends.total === 0
-                  ? 'neutral'
-                  : data.backends.alive === data.backends.total
-                    ? 'green'
-                    : 'amber'
-              }
-              value={`${data.backends.alive} / ${data.backends.total}`}
-              detail={`${data.backends.total - data.backends.alive} not alive`}
-            />
-            <StatCard
-              title='Compute nodes'
-              icon={<Cpu />}
-              tone={
-                data.computeNodes.total === 0
-                  ? 'neutral'
-                  : data.computeNodes.alive === data.computeNodes.total
-                    ? 'green'
-                    : 'amber'
-              }
-              value={`${data.computeNodes.alive} / ${data.computeNodes.total}`}
-              detail={`${data.computeNodes.total - data.computeNodes.alive} not alive`}
-            />
-            <StatCard
-              title='Sessions'
-              icon={<Users />}
-              tone='blue'
-              value={String(data.sessions.total)}
-              detail='Connected clients'
-            />
-            <StatCard
-              title='Running queries'
-              icon={<Activity />}
-              tone={data.queries.running > 0 ? 'sky' : 'neutral'}
-              value={String(data.queries.running)}
-              detail='Currently executing'
-            />
-            <StatCard
-              title='Finished queries'
-              icon={<Database />}
-              tone='teal'
-              value={String(data.queries.finished)}
-              detail='Retained in profile manager'
-            />
+          <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-6'>
+            <div className='xl:col-span-2'>
+              <StatCard
+                title='Frontend'
+                icon={<Crown />}
+                tone={roleTone(data.fe.type)}
+                value={data.fe.type}
+                detail={
+                  data.fe.leader ? 'Leader is serving metadata' : 'Follower'
+                }
+              />
+            </div>
+            <div className='xl:col-span-2'>
+              <StatCard
+                title='Backends'
+                icon={<Server />}
+                tone={
+                  data.backends.total === 0
+                    ? 'neutral'
+                    : data.backends.alive === data.backends.total
+                      ? 'green'
+                      : 'amber'
+                }
+                value={`${data.backends.alive} / ${data.backends.total}`}
+                detail={`${data.backends.total - data.backends.alive} not alive`}
+              />
+            </div>
+            <div className='xl:col-span-2'>
+              <StatCard
+                title='Compute nodes'
+                icon={<Cpu />}
+                tone={
+                  data.computeNodes.total === 0
+                    ? 'neutral'
+                    : data.computeNodes.alive === data.computeNodes.total
+                      ? 'green'
+                      : 'amber'
+                }
+                value={`${data.computeNodes.alive} / ${data.computeNodes.total}`}
+                detail={`${data.computeNodes.total - data.computeNodes.alive} not alive`}
+              />
+            </div>
+            <div className='xl:col-span-2'>
+              <StatCard
+                title='Sessions'
+                icon={<Users />}
+                tone='blue'
+                value={String(data.sessions.total)}
+                detail='Connected clients'
+              />
+            </div>
+            <div className='xl:col-span-2'>
+              <StatCard
+                title='Running queries'
+                icon={<Activity />}
+                tone={data.queries.running > 0 ? 'sky' : 'neutral'}
+                value={String(data.queries.running)}
+                detail='Currently executing'
+              />
+            </div>
+            <div className='xl:col-span-2'>
+              <StatCard
+                title='Finished queries'
+                icon={<Database />}
+                tone='teal'
+                value={String(data.queries.finished)}
+                detail='Retained in profile manager'
+              />
+            </div>
           </div>
 
-          <div className='mt-4 grid gap-4 lg:grid-cols-3'>
+          <div className='mt-4 grid gap-4 lg:grid-cols-[1.15fr_1.45fr_1fr]'>
             <Card>
               <CardHeader>
                 <CardTitle>Cluster resources</CardTitle>
