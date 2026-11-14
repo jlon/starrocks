@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { LogView } from '@/components/log-view'
 import { PageHeader } from '@/components/page-header'
 
 function LogsPage() {
@@ -211,9 +212,7 @@ function LogsPage() {
                     {content.data.truncated && ' · showing last 1 MiB'}
                   </span>
                 </div>
-                <pre className='max-h-[65vh] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300'>
-                  {content.data.content}
-                </pre>
+                <LogView text={content.data.content} />
               </div>
             )
           )}

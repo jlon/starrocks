@@ -15,8 +15,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { ServerOff } from 'lucide-react'
 import { stateTone } from '@/lib/states'
 import { StateBadge } from '@/components/state-badge'
+import { EmptyState } from '@/components/empty-state'
 import { AutoRefresh } from '@/components/auto-refresh'
 import { PageHeader } from '@/components/page-header'
 
@@ -112,14 +114,14 @@ function BackendsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Host</TableHead>
-                <TableHead>State</TableHead>
-                <TableHead>Ports</TableHead>
-                <TableHead>CPU</TableHead>
-                <TableHead>Memory</TableHead>
-                <TableHead>Disk</TableHead>
-                <TableHead>Version</TableHead>
-                <TableHead>Last report</TableHead>
+                <TableHead className='whitespace-nowrap'>Host</TableHead>
+                <TableHead className='whitespace-nowrap'>State</TableHead>
+                <TableHead className='whitespace-nowrap'>Ports</TableHead>
+                <TableHead className='whitespace-nowrap'>CPU</TableHead>
+                <TableHead className='whitespace-nowrap'>Memory</TableHead>
+                <TableHead className='whitespace-nowrap'>Disk</TableHead>
+                <TableHead className='whitespace-nowrap'>Version</TableHead>
+                <TableHead className='whitespace-nowrap'>Last report</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -176,11 +178,12 @@ function BackendsPage() {
               ))}
               {rows.length === 0 && (
                 <TableRow>
-                  <TableCell
-                    colSpan={8}
-                    className='h-24 text-center text-muted-foreground'
-                  >
-                    No backends registered.
+                  <TableCell colSpan={8}>
+                    <EmptyState
+                      icon={ServerOff}
+                      title='No backends'
+                      description='No backends match the current filter or none are registered.'
+                    />
                   </TableCell>
                 </TableRow>
               )}

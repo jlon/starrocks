@@ -1,0 +1,1 @@
+import{t as e}from"./not-found-error-DfdOcX_2.js";var t=e;export{t as component};

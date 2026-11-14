@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import type { SessionRow } from '@/lib/types'
+import { Users } from 'lucide-react'
 import { StateBadge } from '@/components/state-badge'
+import { EmptyState } from '@/components/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
@@ -49,15 +51,15 @@ function SessionsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>ID</TableHead>
-                <TableHead>User</TableHead>
-                <TableHead>Host</TableHead>
-                <TableHead>Database</TableHead>
-                <TableHead>Command</TableHead>
-                <TableHead>Time</TableHead>
-                <TableHead>State</TableHead>
+                <TableHead className='whitespace-nowrap'>ID</TableHead>
+                <TableHead className='whitespace-nowrap'>User</TableHead>
+                <TableHead className='whitespace-nowrap'>Host</TableHead>
+                <TableHead className='whitespace-nowrap'>Database</TableHead>
+                <TableHead className='whitespace-nowrap'>Command</TableHead>
+                <TableHead className='whitespace-nowrap'>Time</TableHead>
+                <TableHead className='whitespace-nowrap'>State</TableHead>
                 <TableHead>Info</TableHead>
-                <TableHead>Warehouse</TableHead>
+                <TableHead className='whitespace-nowrap'>Warehouse</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -96,11 +98,12 @@ function SessionsPage() {
               ))}
               {(data?.sessions ?? []).length === 0 && (
                 <TableRow>
-                  <TableCell
-                    colSpan={9}
-                    className='h-24 text-center text-muted-foreground'
-                  >
-                    No active sessions.
+                  <TableCell colSpan={9}>
+                    <EmptyState
+                      icon={Users}
+                      title='No active sessions'
+                      description='No clients are connected to this frontend.'
+                    />
                   </TableCell>
                 </TableRow>
               )}

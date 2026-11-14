@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AutoRefresh } from '@/components/auto-refresh'
+import { LogView } from '@/components/log-view'
 import { PageHeader } from '@/components/page-header'
 
 type Tab = 'configs' | 'memory' | 'mem-tracker' | 'logs'
@@ -242,9 +243,10 @@ function BeConsolePage() {
           {isLoading ? (
             <Skeleton className='h-64 w-full rounded-xl' />
           ) : (
-            <pre className='max-h-[calc(100vh-280px)] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs whitespace-pre-wrap text-zinc-300'>
-              {data?.text || 'No data'}
-            </pre>
+            <LogView
+              text={data?.text || 'No data'}
+              className='max-h-[calc(100vh-280px)]'
+            />
           )}
         </TabsContent>
       </Tabs>

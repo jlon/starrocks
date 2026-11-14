@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Download } from 'lucide-react'
@@ -6,7 +6,9 @@ import { apiFetch } from '@/lib/api'
 import { downloadCsv } from '@/lib/csv'
 import { formatDuration, formatTimestamp } from '@/lib/format'
 import type { QueryList, QueryRow } from '@/lib/types'
+import { Activity } from 'lucide-react'
 import { queryTypeTone, stateTone } from '@/lib/states'
+import { EmptyState } from '@/components/empty-state'
 import { StateBadge, StateChip } from '@/components/state-badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -31,8 +33,21 @@ function QueriesPage() {
     refetchInterval: auto ? 10000 : false,
   })
 
-  const rows =
-    tab === 'running' ? (data?.running ?? []) : (data?.finished ?? [])
+  const sortedRunning = useMemo(
+    () =>
+      [...(data?.running ?? [])].sort(
+        (left, right) => (right.execTime ?? 0) - (left.execTime ?? 0)
+      ),
+    [data?.running]
+  )
+  const sortedFinished = useMemo(
+    () =>
+      [...(data?.finished ?? [])].sort((left, right) =>
+        String(right.endTime ?? '').localeCompare(String(left.endTime ?? ''))
+      ),
+    [data?.finished]
+  )
+  const rows = tab === 'running' ? sortedRunning : sortedFinished
   const headers = runningHeaders(tab)
   const download = () =>
     downloadCsv(
@@ -101,10 +116,10 @@ function QueriesPage() {
           </TabsList>
 
           <TabsContent value='running'>
-            <QueryTable rows={data?.running ?? []} running />
+            <QueryTable rows={sortedRunning} running />
           </TabsContent>
           <TabsContent value='finished'>
-            <QueryTable rows={data?.finished ?? []} />
+            <QueryTable rows={sortedFinished} />
           </TabsContent>
         </Tabs>
       )}
@@ -147,14 +162,18 @@ function QueryTable({ rows, running }: QueryTableProps) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Query ID</TableHead>
-            <TableHead>User</TableHead>
-            <TableHead>Database</TableHead>
+            <TableHead className='whitespace-nowrap'>Query ID</TableHead>
+            <TableHead className='whitespace-nowrap'>User</TableHead>
+            <TableHead className='whitespace-nowrap'>Database</TableHead>
             <TableHead>SQL</TableHead>
-            <TableHead>Type</TableHead>
-            <TableHead>State</TableHead>
-            <TableHead>{running ? 'Elapsed' : 'Total'}</TableHead>
-            <TableHead>{running ? 'Started' : 'Warehouse'}</TableHead>
+            <TableHead className='whitespace-nowrap'>Type</TableHead>
+            <TableHead className='whitespace-nowrap'>State</TableHead>
+            <TableHead className='whitespace-nowrap'>
+              {running ? 'Elapsed' : 'Total'}
+            </TableHead>
+            <TableHead className='whitespace-nowrap'>
+              {running ? 'Started' : 'Warehouse'}
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -199,11 +218,16 @@ function QueryTable({ rows, running }: QueryTableProps) {
           ))}
           {rows.length === 0 && (
             <TableRow>
-              <TableCell
-                colSpan={7}
-                className='h-24 text-center text-muted-foreground'
-              >
-                {running ? 'No running queries.' : 'No finished queries.'}
+              <TableCell colSpan={8}>
+                <EmptyState
+                  icon={Activity}
+                  title={running ? 'No running queries' : 'No finished queries'}
+                  description={
+                    running
+                      ? 'No queries are executing on this frontend right now.'
+                      : 'No recently finished queries are retained.'
+                  }
+                />
               </TableCell>
             </TableRow>
           )}

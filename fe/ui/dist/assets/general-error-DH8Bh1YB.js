@@ -1,0 +1,1 @@
+import{o as e}from"./createLucideIcon-jhW-LXNE.js";import{t}from"./error-page-C04BxAvM.js";var n=e();function r({minimal:e=!1}){return(0,n.jsx)(t,{code:`500`,title:`Something went wrong`,description:e?`Please try again later.`:`We apologize for the inconvenience. Please try again later.`})}export{r as t};

@@ -1,0 +1,1 @@
+import{i as e,o as t}from"./createLucideIcon-jhW-LXNE.js";var n=t();function r({className:t,...r}){return(0,n.jsx)(`div`,{"data-slot":`skeleton`,className:e(`animate-pulse rounded-md bg-accent`,t),...r})}export{r as t};

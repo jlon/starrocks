@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowUp, Folder, RefreshCw } from 'lucide-react'
+import { ArrowUp, Folder, FolderOpen, RefreshCw } from 'lucide-react'
+import { EmptyState } from '@/components/empty-state'
 import { apiFetch } from '@/lib/api'
 import type { SystemInfo } from '@/lib/types'
 import { Button } from '@/components/ui/button'
@@ -138,11 +139,12 @@ function SystemPage() {
               ))}
               {(data?.rows ?? []).length === 0 && (
                 <TableRow>
-                  <TableCell
-                    colSpan={data?.columns.length ?? 1}
-                    className='h-24 text-center text-muted-foreground'
-                  >
-                    Empty directory.
+                  <TableCell colSpan={data?.columns.length ?? 1}>
+                    <EmptyState
+                      icon={FolderOpen}
+                      title='Empty directory'
+                      description='This proc node has no children to display.'
+                    />
                   </TableCell>
                 </TableRow>
               )}

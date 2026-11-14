@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { FileText } from 'lucide-react'
+import { EmptyState } from '@/components/empty-state'
 import { apiFetch } from '@/lib/api'
 import { formatBytes } from '@/lib/format'
 import type { Backend, ProcProfileFile, ProcProfileList } from '@/lib/types'
@@ -147,9 +148,9 @@ function ProfileTable({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Type</TableHead>
-              <TableHead>Timestamp</TableHead>
-              <TableHead>Size</TableHead>
+              <TableHead className='whitespace-nowrap'>Type</TableHead>
+              <TableHead className='whitespace-nowrap'>Timestamp</TableHead>
+              <TableHead className='whitespace-nowrap'>Size</TableHead>
               <TableHead className='text-right'>View</TableHead>
             </TableRow>
           </TableHeader>
@@ -179,11 +180,12 @@ function ProfileTable({
             ))}
             {(profiles?.files ?? []).length === 0 && (
               <TableRow>
-                <TableCell
-                  colSpan={4}
-                  className='h-24 text-center text-muted-foreground'
-                >
-                  No profile files found.
+                <TableCell colSpan={4}>
+                  <EmptyState
+                    icon={FileText}
+                    title='No profile files'
+                    description='No CPU or memory profiles are available on this node.'
+                  />
                 </TableCell>
               </TableRow>
             )}
