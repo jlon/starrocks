@@ -30,7 +30,7 @@ export function AppSidebar() {
           <NavGroup key={props.title} {...props} />
         ))}
       </SidebarContent>
-      <SidebarFooter>
+      <SidebarFooter className='pb-0'>
         <NavUser
           user={{
             name: session?.user ?? 'admin',
