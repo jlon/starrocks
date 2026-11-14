@@ -165,30 +165,32 @@ function OverviewPage() {
             </div>
           </div>
 
-          <div className='mt-4 grid gap-4 lg:grid-cols-[1.15fr_1.45fr_1fr]'>
+          <div className='mt-4 grid gap-4 lg:grid-cols-2'>
             <Card>
-              <CardHeader>
+              <CardHeader className='pb-3'>
                 <CardTitle>Cluster resources</CardTitle>
                 <CardDescription>
                   Averages across {resources.count} backend
                   {resources.count === 1 ? '' : 's'}.
                 </CardDescription>
               </CardHeader>
-              <CardContent className='space-y-4'>
+              <CardContent className='space-y-3'>
                 <div className='flex justify-around'>
-                  <Gauge value={resources.cpuPct} label='CPU' tone='blue' />
+                  <Gauge value={resources.cpuPct} label='CPU' tone='blue' size={64} />
                   <Gauge
                     value={resources.memPct}
                     label='Memory'
                     tone='violet'
+                    size={64}
                   />
                   <Gauge
                     value={resources.diskPct}
                     label='Disk'
                     tone={resources.diskPct > 80 ? 'red' : 'amber'}
+                    size={64}
                   />
                 </div>
-                <div className='space-y-3'>
+                <div className='space-y-2.5'>
                   <MeterBar
                     value={resources.capacityUsed}
                     max={resources.capacityTotal}
@@ -208,54 +210,64 @@ function OverviewPage() {
             </Card>
 
             <Card>
-              <CardHeader>
+              <CardHeader className='pb-3'>
                 <CardTitle>Workload</CardTitle>
                 <CardDescription>
                   {workload.runningCount} running ·{' '}
                   {workload.finishedCount} finished
                 </CardDescription>
               </CardHeader>
-              <CardContent className='space-y-4'>
+              <CardContent className='flex gap-6'>
                 <Donut
+                  size={96}
+                  thickness={10}
                   slices={workload.byType}
                   center={
                     <div className='text-center'>
-                      <div className='text-lg font-semibold tabular-nums'>
+                      <div className='text-base font-semibold tabular-nums'>
                         {workload.runningCount}
                       </div>
-                      <div className='text-[11px] text-muted-foreground'>
+                      <div className='text-[10px] text-muted-foreground'>
                         running
                       </div>
                     </div>
                   }
                 />
-                {workload.topQueries.length > 0 && (
-                  <div className='space-y-1.5 border-t pt-3'>
-                    <div className='text-[11px] font-medium tracking-wide text-muted-foreground uppercase'>
-                      Slowest running
-                    </div>
-                    {workload.topQueries.map((query) => (
-                      <Link
-                        key={query.queryId}
-                        to='/query-profile'
-                        search={{ queryId: query.queryId }}
-                        className='flex items-center gap-2 text-xs hover:underline'
-                      >
-                        <span className='truncate font-mono text-muted-foreground'>
-                          {query.queryId}
-                        </span>
-                        <span className='ml-auto font-medium tabular-nums'>
-                          {formatDuration(query.execTime ?? 0)}
-                        </span>
-                      </Link>
-                    ))}
-                  </div>
-                )}
+                <div className='min-w-0 flex-1 space-y-2'>
+                  {workload.topQueries.length === 0 ? (
+                    <p className='text-sm text-muted-foreground'>
+                      No running queries.
+                    </p>
+                  ) : (
+                    <>
+                      <div className='text-[11px] font-medium tracking-wide text-muted-foreground uppercase'>
+                        Slowest running
+                      </div>
+                      {workload.topQueries.slice(0, 4).map((query) => (
+                        <Link
+                          key={query.queryId}
+                          to='/query-profile'
+                          search={{ queryId: query.queryId }}
+                          className='flex items-center gap-2 text-xs hover:underline'
+                        >
+                          <span className='truncate font-mono text-muted-foreground'>
+                            {query.queryId}
+                          </span>
+                          <span className='ml-auto font-medium tabular-nums'>
+                            {formatDuration(query.execTime ?? 0)}
+                          </span>
+                        </Link>
+                      ))}
+                    </>
+                  )}
+                </div>
               </CardContent>
             </Card>
+          </div>
 
+          <div className='mt-4 grid gap-4 lg:grid-cols-2'>
             <Card>
-              <CardHeader>
+              <CardHeader className='pb-3'>
                 <CardTitle>Session activity</CardTitle>
                 <CardDescription>
                   {sessionSplit.total} active session
@@ -269,13 +281,15 @@ function OverviewPage() {
                   </p>
                 ) : (
                   <Donut
+                    size={96}
+                    thickness={10}
                     slices={sessionSplit.slices}
                     center={
                       <div className='text-center'>
-                        <div className='text-lg font-semibold tabular-nums'>
+                        <div className='text-base font-semibold tabular-nums'>
                           {sessionSplit.total}
                         </div>
-                        <div className='text-[11px] text-muted-foreground'>
+                        <div className='text-[10px] text-muted-foreground'>
                           sessions
                         </div>
                       </div>
@@ -284,17 +298,16 @@ function OverviewPage() {
                 )}
               </CardContent>
             </Card>
-          </div>
 
-          {backendRows.length > 0 && (
-            <Card className='mt-4'>
-              <CardHeader>
-                <CardTitle>Backend health</CardTitle>
-                <CardDescription>
-                  Per-node resource usage reported by the last heartbeat.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className='grid gap-3 sm:grid-cols-2 xl:grid-cols-3'>
+            {backendRows.length > 0 && (
+              <Card>
+                <CardHeader className='pb-3'>
+                  <CardTitle>Backend health</CardTitle>
+                  <CardDescription>
+                    Per-node usage from the last heartbeat.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className='grid gap-3 sm:grid-cols-2'>
                 {backendRows.map((backend) => (
                   <div
                     key={backend.id}
@@ -334,9 +347,10 @@ function OverviewPage() {
                     </div>
                   </div>
                 ))}
-              </CardContent>
-            </Card>
-          )}
+                </CardContent>
+              </Card>
+            )}
+          </div>
 
           {data.hardware?.enabled && (
             <Card className='mt-4'>

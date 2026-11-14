@@ -20,11 +20,11 @@ export function StatCard({
 }) {
   return (
     <Card className={cn('wc-enter transition-shadow hover:shadow-md', className)}>
-      <CardContent className='flex items-start gap-3 p-5'>
+      <CardContent className='flex items-center gap-3 p-4'>
         {icon && (
           <span
             className={cn(
-              'inline-flex size-9 shrink-0 items-center justify-center rounded-lg border [&>svg]:size-4',
+              'inline-flex size-8 shrink-0 items-center justify-center rounded-lg border [&>svg]:size-4',
               TONE_CHIP[tone]
             )}
           >
@@ -32,14 +32,16 @@ export function StatCard({
           </span>
         )}
         <div className='min-w-0'>
-          <div className='text-xs font-medium tracking-wide text-muted-foreground uppercase'>
+          <div className='text-[11px] font-medium tracking-wide text-muted-foreground uppercase'>
             {title}
           </div>
-          <div className='mt-1 text-2xl font-semibold tracking-tight tabular-nums'>
+          <div className='mt-0.5 text-xl font-semibold tracking-tight tabular-nums'>
             {value}
           </div>
           {detail && (
-            <div className='mt-1 text-xs text-muted-foreground'>{detail}</div>
+            <div className='mt-0.5 text-[11px] text-muted-foreground'>
+              {detail}
+            </div>
           )}
         </div>
       </CardContent>
