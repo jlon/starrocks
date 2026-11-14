@@ -4,6 +4,7 @@ import { apiFetch } from '@/lib/api'
 import type { SessionRow } from '@/lib/types'
 import { Users } from 'lucide-react'
 import { StateBadge } from '@/components/state-badge'
+import { CopyButton } from '@/components/copy-button'
 import { EmptyState } from '@/components/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -47,9 +48,9 @@ function SessionsPage() {
       {isLoading ? (
         <Skeleton className='h-64 w-full rounded-xl' />
       ) : (
-        <div className='wc-fade overflow-x-auto rounded-xl border'>
+        <div className='wc-fade max-h-[calc(100vh-260px)] overflow-auto rounded-xl border'>
           <Table>
-            <TableHeader>
+            <TableHeader className='sticky top-0 z-10 bg-background'>
               <TableRow>
                 <TableHead className='whitespace-nowrap'>ID</TableHead>
                 <TableHead className='whitespace-nowrap'>User</TableHead>
@@ -66,7 +67,10 @@ function SessionsPage() {
               {(data?.sessions ?? []).map((session) => (
                 <TableRow key={session.id}>
                   <TableCell className='font-mono text-xs'>
-                    {session.id}
+                    <span className='group inline-flex items-center gap-0.5'>
+                      {session.id}
+                      <CopyButton text={String(session.id)} />
+                    </span>
                   </TableCell>
                   <TableCell>{session.user}</TableCell>
                   <TableCell className='text-xs text-muted-foreground'>

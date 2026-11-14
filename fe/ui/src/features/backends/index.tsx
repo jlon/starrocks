@@ -110,9 +110,9 @@ function BackendsPage() {
       {isLoading ? (
         <Skeleton className='h-64 w-full rounded-xl' />
       ) : (
-        <div className='wc-fade overflow-x-auto rounded-xl border'>
+        <div className='wc-fade max-h-[calc(100vh-260px)] overflow-auto rounded-xl border'>
           <Table>
-            <TableHeader>
+            <TableHeader className='sticky top-0 z-10 bg-background'>
               <TableRow>
                 <TableHead className='whitespace-nowrap'>Host</TableHead>
                 <TableHead className='whitespace-nowrap'>State</TableHead>
@@ -181,8 +181,16 @@ function BackendsPage() {
                   <TableCell colSpan={8}>
                     <EmptyState
                       icon={ServerOff}
-                      title='No backends'
-                      description='No backends match the current filter or none are registered.'
+                      title={
+                        filter.trim()
+                          ? 'No matching backends'
+                          : 'No backends'
+                      }
+                      description={
+                        filter.trim()
+                          ? `No backends match “${filter.trim()}”.`
+                          : 'No backends are registered on this frontend.'
+                      }
                     />
                   </TableCell>
                 </TableRow>

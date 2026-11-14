@@ -57,14 +57,18 @@ function renderLine(line: string, index: number): ReactNode {
 export function LogView({
   text,
   className,
+  wrap = true,
 }: {
   text: string
   className?: string
+  /** Set false to keep long lines on one row with horizontal scroll. */
+  wrap?: boolean
 }) {
   return (
     <pre
       className={cn(
-        'max-h-[65vh] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300 whitespace-pre-wrap',
+        'max-h-[65vh] overflow-auto rounded-xl bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300',
+        wrap ? 'whitespace-pre-wrap' : 'whitespace-pre',
         className
       )}
     >

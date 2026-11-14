@@ -8,6 +8,7 @@ import { formatDuration, formatTimestamp } from '@/lib/format'
 import type { QueryList, QueryRow } from '@/lib/types'
 import { Activity } from 'lucide-react'
 import { queryTypeTone, stateTone } from '@/lib/states'
+import { CopyButton } from '@/components/copy-button'
 import { EmptyState } from '@/components/empty-state'
 import { StateBadge, StateChip } from '@/components/state-badge'
 import { Button } from '@/components/ui/button'
@@ -158,9 +159,9 @@ type QueryTableProps = {
 
 function QueryTable({ rows, running }: QueryTableProps) {
   return (
-    <div className='wc-fade mt-2 overflow-x-auto rounded-xl border'>
+    <div className='wc-fade mt-2 max-h-[calc(100vh-280px)] overflow-auto rounded-xl border'>
       <Table>
-        <TableHeader>
+        <TableHeader className='sticky top-0 z-10 bg-background'>
           <TableRow>
             <TableHead className='whitespace-nowrap'>Query ID</TableHead>
             <TableHead className='whitespace-nowrap'>User</TableHead>
@@ -180,13 +181,16 @@ function QueryTable({ rows, running }: QueryTableProps) {
           {rows.map((row) => (
             <TableRow key={row.queryId}>
               <TableCell className='font-mono text-xs'>
-                <Link
-                  to='/query-profile'
-                  search={{ queryId: row.queryId }}
-                  className='hover:underline'
-                >
-                  {row.queryId}
-                </Link>
+                <span className='group inline-flex items-center gap-0.5'>
+                  <Link
+                    to='/query-profile'
+                    search={{ queryId: row.queryId }}
+                    className='hover:underline'
+                  >
+                    {row.queryId}
+                  </Link>
+                  <CopyButton text={row.queryId} />
+                </span>
               </TableCell>
               <TableCell>{row.user}</TableCell>
               <TableCell className='text-muted-foreground'>

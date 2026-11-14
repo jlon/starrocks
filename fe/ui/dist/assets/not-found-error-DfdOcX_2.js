@@ -1,1 +1,0 @@
-import{o as e}from"./createLucideIcon-jhW-LXNE.js";import{t}from"./error-page-C04BxAvM.js";var n=e();function r(){return(0,n.jsx)(t,{code:`404`,title:`Page not found`,description:`The page you are looking for does not exist or was removed.`})}export{r as t};

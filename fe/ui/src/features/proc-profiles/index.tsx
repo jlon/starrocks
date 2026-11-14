@@ -144,9 +144,9 @@ function ProfileTable({
   return (
     <>
       {error && <p className='mb-2 text-sm text-destructive'>{error}</p>}
-      <div className='wc-fade rounded-md border'>
+      <div className='wc-fade max-h-[calc(100vh-300px)] overflow-auto rounded-md border'>
         <Table>
-          <TableHeader>
+          <TableHeader className='sticky top-0 z-10 bg-background'>
             <TableRow>
               <TableHead className='whitespace-nowrap'>Type</TableHead>
               <TableHead className='whitespace-nowrap'>Timestamp</TableHead>
